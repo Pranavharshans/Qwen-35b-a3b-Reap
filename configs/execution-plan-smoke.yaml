@@ -36,9 +36,9 @@ tasks:
   - task_id: telemetry-smoke
     objective: Capture streaming prompt, completion, and joint REAP statistics for twenty samples.
     command: [reverse-reap, capture, configs/smoke-3090-bf16.yaml, /models/qwen, datasets/manifests/full.jsonl, runs/smoke/telemetry.jsonl, --split, all, --limit, "20"]
-    validation_command: [python, scripts/validate_artifact.py, dataset, runs/smoke/telemetry.jsonl]
+    validation_command: [reverse-reap, validate-telemetry, runs/smoke/telemetry.jsonl, --output, runs/smoke/telemetry-validation.json]
     inputs: [configs/smoke-3090-bf16.yaml, datasets/manifests/full.jsonl]
-    outputs: [runs/smoke/telemetry.jsonl]
+    outputs: [runs/smoke/telemetry.jsonl, runs/smoke/telemetry-validation.json]
     dependencies: [instrumentation-probe, dataset-freeze]
     estimated_gpu_hours: 1.5
     estimated_storage_gb: 1

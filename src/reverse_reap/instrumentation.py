@@ -44,6 +44,7 @@ def instrument_qwen35(
     architecture: Qwen35Architecture,
     *,
     masked: frozenset[tuple[int, int]] = frozenset(),
+    observer: Any | None = None,
 ) -> Iterator[CaptureState]:
     """Patch the reference expert path temporarily, restoring it even after failure.
 
@@ -91,7 +92,10 @@ def instrument_qwen35(
                 top_k_index.detach().cpu().numpy().astype(np.int64, copy=False),
                 top_k_weights.detach().float().cpu().numpy().astype(np.float64, copy=False),
             )
-            capture.accumulators[_layer].update(batch, norms.detach().cpu().numpy())
+            norm_values = norms.detach().cpu().numpy()
+            capture.accumulators[_layer].update(batch, norm_values)
+            if observer is not None:
+                observer(_layer, batch, norm_values)
             return final
 
         experts.forward = types.MethodType(forward, experts)

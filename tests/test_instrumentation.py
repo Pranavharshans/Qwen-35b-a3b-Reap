@@ -63,3 +63,23 @@ def test_mask_zeroes_only_selected_weighted_contribution_without_renormalizing()
         other_output = experts(hidden, indices, weights)
     full = experts(hidden, indices, weights)
     assert torch.allclose(masked_output + other_output, full)
+
+
+def test_observer_receives_exact_route_level_norm_matrix():
+    torch.manual_seed(12)
+    experts = TinyExperts()
+    hidden = torch.randn(2, 4)
+    indices = torch.tensor([[0, 1], [2, 1]])
+    weights = torch.tensor([[0.7, 0.3], [0.4, 0.6]])
+    observed = []
+    with instrument_qwen35(
+        architecture(experts),
+        observer=lambda layer, batch, norms: observed.append((layer, batch, norms)),
+    ):
+        experts(hidden, indices, weights)
+    assert len(observed) == 1
+    layer, batch, norms = observed[0]
+    assert layer == 0
+    assert batch.indices.shape == (2, 2)
+    assert norms.shape == (2, 2)
+    assert (norms > 0).all()

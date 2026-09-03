@@ -19,6 +19,7 @@ from reverse_reap.pipeline import analyze_telemetry
 from reverse_reap.reporting import build_run_bundle
 from reverse_reap.runtime import capture_manifest, probe_instrumentation
 from reverse_reap.sources import fetch_and_freeze
+from reverse_reap.telemetry import validate_telemetry
 
 
 def git_sha() -> str:
@@ -120,6 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
     bundle.add_argument("run_dir", type=Path)
     bundle.add_argument("state_dir", type=Path)
     bundle.add_argument("destination", type=Path)
+    telemetry = subparsers.add_parser("validate-telemetry")
+    telemetry.add_argument("path", type=Path)
+    telemetry.add_argument("--output", type=Path)
     return parser
 
 
@@ -230,6 +234,10 @@ def main() -> int:
             args.run_dir, args.state_dir, load_config(args.config), args.destination
         )
         emit_json(output)
+        return 0
+    if args.command == "validate-telemetry":
+        output = validate_telemetry(args.path)
+        emit_json(output, args.output)
         return 0
     raise AssertionError(f"unhandled command: {args.command}")
 

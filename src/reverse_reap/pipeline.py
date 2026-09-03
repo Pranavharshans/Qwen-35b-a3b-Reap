@@ -31,15 +31,41 @@ def analyze_telemetry(
     splits: tuple[str, ...] = ("calibration", "selection"),
     segment: str = "joint",
 ) -> dict[str, Any]:
-    observations = [
+    token_rows = [
         row
         for line in telemetry_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
         for row in [json.loads(line)]
-        if row["split"] in splits and row["segment"] == segment
+        if row["split"] in splits
+        and (segment == "joint" or row["segment"] == segment)
     ]
-    if not observations:
+    if not token_rows:
         raise ValueError("no telemetry rows match the requested splits and segment")
+    grouped: dict[tuple[str, str, str, int, int], dict[str, float]] = {}
+    for row in token_rows:
+        layer = int(row.get("layer_index", row.get("layer")))
+        expert = int(row.get("expert_index", row.get("expert")))
+        key = (row["sample_id"], row["domain"], row["stratum"], layer, expert)
+        values = grouped.setdefault(key, {"count": 0.0, "weighted_norm": 0.0})
+        values["count"] += 1
+        if "expert_output_l2" in row:
+            values["weighted_norm"] += float(row["router_weight"]) * float(
+                row["expert_output_l2"]
+            )
+        else:
+            values["weighted_norm"] += float(row["reap_saliency"])
+    observations = [
+        {
+            "sample_id": key[0],
+            "domain": key[1],
+            "stratum": key[2],
+            "layer": key[3],
+            "expert": key[4],
+            "routed_count": int(value["count"]),
+            "reap_saliency": value["weighted_norm"] / value["count"],
+        }
+        for key, value in grouped.items()
+    ]
     output_dir.mkdir(parents=True, exist_ok=True)
     ranking = differential_ranking(observations)
     bootstrap = bootstrap_stability(
@@ -85,6 +111,7 @@ def analyze_telemetry(
         pq.write_table(pa.Table.from_pylist(ranking), output_dir / "expert-ranking.parquet")
         parquet_written = True
     return {
+        "routing_rows": len(token_rows),
         "observations": len(observations),
         "experts_ranked": len(ranking),
         "candidate_gate_passed": candidates["gate_passed"],

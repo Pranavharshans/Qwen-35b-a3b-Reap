@@ -143,12 +143,18 @@ def _render_ids(tokenizer: Any, sample: NormalizedSample, enable_thinking: bool)
     return prompt.to(dtype=torch.long), full.to(dtype=torch.long)
 
 
-def _run_capture(model: Any, architecture: Qwen35Architecture, input_ids: Any) -> CaptureState:
+def _run_capture(
+    model: Any,
+    architecture: Qwen35Architecture,
+    input_ids: Any,
+    *,
+    observer: Any | None = None,
+) -> CaptureState:
     import torch
 
     device = model.get_input_embeddings().weight.device
     input_ids = input_ids.to(device)
-    with torch.inference_mode(), instrument_qwen35(architecture) as capture:
+    with torch.inference_mode(), instrument_qwen35(architecture, observer=observer) as capture:
         model(input_ids=input_ids, attention_mask=torch.ones_like(input_ids), use_cache=False)
     return capture
 
@@ -223,17 +229,61 @@ def capture_manifest(
         raise RuntimeCompatibilityError(f"refusing to overwrite telemetry: {destination}")
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
     count = 0
+    analysed_tokens = 0
+    condition_id = "C1" if config.runtime.enable_thinking else "C0"
+    run_id = config.run_id or f"unresolved-{config.fingerprint()[:16]}"
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            for sample in samples:
+            for sample_number, sample in enumerate(samples):
                 prompt_ids, full_ids = _render_ids(
                     tokenizer, sample, config.runtime.enable_thinking
                 )
-                prompt_capture = _run_capture(model, architecture, prompt_ids)
-                full_capture = _run_capture(model, architecture, full_ids)
-                for row in _segment_rows(full_capture, prompt_capture, sample):
-                    handle.write(json.dumps(row, sort_keys=True) + "\n")
-                    count += 1
+                token_ids = full_ids[0].tolist()
+                prompt_tokens = prompt_ids.shape[1]
+
+                def observe(
+                    layer: int,
+                    batch: Any,
+                    norms: np.ndarray,
+                    *,
+                    _token_ids: list[int] = token_ids,
+                    _prompt_tokens: int = prompt_tokens,
+                    _sample: NormalizedSample = sample,
+                    _sample_number: int = sample_number,
+                ) -> None:
+                    nonlocal count
+                    if batch.tokens != len(_token_ids):
+                        raise RuntimeCompatibilityError(
+                            f"layer {layer} routed {batch.tokens} tokens, "
+                            f"expected {len(_token_ids)}"
+                        )
+                    for token_index in range(batch.tokens):
+                        segment = "prompt" if token_index < _prompt_tokens else "reference"
+                        for rank in range(batch.top_k):
+                            row = {
+                                "schema_version": 1,
+                                "run_id": run_id,
+                                "sample_id": _sample.sample_id,
+                                "condition_id": condition_id,
+                                "segment": segment,
+                                "token_index": token_index,
+                                "token_id": int(_token_ids[token_index]),
+                                "layer_index": layer,
+                                "expert_index": int(batch.indices[token_index, rank]),
+                                "route_rank": rank,
+                                "router_weight": float(batch.weights[token_index, rank]),
+                                "expert_output_l2": float(norms[token_index, rank]),
+                                "chunk_id": f"sample-{_sample_number:06d}",
+                                "domain": _sample.domain,
+                                "stratum": _sample.stratum,
+                                "language": _sample.language,
+                                "split": _sample.split,
+                            }
+                            handle.write(json.dumps(row, sort_keys=True) + "\n")
+                            count += 1
+
+                _run_capture(model, architecture, full_ids, observer=observe)
+                analysed_tokens += len(token_ids)
                 handle.flush()
                 os.fsync(handle.fileno())
         os.replace(temporary, destination)
@@ -241,7 +291,13 @@ def capture_manifest(
         if os.path.exists(temporary):
             os.unlink(temporary)
     return {
-        "records": count,
+        "routing_rows": count,
+        "analysed_tokens": analysed_tokens,
+        "expected_routing_rows": (
+            analysed_tokens * architecture.num_layers * architecture.experts_per_token
+        ),
+        "row_count_valid": count
+        == analysed_tokens * architecture.num_layers * architecture.experts_per_token,
         "samples": len(samples),
         "telemetry_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
         "architecture": architecture_report,
