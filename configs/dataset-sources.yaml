@@ -22,6 +22,7 @@ sources:
     language: python
     license: CC-BY-4.0
     citation: https://arxiv.org/abs/2108.07732
+    exclude_source_ids: ["141"]  # exact prompt duplicate of MBPP task 71
   - name: cruxeval-python
     dataset_id: cruxeval-org/cruxeval
     split: test

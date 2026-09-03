@@ -105,6 +105,30 @@ def _lexical_fingerprint(text: str) -> set[str]:
     return {normalized[index : index + 25] for index in range(len(normalized) - 24)}
 
 
+def _near_duplicate_candidates(
+    fingerprints: list[set[str]], *, bottom_k: int = 16
+) -> set[tuple[int, int]]:
+    """High-recall deterministic MinHash blocking before exact Jaccard.
+
+    For Jaccard 0.92, missing all 16 independent bottom-hash opportunities has
+    negligible probability, while avoiding quadratic comparisons of unrelated prompts.
+    """
+    buckets: dict[int, list[int]] = {}
+    for index, fingerprint in enumerate(fingerprints):
+        hashes = sorted(
+            int.from_bytes(hashlib.blake2b(shingle.encode(), digest_size=8).digest())
+            for shingle in fingerprint
+        )[:bottom_k]
+        for value in hashes:
+            buckets.setdefault(value, []).append(index)
+    candidates = set()
+    for members in buckets.values():
+        for left_offset, left in enumerate(members):
+            for right in members[left_offset + 1 :]:
+                candidates.add((left, right))
+    return candidates
+
+
 def audit_samples(
     samples: list[NormalizedSample], *, near_duplicate_threshold: float = 0.92
 ) -> dict[str, Any]:
@@ -116,20 +140,27 @@ def audit_samples(
     duplicate_content = [key for key, count in Counter(content).items() if count > 1]
     near_duplicates: list[dict[str, Any]] = []
     fingerprints = [_lexical_fingerprint(sample.prompt) for sample in samples]
-    for left in range(len(samples)):
-        for right in range(left + 1, len(samples)):
-            union = fingerprints[left] | fingerprints[right]
-            similarity = (
-                len(fingerprints[left] & fingerprints[right]) / len(union) if union else 1.0
+    candidate_pairs = _near_duplicate_candidates(fingerprints)
+    for left, right in sorted(candidate_pairs):
+        union = fingerprints[left] | fingerprints[right]
+        similarity = (
+            len(fingerprints[left] & fingerprints[right]) / len(union) if union else 1.0
+        )
+        if similarity >= near_duplicate_threshold:
+            near_duplicates.append(
+                {
+                    "left": ids[left],
+                    "left_source": f"{samples[left].source}:{samples[left].source_id}",
+                    "right": ids[right],
+                    "right_source": f"{samples[right].source}:{samples[right].source_id}",
+                    "jaccard": similarity,
+                }
             )
-            if similarity >= near_duplicate_threshold:
-                near_duplicates.append(
-                    {"left": ids[left], "right": ids[right], "jaccard": similarity}
-                )
     if duplicate_ids or duplicate_content or near_duplicates:
         raise DatasetError(
             f"leakage audit failed: duplicate_ids={len(duplicate_ids)}, "
-            f"duplicate_content={len(duplicate_content)}, near_duplicates={len(near_duplicates)}"
+            f"duplicate_content={len(duplicate_content)}, near_duplicates={len(near_duplicates)}; "
+            f"examples={near_duplicates[:5]}"
         )
     split_counts = Counter(sample.split for sample in samples)
     domain_counts = Counter(sample.domain for sample in samples)
@@ -138,6 +169,8 @@ def audit_samples(
         "split_counts": dict(sorted(split_counts.items())),
         "domain_counts": dict(sorted(domain_counts.items())),
         "near_duplicate_threshold": near_duplicate_threshold,
+        "near_duplicate_method": "bottom-16-blake2b-blocking-plus-exact-25gram-jaccard",
+        "near_duplicate_candidate_pairs": len(candidate_pairs),
         "leakage_pairs": 0,
     }
 

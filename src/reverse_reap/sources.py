@@ -32,6 +32,7 @@ class SourceDefinition(StrictModel):
     citation: str
     language: str | None = None
     limit: int | None = Field(default=None, ge=1)
+    exclude_source_ids: tuple[str, ...] = ()
 
 
 class SourceCatalog(StrictModel):
@@ -69,7 +70,7 @@ def _adapt(
         tests = "\n".join(row["test_list"])
         return {
             **common,
-            "prompt": row["text"],
+            "prompt": row["prompt"],
             "reference": row["code"],
             "tests": tests,
             "scorer": "unit_tests",
@@ -151,9 +152,14 @@ def fetch_and_freeze(catalog_path: Path, destination: Path) -> dict[str, Any]:
             trust_remote_code=False,
         )
         limit = min(source.limit or len(dataset), len(dataset))
+        excluded = set(source.exclude_source_ids)
+        included = 0
         for index in range(limit):
             adapted = _adapt(source, revision, dataset[index], index)
+            if str(adapted["source_id"]) in excluded:
+                continue
             samples.append(normalize_sample(adapted, seed=catalog.seed))
+            included += 1
         resolved_sources.append(
             {
                 "name": source.name,
@@ -162,7 +168,8 @@ def fetch_and_freeze(catalog_path: Path, destination: Path) -> dict[str, Any]:
                 "split": source.split,
                 "license": source.license,
                 "citation": source.citation,
-                "records": limit,
+                "records": included,
+                "excluded_source_ids": list(source.exclude_source_ids),
             }
         )
     report = freeze_manifest(samples, destination)

@@ -34,6 +34,22 @@ def test_humaneval_adapter_constructs_executable_check():
     assert result["scorer"] == "unit_tests"
 
 
+def test_mbpp_adapter_uses_current_prompt_field():
+    result = _adapt(
+        source("mbpp"),
+        "a" * 40,
+        {
+            "task_id": 11,
+            "prompt": "Write a Python function that returns one.",
+            "code": "def one(): return 1",
+            "test_list": ["assert one() == 1"],
+        },
+        0,
+    )
+    assert result["prompt"].startswith("Write a Python")
+    assert result["tests"] == "assert one() == 1"
+
+
 def test_swebench_adapter_preserves_repository_issue_and_patch():
     result = _adapt(
         source("swebench", stratum="repository-bug-repair", language="mixed"),
@@ -81,3 +97,8 @@ def test_mmlu_adapter_formats_choices_and_answer_letter():
     )
     assert "C. two" in result["prompt"]
     assert result["reference"] == "C"
+
+
+def test_source_definition_records_predeclared_exclusions():
+    value = source("mbpp", exclude_source_ids=["141"])
+    assert value.exclude_source_ids == ("141",)

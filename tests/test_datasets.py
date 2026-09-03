@@ -2,7 +2,14 @@ import json
 
 import pytest
 
-from reverse_reap.datasets import DatasetError, audit_samples, freeze_manifest, normalize_sample
+from reverse_reap.datasets import (
+    DatasetError,
+    _lexical_fingerprint,
+    _near_duplicate_candidates,
+    audit_samples,
+    freeze_manifest,
+    normalize_sample,
+)
 
 
 def raw(source_id, prompt, domain="coding"):
@@ -54,3 +61,13 @@ def test_near_duplicate_is_rejected():
     )
     with pytest.raises(DatasetError, match="near_duplicates=1"):
         audit_samples([first, second])
+
+
+def test_blocking_nominates_near_duplicate_without_all_pairs_scan():
+    texts = [
+        "Implement a parser for comma separated integer values.",
+        "Implement a parser for comma separated integer values!",
+        "Explain photosynthesis in a concise paragraph.",
+    ]
+    candidates = _near_duplicate_candidates([_lexical_fingerprint(text) for text in texts])
+    assert (0, 1) in candidates
