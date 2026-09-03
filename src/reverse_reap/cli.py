@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from reverse_reap.config import load_config
+from reverse_reap.controller import run_next
 
 
 def git_sha() -> str:
@@ -35,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     validate = subparsers.add_parser("validate-config")
     validate.add_argument("config", type=Path)
+    run = subparsers.add_parser("run-next")
+    run.add_argument("config", type=Path)
+    run.add_argument("plan", type=Path)
+    run.add_argument("state_dir", type=Path)
+    run.add_argument("--heartbeat-seconds", type=float, default=30)
     return parser
 
 
@@ -42,9 +48,20 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.command == "validate-config":
         return validate_config(args.config)
+    if args.command == "run-next":
+        config = load_config(args.config)
+        resolved_run_id = config.run_id or config.resolve_run_id(git_sha())
+        output = run_next(
+            args.plan,
+            config,
+            args.state_dir,
+            run_id=resolved_run_id,
+            heartbeat_seconds=args.heartbeat_seconds,
+        )
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0 if output["status"] == "COMPLETE" else 2
     raise AssertionError(f"unhandled command: {args.command}")
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

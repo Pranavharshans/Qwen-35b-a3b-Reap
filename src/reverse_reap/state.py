@@ -60,6 +60,12 @@ class RunState(BaseModel):
     consumed_cost_usd: float = Field(default=0.0, ge=0)
     last_validated_chunk: str | None = None
     failure_signature: str | None = None
+    started_at_utc: datetime | None = None
+    heartbeat_at_utc: datetime | None = None
+    completed_at_utc: datetime | None = None
+    validation_command: list[str] | None = None
+    validation_exit_code: int | None = None
+    next_permitted_task: str | None = None
     updated_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def transition(self, target: Status) -> None:
@@ -67,6 +73,12 @@ class RunState(BaseModel):
             raise ValueError(f"invalid state transition: {self.status} -> {target}")
         self.status = target
         self.updated_at_utc = datetime.now(UTC)
+        if target == Status.RUNNING and self.started_at_utc is None:
+            self.started_at_utc = self.updated_at_utc
+        if target == Status.RUNNING:
+            self.heartbeat_at_utc = self.updated_at_utc
+        if target in {Status.COMPLETE, Status.FAILED_TERMINAL, Status.WAITING_FOR_HUMAN}:
+            self.completed_at_utc = self.updated_at_utc
 
     def register_retry(self, signature: str) -> None:
         if self.failure_signature == signature:
