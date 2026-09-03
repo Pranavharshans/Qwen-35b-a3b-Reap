@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +101,7 @@ def score_response(
 
 def _generate(
     model: Any, tokenizer: Any, sample: NormalizedSample, config: ExperimentConfig
-) -> str:
+) -> tuple[str, int, bool]:
     import torch
 
     ids = tokenizer.apply_chat_template(
@@ -120,7 +121,12 @@ def _generate(
             use_cache=config.runtime.use_cache,
             pad_token_id=tokenizer.eos_token_id,
         )
-    return tokenizer.decode(output[0, ids.shape[1] :], skip_special_tokens=True)
+    generated = output[0, ids.shape[1] :]
+    return (
+        tokenizer.decode(generated, skip_special_tokens=True),
+        int(generated.numel()),
+        generated.numel() >= config.runtime.max_new_tokens,
+    )
 
 
 def evaluate_condition(
@@ -147,11 +153,13 @@ def evaluate_condition(
         raise CausalError(f"refusing to overwrite evaluation: {destination}")
     records = []
     for sample in samples:
+        started = time.monotonic()
         if masked:
             with instrument_qwen35(architecture, masked=masked):
-                response = _generate(model, tokenizer, sample, config)
+                response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
         else:
-            response = _generate(model, tokenizer, sample, config)
+            response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
+        latency_seconds = time.monotonic() - started
         score = score_response(sample, response, evaluator_image=evaluator_image)
         records.append(
             {
@@ -162,6 +170,9 @@ def evaluate_condition(
                 "condition_id": condition_id,
                 "masked_experts": len(masked),
                 "response": response,
+                "generated_tokens": generated_tokens,
+                "truncated": truncated,
+                "latency_seconds": latency_seconds,
                 **score,
             }
         )
@@ -180,6 +191,15 @@ def evaluate_condition(
         "scoreable_fraction": len(scoreable) / len(records) if records else 0.0,
         "pass_rate": (
             float(np.mean([record["passed"] for record in scoreable])) if scoreable else 0.0
+        ),
+        "parse_error_rate": (
+            1 - len(scoreable) / len(records) if records else 1.0
+        ),
+        "truncation_rate": (
+            float(np.mean([record["truncated"] for record in records])) if records else 0.0
+        ),
+        "mean_latency_seconds": (
+            float(np.mean([record["latency_seconds"] for record in records])) if records else 0.0
         ),
     }
 
@@ -204,12 +224,41 @@ def _domain_drop(baseline: dict[str, Any], intervention: dict[str, Any], domain:
     return float(np.mean(differences))
 
 
+def _paired_differences(
+    baseline: dict[str, Any], intervention: dict[str, Any], domain: str
+) -> list[float]:
+    common = sorted(
+        key
+        for key in baseline.keys() & intervention.keys()
+        if baseline[key]["domain"] == domain
+    )
+    return [
+        float(baseline[key]["passed"]) - float(intervention[key]["passed"])
+        for key in common
+    ]
+
+
+def paired_bootstrap_interval(
+    differences: list[float], *, iterations: int = 2000, seed: int = 20260903
+) -> list[float]:
+    if not differences:
+        raise CausalError("cannot bootstrap an empty paired sample")
+    values = np.asarray(differences, dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    means = [
+        float(rng.choice(values, size=len(values), replace=True).mean())
+        for _ in range(iterations)
+    ]
+    return [float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))]
+
+
 def causal_gate_report(
     baseline_path: Path,
     selected_path: Path,
     random_paths: list[Path],
     *,
-    replication_direction_passed: bool,
+    replication_baseline_path: Path | None = None,
+    replication_selected_path: Path | None = None,
 ) -> dict[str, Any]:
     if len(random_paths) < 20:
         raise CausalError("Gate D requires at least 20 layer-matched random sets")
@@ -220,6 +269,27 @@ def causal_gate_report(
     median_random = float(np.median(random_drops))
     percentile_95 = float(np.percentile(random_drops, 95))
     broad_collapse = control_drop >= 0.95
+    if (replication_baseline_path is None) != (replication_selected_path is None):
+        raise CausalError("both replication paths are required together")
+    replication = None
+    replication_direction_passed = False
+    if replication_baseline_path and replication_selected_path:
+        replication_baseline = _read_results(replication_baseline_path)
+        replication_selected = _read_results(replication_selected_path)
+        replication_coding_drop = _domain_drop(
+            replication_baseline, replication_selected, "coding"
+        )
+        replication_control_drop = _domain_drop(
+            replication_baseline, replication_selected, "control"
+        )
+        replication_direction_passed = (
+            replication_coding_drop > 0
+            and replication_coding_drop > replication_control_drop
+        )
+        replication = {
+            "coding_drop": replication_coding_drop,
+            "control_drop": replication_control_drop,
+        }
     criteria = {
         "twice_random_median": coding_drop >= 2 * median_random,
         "at_or_above_random_p95": coding_drop >= percentile_95,
@@ -228,14 +298,59 @@ def causal_gate_report(
         "no_broad_output_collapse": not broad_collapse,
     }
     passed = all(criteria.values())
+    validation_passed = all(
+        value for key, value in criteria.items() if key != "replication_direction"
+    )
+    if passed:
+        label = "coding-critical-v0"
+    elif validation_passed and replication is not None:
+        label = "unreplicated-candidates"
+    else:
+        label = "observational-candidates"
+    coding_differences = _paired_differences(baseline, selected, "coding")
+    control_differences = _paired_differences(baseline, selected, "control")
+    baseline_coding_scores = [
+        float(item["passed"]) for item in baseline.values() if item["domain"] == "coding"
+    ]
+    baseline_coding_rate = float(np.mean(baseline_coding_scores))
     return {
         "gate": "D",
         "passed": passed,
-        "label": "coding-critical-v0" if passed else "observational-candidates",
+        "label": label,
         "coding_drop": coding_drop,
         "control_drop": control_drop,
         "random_median_coding_drop": median_random,
         "random_p95_coding_drop": percentile_95,
         "random_coding_drops": random_drops,
+        "coding_drop_95ci": paired_bootstrap_interval(coding_differences),
+        "control_drop_95ci": paired_bootstrap_interval(control_differences),
+        "relative_coding_drop": (
+            coding_drop / baseline_coding_rate if baseline_coding_rate > 0 else None
+        ),
+        "replication": replication,
         "criteria": criteria,
+    }
+
+
+def compare_deterministic_evaluations(first_path: Path, second_path: Path) -> dict[str, Any]:
+    first_rows = [json.loads(line) for line in first_path.read_text().splitlines() if line]
+    second_rows = [json.loads(line) for line in second_path.read_text().splitlines() if line]
+    first = {row["sample_id"]: row for row in first_rows}
+    second = {row["sample_id"]: row for row in second_rows}
+    if first.keys() != second.keys():
+        raise CausalError("determinism runs contain different sample IDs")
+    mismatches = [
+        sample_id
+        for sample_id in sorted(first)
+        if first[sample_id].get("response") != second[sample_id].get("response")
+        or first[sample_id].get("passed") != second[sample_id].get("passed")
+    ]
+    scoreable_fraction = (
+        sum(bool(row.get("scoreable")) for row in first.values()) / len(first) if first else 0.0
+    )
+    return {
+        "passed": not mismatches and scoreable_fraction >= 0.95,
+        "samples": len(first),
+        "scoreable_fraction": scoreable_fraction,
+        "mismatched_sample_ids": mismatches,
     }

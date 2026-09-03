@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from reverse_reap.causal import CausalError, causal_gate_report, load_expert_set, score_response
+from reverse_reap.causal import (
+    CausalError,
+    causal_gate_report,
+    compare_deterministic_evaluations,
+    load_expert_set,
+    score_response,
+)
 from reverse_reap.datasets import normalize_sample
 from reverse_reap.evaluator import EvaluationResult
 
@@ -76,19 +82,29 @@ def write_results(path, condition, coding_passes, control_passes):
 def test_gate_d_applies_all_preregistered_thresholds(tmp_path):
     baseline = tmp_path / "baseline.jsonl"
     selected = tmp_path / "selected.jsonl"
+    replication_baseline = tmp_path / "replication-baseline.jsonl"
+    replication_selected = tmp_path / "replication-selected.jsonl"
     write_results(baseline, "C0", [True] * 10, [True] * 10)
     write_results(selected, "C2", [False] * 8 + [True] * 2, [False] + [True] * 9)
+    write_results(replication_baseline, "C0", [True] * 10, [True] * 10)
+    write_results(replication_selected, "C2", [False] * 7 + [True] * 3, [False] + [True] * 9)
     random_paths = []
     for index in range(20):
         path = tmp_path / f"random-{index}.jsonl"
         write_results(path, "C3", [False] * 2 + [True] * 8, [True] * 10)
         random_paths.append(path)
     report = causal_gate_report(
-        baseline, selected, random_paths, replication_direction_passed=True
+        baseline,
+        selected,
+        random_paths,
+        replication_baseline_path=replication_baseline,
+        replication_selected_path=replication_selected,
     )
     assert report["passed"]
     assert report["label"] == "coding-critical-v0"
     assert report["coding_drop"] == pytest.approx(0.8)
+    assert report["replication"]["coding_drop"] == pytest.approx(0.7)
+    assert len(report["coding_drop_95ci"]) == 2
 
 
 def test_expert_manifest_rejects_duplicate_identity(tmp_path):
@@ -96,3 +112,25 @@ def test_expert_manifest_rejects_duplicate_identity(tmp_path):
     path.write_text(json.dumps({"experts": [{"layer": 1, "expert": 2}] * 2}))
     with pytest.raises(CausalError, match="duplicate"):
         load_expert_set(path)
+
+
+def test_determinism_comparison_requires_exact_responses_and_95_percent_scoreable(tmp_path):
+    first, second = tmp_path / "first.jsonl", tmp_path / "second.jsonl"
+    rows = [
+        {
+            "sample_id": f"s-{index}",
+            "domain": "coding",
+            "response": "same",
+            "passed": True,
+            "scoreable": True,
+        }
+        for index in range(20)
+    ]
+    content = "".join(json.dumps(row) + "\n" for row in rows)
+    first.write_text(content)
+    second.write_text(content)
+    assert compare_deterministic_evaluations(first, second)["passed"]
+    changed = list(rows)
+    changed[0] = {**changed[0], "response": "different"}
+    second.write_text("".join(json.dumps(row) + "\n" for row in changed))
+    assert not compare_deterministic_evaluations(first, second)["passed"]

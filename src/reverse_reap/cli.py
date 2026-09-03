@@ -7,7 +7,11 @@ import json
 import subprocess
 from pathlib import Path
 
-from reverse_reap.causal import causal_gate_report, evaluate_condition
+from reverse_reap.causal import (
+    causal_gate_report,
+    compare_deterministic_evaluations,
+    evaluate_condition,
+)
 from reverse_reap.config import load_config
 from reverse_reap.controller import run_all, run_next, run_status
 from reverse_reap.extraction import (
@@ -116,7 +120,8 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("selected", type=Path)
     gate.add_argument("destination", type=Path)
     gate.add_argument("random", type=Path, nargs="+")
-    gate.add_argument("--replication-direction-passed", action="store_true")
+    gate.add_argument("--replication-baseline", type=Path)
+    gate.add_argument("--replication-selected", type=Path)
     bundle = subparsers.add_parser("build-bundle")
     bundle.add_argument("config", type=Path)
     bundle.add_argument("run_dir", type=Path)
@@ -133,6 +138,10 @@ def build_parser() -> argparse.ArgumentParser:
     weights = subparsers.add_parser("download-weights")
     weights.add_argument("preflight_report", type=Path)
     weights.add_argument("destination", type=Path)
+    compare = subparsers.add_parser("compare-evaluations")
+    compare.add_argument("first", type=Path)
+    compare.add_argument("second", type=Path)
+    compare.add_argument("--output", type=Path)
     return parser
 
 
@@ -245,7 +254,8 @@ def main() -> int:
             args.baseline,
             args.selected,
             args.random,
-            replication_direction_passed=args.replication_direction_passed,
+            replication_baseline_path=args.replication_baseline,
+            replication_selected_path=args.replication_selected,
         )
         emit_json(output, args.destination)
         return 0
@@ -269,6 +279,10 @@ def main() -> int:
         output = download_verified_weights(args.preflight_report, args.destination)
         emit_json(output)
         return 0
+    if args.command == "compare-evaluations":
+        output = compare_deterministic_evaluations(args.first, args.second)
+        emit_json(output, args.output)
+        return 0 if output["passed"] else 2
     raise AssertionError(f"unhandled command: {args.command}")
 
 
