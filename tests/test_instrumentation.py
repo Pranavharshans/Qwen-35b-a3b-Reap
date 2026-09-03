@@ -65,6 +65,29 @@ def test_mask_zeroes_only_selected_weighted_contribution_without_renormalizing()
     assert torch.allclose(masked_output + other_output, full)
 
 
+def test_instrumented_forward_matches_grouped_mm_accumulation():
+    """Regression: grouped_mm sums per-(token, rank) rows in fp32, not bf16 index_add_.
+
+    The eager per-expert loop with ``index_add_`` in low precision diverges from the
+    native ``grouped_mm`` kernel (reshape to [tokens, top_k, hidden] + fp32 sum),
+    which broke the exact-logit probe (max diff 0.6015625 on the pinned donor).
+    The observer must therefore never recompute the returned tensor; the native
+    forward always produces it.
+    """
+    torch.manual_seed(21)
+    experts = TinyExperts().to(torch.bfloat16)
+    hidden = torch.randn(4, 4, dtype=torch.bfloat16)
+    indices = torch.tensor([[0, 1], [2, 1], [0, 2], [1, 0]])
+    weights = torch.tensor(
+        [[0.6, 0.4], [0.3, 0.7], [0.5, 0.5], [0.8, 0.2]], dtype=torch.bfloat16
+    )
+    with torch.inference_mode():
+        expected = experts(hidden, indices, weights)
+        with instrument_qwen35(architecture(experts)):
+            actual = experts(hidden, indices, weights)
+    assert torch.equal(actual, expected)
+
+
 def test_observer_receives_exact_route_level_norm_matrix():
     torch.manual_seed(12)
     experts = TinyExperts()

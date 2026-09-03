@@ -46,10 +46,15 @@ def instrument_qwen35(
     masked: frozenset[tuple[int, int]] = frozenset(),
     observer: Any | None = None,
 ) -> Iterator[CaptureState]:
-    """Patch the reference expert path temporarily, restoring it even after failure.
+    """Observe the native expert path temporarily, restoring it even after failure.
 
-    The implementation mirrors the Qwen3.5 fused-expert loop, records the norm before
-    router weighting, and applies the primary v0 intervention after expert computation.
+    The native ``experts.forward`` (Transformers ``grouped_mm`` kernel under the
+    pinned ``_experts_implementation``) always computes the returned output, so
+    capture-on logits stay bitwise identical to capture-off. Routing rows and
+    pre-weighting expert-output norms are recomputed on a detached side path used
+    only for telemetry — never for the returned tensor. Masking replays the
+    weighted per-expert contributions on the side path with the selected
+    (layer, expert) contributions zeroed and without router renormalization.
     """
     import torch
     import torch.nn.functional as F
@@ -63,30 +68,43 @@ def instrument_qwen35(
         originals.append((experts, original))
 
         def forward(this: Any, hidden_states: Any, top_k_index: Any, top_k_weights: Any,
-                    *, _layer: int = layer_index) -> Any:
-            tokens, hidden = hidden_states.shape
+                    *, _layer: int = layer_index, _original: Any = original) -> Any:
+            final = _original(hidden_states, top_k_index, top_k_weights)
+            tokens = hidden_states.shape[0]
             top_k = top_k_index.shape[1]
-            final = torch.zeros_like(hidden_states)
-            norms = torch.zeros((tokens, top_k), dtype=torch.float64, device=hidden_states.device)
-            expert_mask = F.one_hot(
-                top_k_index, num_classes=architecture.num_experts
-            ).permute(2, 1, 0)
-            hit = torch.nonzero(expert_mask.sum(dim=(1, 2)), as_tuple=False).flatten()
-            for expert_tensor in hit:
-                expert = int(expert_tensor.item())
-                rank_indices, token_indices = torch.where(expert_mask[expert_tensor])
-                current = hidden_states[token_indices]
-                gate_up = F.linear(current, this.gate_up_proj[expert])
-                gate, up = gate_up.chunk(2, dim=-1)
-                current = this.act_fn(gate) * up
-                current = F.linear(current, this.down_proj[expert])
-                norms[token_indices, rank_indices] = torch.linalg.vector_norm(
-                    current.float(), dim=-1
-                ).double()
-                weighted = current * top_k_weights[token_indices, rank_indices, None]
-                if (_layer, expert) in masked:
-                    weighted = torch.zeros_like(weighted)
-                final.index_add_(0, token_indices, weighted.to(hidden_states.dtype))
+            with torch.no_grad():
+                expert_mask = F.one_hot(
+                    top_k_index, num_classes=architecture.num_experts
+                ).permute(2, 1, 0)
+                hit = torch.nonzero(
+                    expert_mask.sum(dim=(1, 2)), as_tuple=False
+                ).flatten()
+                norms = torch.zeros(
+                    (tokens, top_k), dtype=torch.float64, device=hidden_states.device
+                )
+                masked_total: Any | None = None
+                if masked:
+                    masked_total = torch.zeros_like(final)
+                for expert_tensor in hit:
+                    expert = int(expert_tensor.item())
+                    rank_indices, token_indices = torch.where(
+                        expert_mask[expert_tensor]
+                    )
+                    current = hidden_states[token_indices]
+                    gate_up = F.linear(current, this.gate_up_proj[expert])
+                    gate, up = gate_up.chunk(2, dim=-1)
+                    current = this.act_fn(gate) * up
+                    current = F.linear(current, this.down_proj[expert])
+                    norms[token_indices, rank_indices] = torch.linalg.vector_norm(
+                        current.float(), dim=-1
+                    ).double()
+                    if masked_total is not None and (_layer, expert) not in masked:
+                        weighted = current * top_k_weights[
+                            token_indices, rank_indices, None
+                        ]
+                        masked_total.index_add_(
+                            0, token_indices, weighted.to(final.dtype)
+                        )
 
             batch = RouterBatch(
                 top_k_index.detach().cpu().numpy().astype(np.int64, copy=False),
@@ -96,6 +114,8 @@ def instrument_qwen35(
             capture.accumulators[_layer].update(batch, norm_values)
             if observer is not None:
                 observer(_layer, batch, norm_values)
+            if masked_total is not None:
+                return masked_total
             return final
 
         experts.forward = types.MethodType(forward, experts)
