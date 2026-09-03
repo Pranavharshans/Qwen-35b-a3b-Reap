@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reverse-reap"
+version = "0.1.0"
+description = "Causal localization and lossless extraction of domain-critical MoE experts"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "jsonschema>=4.23,<5",
+  "numpy>=2.1,<3",
+  "pydantic>=2.10,<3",
+  "pyyaml>=6.0,<7",
+  "safetensors>=0.5,<1",
+]
+
+[project.optional-dependencies]
+gpu = [
+  "accelerate>=1.7,<2",
+  "datasets>=3.6,<5",
+  "torch>=2.7,<3",
+  "transformers>=5.5,<6",
+]
+dev = [
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+reverse-reap = "reverse_reap.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reverse_reap"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+

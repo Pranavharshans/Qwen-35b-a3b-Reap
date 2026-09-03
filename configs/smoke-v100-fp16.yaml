@@ -1,0 +1,30 @@
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: "0000000000000000000000000000000000000000"  # replace after metadata preflight
+  source_precision: bf16
+  execution_precision: fp16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 1
+  max_input_tokens: 1024
+  max_new_tokens: 1024
+  enable_thinking: false
+  use_cache: false
+  speculative_decoding: false
+budget:
+  max_gpu_hours: 4
+  max_cost_usd: 5
+  provider_rate_usd_per_hour: 1
+  storage_limit_gb: 250
+  deadline_utc: 2027-01-01T00:00:00Z
+datasets:
+  manifest: datasets/manifests/smoke.jsonl
+  split: smoke
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false

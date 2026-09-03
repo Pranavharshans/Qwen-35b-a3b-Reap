@@ -1,0 +1,27 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Models, datasets, and experiment outputs are never committed.
+artifacts/
+datasets/cache/
+models/
+runs/
+*.safetensors
+*.pt
+*.pth
+*.bin
+*.parquet
+
+# Keep only safe templates and tiny fixtures.
+!tests/fixtures/**
+

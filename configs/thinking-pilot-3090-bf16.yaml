@@ -1,0 +1,30 @@
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: "0000000000000000000000000000000000000000"  # replace after metadata preflight
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 1
+  max_input_tokens: 2048
+  max_new_tokens: 4096
+  enable_thinking: true
+  use_cache: true
+  speculative_decoding: false
+budget:
+  max_gpu_hours: 8
+  max_cost_usd: 10
+  provider_rate_usd_per_hour: 1
+  storage_limit_gb: 250
+  deadline_utc: 2027-01-01T00:00:00Z
+datasets:
+  manifest: datasets/manifests/thinking-pilot.jsonl
+  split: pilot
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false
