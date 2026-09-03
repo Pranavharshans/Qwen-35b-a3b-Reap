@@ -1,0 +1,15 @@
+tokenizer_configs:
+  - name: Qwen/Qwen3-30B-A3B
+    tokenizer_spec:
+      class_name: "helm.tokenizers.huggingface_tokenizer.HuggingFaceTokenizer"
+      args:
+        pretrained_model_name_or_path: Qwen/Qwen3-30B-A3B
+    end_of_text_token: "<|im_end|>"
+    prefix_token: "<|im_start|>"
+  - name: zai-org/GLM-4.5-Air
+    tokenizer_spec:
+      class_name: "helm.tokenizers.huggingface_tokenizer.HuggingFaceTokenizer"
+      args:
+        pretrained_model_name_or_path: zai-org/GLM-4.5-Air
+    end_of_text_token: "<eop>"
+    prefix_token: "<sop>"
