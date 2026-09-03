@@ -126,6 +126,18 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--permutation-iterations", type=int, default=1000)
     analyze.add_argument("--seed", type=int, default=20260903)
     analyze.add_argument("--cardinality-grid", type=int, nargs="+")
+    analyze.add_argument(
+        "--engine",
+        choices=("fast", "reference"),
+        default="fast",
+        help="analysis engine: vectorized streaming (fast) or dict-based reference oracle",
+    )
+    analyze.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="directory for the telemetry-SHA-keyed aggregate cache (default .cache/analysis)",
+    )
     extract = subparsers.add_parser("extract")
     extract.add_argument("config", type=Path)
     extract.add_argument("model_path", type=Path)
@@ -287,6 +299,8 @@ def main() -> int:
             cardinality_grid=(
                 tuple(args.cardinality_grid) if args.cardinality_grid is not None else None
             ),
+            engine=args.engine,
+            cache_dir=args.cache_dir,
         )
         emit_json(output)
         return 0

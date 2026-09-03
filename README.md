@@ -33,6 +33,38 @@ UV_CACHE_DIR=/tmp/reverse-reap-uv-cache uv run ruff check src tests scripts
 The Torch instrumentation module is skipped when the local environment has no Torch. A
 hardware-free pass therefore does not prove exact-checkpoint compatibility.
 
+## CPU analysis engines
+
+The `analyze` stage has two engines with identical scientific semantics
+(Gate C rule, permutation guard, fail-closed behavior, frozen artifacts):
+
+- `--engine fast` (default): one-pass streaming aggregation into a compact
+  per-(sample, layer, expert) table, a telemetry-SHA-256-keyed aggregate cache
+  (`.cache/analysis/<sha>.npz`, reused only on an exact hash and metadata
+  match), and vectorized NumPy bootstrap/permutation inference with one shared
+  replicate loop across the whole cardinality grid.
+- `--engine reference`: the original dict-based implementation, preserved as a
+  scientific oracle.
+
+```bash
+uv run reverse-reap analyze telemetry.jsonl out/ --engine fast
+uv run reverse-reap analyze telemetry.jsonl out/ --engine reference
+uv run python scripts/benchmark_analysis.py --telemetry telemetry.jsonl \
+    --output /tmp/analysis-bench --top-n 8 --grid 4 8 16
+```
+
+Equivalence is enforced by `tests/test_analysis_optimized.py`: expert
+identities and ordering, bootstrap Jaccards (exactly equal) and intervals,
+permutation null multisets and p-values, cardinality-grid decisions, candidate
+and control memberships, determinism under a fixed seed, and fail-closed
+parity. Known float-level limitations, documented there and in
+`src/reverse_reap/analysis_fast.py`: floating-point summation order (NumPy
+`bincount` versus per-key `np.mean`) can move boundary-tie comparisons by
+~1e-16 on exactly symmetric fixtures, and the reference's
+`unique_null_statistics` diagnostic can split mathematical ties into last-bit
+variants that the vectorized engine collapses; real telemetry shows neither
+effect.
+
 ## Cheapest execution sequence
 
 Use a provisioned four-RTX-3090 host with at least 100 GB free for model files and more space
