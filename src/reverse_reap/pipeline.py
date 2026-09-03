@@ -137,6 +137,8 @@ def analyze_telemetry(
         (item["layer"], item["expert"]): item for item in permutation["expert_p_values"]
     }
     for row in ranking:
+        if not row.get("observed", True):
+            continue  # unranked single-domain experts carry no interval or p-value
         key = (row["layer"], row["expert"])
         interval = intervals[key]
         row["differential_bootstrap_95ci"] = [interval["low"], interval["high"]]
