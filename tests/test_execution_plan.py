@@ -12,6 +12,7 @@ def test_smoke_execution_plan_is_valid_and_dependency_complete():
         "instrumentation-probe",
         "telemetry-smoke",
         "candidate-analysis",
+        "single-expert-intervention-probe",
         "baseline-validation",
         "selected-ablation-validation",
         "extract-candidates",

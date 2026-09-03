@@ -330,3 +330,68 @@ def probe_instrumentation(
         and routed
         == ids.numel() * architecture.num_layers * architecture.experts_per_token,
     }
+
+
+def probe_single_expert_intervention(
+    model_path: Path,
+    manifest_path: Path,
+    candidate_manifest_path: Path,
+    config: ExperimentConfig,
+    *,
+    split: str = "selection",
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Prove one real routed expert can be zeroed without changing no-op execution."""
+    import torch
+
+    candidates = json.loads(candidate_manifest_path.read_text(encoding="utf-8"))
+    experts = candidates.get("experts")
+    if not isinstance(experts, list) or not experts:
+        raise RuntimeCompatibilityError("candidate manifest contains no experts")
+    target = (int(experts[0]["layer"]), int(experts[0]["expert"]))
+    model, tokenizer = load_donor(model_path, config)
+    architecture = inspect_qwen35_moe(model)
+    validate_donor_contract(model, architecture)
+    samples = balanced_subset(
+        [sample for sample in load_manifest(manifest_path) if sample.split == split], limit
+    )
+    for sample in samples:
+        _, ids = _render_ids(tokenizer, sample, config.runtime.enable_thinking)
+        ids = ids[:, : config.runtime.max_input_tokens]
+        device = model.get_input_embeddings().weight.device
+        ids = ids.to(device)
+        attention_mask = torch.ones_like(ids)
+        with torch.inference_mode():
+            baseline = model(input_ids=ids, attention_mask=attention_mask, use_cache=False).logits
+            with instrument_qwen35(architecture) as capture:
+                noop = model(input_ids=ids, attention_mask=attention_mask, use_cache=False).logits
+        if not torch.equal(baseline, noop):
+            return {
+                "passed": False,
+                "reason": "no-op instrumentation changed logits",
+                "sample_id": sample.sample_id,
+                "target": {"layer": target[0], "expert": target[1]},
+            }
+        routed_count = int(capture.accumulators[target[0]].count[target[1]])
+        if not routed_count:
+            continue
+        with torch.inference_mode(), instrument_qwen35(
+            architecture, masked=frozenset({target})
+        ):
+            masked = model(input_ids=ids, attention_mask=attention_mask, use_cache=False).logits
+        maximum_difference = float((baseline.float() - masked.float()).abs().max().item())
+        return {
+            "passed": maximum_difference > 0,
+            "sample_id": sample.sample_id,
+            "target": {"layer": target[0], "expert": target[1]},
+            "routed_count": routed_count,
+            "noop_logits_exact": True,
+            "masked_logits_changed": maximum_difference > 0,
+            "maximum_masked_logit_difference": maximum_difference,
+            "semantics": "zero-weighted-contribution-without-router-renormalization",
+        }
+    return {
+        "passed": False,
+        "reason": f"target expert was not routed in {len(samples)} bounded samples",
+        "target": {"layer": target[0], "expert": target[1]},
+    }

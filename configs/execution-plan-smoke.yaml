@@ -84,6 +84,18 @@ tasks:
     estimated_storage_gb: 1
     failure_behavior: retry
 
+  - task_id: single-expert-intervention-probe
+    objective: Prove one routed candidate can be zeroed with exact no-op semantics.
+    definition_of_done: One real routed sample has bit-exact no-op logits and changed masked logits.
+    command: [reverse-reap, probe-intervention, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke.jsonl, runs/smoke/analysis/candidate-manifest.json, runs/smoke/intervention-probe.json, --split, selection, --limit, "20"]
+    validation_command: [python, scripts/validate_artifact.py, probe, runs/smoke/intervention-probe.json]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke.jsonl, runs/smoke/analysis/candidate-manifest.json]
+    outputs: [runs/smoke/intervention-probe.json]
+    dependencies: [candidate-analysis]
+    estimated_gpu_hours: 0.25
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
+
   - task_id: selected-ablation-validation
     objective: Evaluate the frozen candidate set with zero contribution and no router renormalization.
     definition_of_done: Selected-set results contain the same requested validation sample identities.
@@ -91,7 +103,7 @@ tasks:
     validation_command: [python, scripts/validate_artifact.py, dataset, runs/smoke/selected-validation.jsonl]
     inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke.jsonl, runs/smoke/analysis/candidate-manifest.json]
     outputs: [runs/smoke/selected-validation.jsonl]
-    dependencies: [candidate-analysis, baseline-validation]
+    dependencies: [single-expert-intervention-probe, baseline-validation]
     estimated_gpu_hours: 0.75
     estimated_storage_gb: 1
     failure_behavior: retry

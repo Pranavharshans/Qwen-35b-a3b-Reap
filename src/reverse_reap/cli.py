@@ -24,7 +24,11 @@ from reverse_reap.model_preflight import download_verified_weights, preflight_mo
 from reverse_reap.pipeline import analyze_telemetry
 from reverse_reap.plans import write_full_plan
 from reverse_reap.reporting import build_run_bundle
-from reverse_reap.runtime import capture_manifest, probe_instrumentation
+from reverse_reap.runtime import (
+    capture_manifest,
+    probe_instrumentation,
+    probe_single_expert_intervention,
+)
 from reverse_reap.sources import fetch_and_freeze
 from reverse_reap.telemetry import merge_telemetry, validate_telemetry
 
@@ -89,6 +93,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt", default="Write a Python function that returns the sum of two integers."
     )
     probe.add_argument("--output", type=Path)
+    intervention_probe = subparsers.add_parser("probe-intervention")
+    intervention_probe.add_argument("config", type=Path)
+    intervention_probe.add_argument("model_path", type=Path)
+    intervention_probe.add_argument("dataset_manifest", type=Path)
+    intervention_probe.add_argument("candidate_manifest", type=Path)
+    intervention_probe.add_argument("output", type=Path)
+    intervention_probe.add_argument("--split", default="selection")
+    intervention_probe.add_argument("--limit", type=int, default=20)
     fetch = subparsers.add_parser("fetch-datasets")
     fetch.add_argument("catalog", type=Path)
     fetch.add_argument("destination", type=Path)
@@ -203,6 +215,17 @@ def main() -> int:
         return 0
     if args.command == "probe":
         output = probe_instrumentation(args.model_path, load_config(args.config), args.prompt)
+        emit_json(output, args.output)
+        return 0 if output["passed"] else 3
+    if args.command == "probe-intervention":
+        output = probe_single_expert_intervention(
+            args.model_path,
+            args.dataset_manifest,
+            args.candidate_manifest,
+            load_config(args.config),
+            split=args.split,
+            limit=args.limit,
+        )
         emit_json(output, args.output)
         return 0 if output["passed"] else 3
     if args.command == "fetch-datasets":

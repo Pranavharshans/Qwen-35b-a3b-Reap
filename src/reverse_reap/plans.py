@@ -170,6 +170,30 @@ def build_full_plan(
             failure="terminal",
         )
     )
+    intervention_probe = f"{run_dir}/intervention-probe.json"
+    tasks.append(
+        _task(
+            "single-expert-intervention-probe",
+            "Prove one routed candidate can be zeroed with exact no-op semantics.",
+            "A routed real-donor sample has bit-exact no-op logits and changed masked logits.",
+            [
+                rr,
+                "probe-intervention",
+                pinned_config,
+                model,
+                dataset_manifest,
+                f"{analysis}/candidate-manifest.json",
+                intervention_probe,
+            ],
+            ["python", "scripts/validate_artifact.py", "probe", intervention_probe],
+            [intervention_probe],
+            inputs=[pinned_config, dataset_manifest, f"{analysis}/candidate-manifest.json"],
+            dependencies=["candidate-analysis"],
+            gpu_hours=0.5,
+            storage_gb=1,
+            run_if=gate_c,
+        )
+    )
     for suffix in ("a", "b"):
         tasks.append(
             _task(
@@ -256,7 +280,7 @@ def build_full_plan(
             ["python", "scripts/validate_artifact.py", "dataset", selected_validation],
             [selected_validation],
             inputs=[pinned_config, dataset_manifest, f"{analysis}/candidate-manifest.json"],
-            dependencies=["candidate-analysis", "baseline-determinism"],
+            dependencies=["single-expert-intervention-probe", "baseline-determinism"],
             gpu_hours=8,
             storage_gb=3,
             run_if=gate_c,
