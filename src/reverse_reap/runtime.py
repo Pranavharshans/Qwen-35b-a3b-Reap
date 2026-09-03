@@ -112,35 +112,53 @@ def environment_report() -> dict[str, Any]:
     }
 
 
-def _render_ids(tokenizer: Any, sample: NormalizedSample, enable_thinking: bool) -> tuple[Any, Any]:
+def _chat_ids(tokenizer: Any, messages: list[dict[str, str]], *, enable_thinking: bool) -> Any:
+    """Render a chat as a [1, T] long tensor across transformers return-type changes.
+
+    transformers >= 5 returns a BatchEncoding from apply_chat_template with
+    return_tensors="pt"; older versions returned a bare tensor. Normalize to a
+    tensor here so downstream shape/prefix logic is version-independent.
+    """
     import torch
 
-    messages = [{"role": "user", "content": sample.prompt}]
-    prompt = tokenizer.apply_chat_template(
+    rendered = tokenizer.apply_chat_template(
         messages,
         tokenize=True,
         add_generation_prompt=True,
         return_tensors="pt",
         enable_thinking=enable_thinking,
     )
+    if not isinstance(rendered, torch.Tensor):
+        rendered = rendered["input_ids"]
+    return rendered.to(dtype=torch.long)
+
+
+def _render_ids(tokenizer: Any, sample: NormalizedSample, enable_thinking: bool) -> tuple[Any, Any]:
+    import torch
+
+    messages = [{"role": "user", "content": sample.prompt}]
+    prompt = _chat_ids(tokenizer, messages, enable_thinking=enable_thinking)
     if sample.reference is None:
         raise RuntimeCompatibilityError(
             f"sample {sample.sample_id} has no teacher-forced reference"
         )
-    full = tokenizer.apply_chat_template(
+    rendered_full = tokenizer.apply_chat_template(
         [*messages, {"role": "assistant", "content": sample.reference}],
         tokenize=True,
         add_generation_prompt=False,
         return_tensors="pt",
         enable_thinking=enable_thinking,
     )
+    if not isinstance(rendered_full, torch.Tensor):
+        rendered_full = rendered_full["input_ids"]
+    full = rendered_full.to(dtype=torch.long)
     if full.shape[1] < prompt.shape[1]:
         raise RuntimeCompatibilityError("full teacher-forced sequence is shorter than prompt")
     if not torch.equal(full[:, : prompt.shape[1]], prompt):
         raise RuntimeCompatibilityError(
             "teacher-forced sequence does not preserve the prompt prefix"
         )
-    return prompt.to(dtype=torch.long), full.to(dtype=torch.long)
+    return prompt, full
 
 
 def _run_capture(

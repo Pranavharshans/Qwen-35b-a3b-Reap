@@ -7,7 +7,13 @@ from reverse_reap.datasets import normalize_sample
 from reverse_reap.instrumentation import CaptureState
 from reverse_reap.qwen35 import Qwen35Architecture
 from reverse_reap.routing import RouterBatch
-from reverse_reap.runtime import RuntimeCompatibilityError, _segment_rows, validate_donor_contract
+from reverse_reap.runtime import (
+    RuntimeCompatibilityError,
+    _chat_ids,
+    _render_ids,
+    _segment_rows,
+    validate_donor_contract,
+)
 
 
 def architecture(num_layers=40):
@@ -64,3 +70,48 @@ def test_segment_subtraction_recovers_completion_only_statistics():
     assert {(row["expert"], row["routed_count"]) for row in completion} == {(1, 1), (2, 1)}
     expert_one = next(row for row in completion if row["expert"] == 1)
     assert expert_one["reap_saliency"] == pytest.approx(2.8)
+
+
+class _ListTokenizer:
+    """Mimics transformers>=5: apply_chat_template returns a BatchEncoding-like."""
+
+    def __init__(self, prompt_ids, full_ids):
+        self._prompt_ids = prompt_ids
+        self._full_ids = full_ids
+
+    def apply_chat_template(self, messages, **kwargs):
+        assert kwargs.get("return_tensors") == "pt"
+        if len(messages) == 2:
+            return {"input_ids": self._full_ids}
+        return {"input_ids": self._prompt_ids}
+
+
+def _sample():
+    return normalize_sample(
+        {
+            "source": "fixture",
+            "source_revision": "abc",
+            "source_id": "chat",
+            "domain": "coding",
+            "stratum": "synthesis",
+            "language": "python",
+            "prompt": "write code",
+            "reference": "pass",
+            "scorer": "exact_match",
+        },
+        seed=1,
+    )
+
+
+def test_chat_ids_accepts_batch_encoding_return():
+    torch = pytest.importorskip("torch")
+    prompt = torch.tensor([[1, 2, 3]])
+    full = torch.tensor([[1, 2, 3, 4]])
+    tokenizer = _ListTokenizer(prompt, full)
+    rendered_prompt = _chat_ids(
+        tokenizer, [{"role": "user", "content": "write code"}], enable_thinking=False
+    )
+    assert torch.equal(rendered_prompt, prompt)
+    rendered_prompt, rendered_full = _render_ids(tokenizer, _sample(), False)
+    assert torch.equal(rendered_prompt, prompt)
+    assert torch.equal(rendered_full, full)

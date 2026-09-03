@@ -111,7 +111,11 @@ def _generate(
         return_tensors="pt",
         enable_thinking=config.runtime.enable_thinking,
     )
-    ids = ids.to(model.get_input_embeddings().weight.device)
+    if not isinstance(ids, torch.Tensor):
+        ids = ids["input_ids"]
+    ids = ids.to(
+        dtype=torch.long, device=model.get_input_embeddings().weight.device
+    )
     with torch.inference_mode():
         output = model.generate(
             input_ids=ids,
