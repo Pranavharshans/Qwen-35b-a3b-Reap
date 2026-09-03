@@ -1,12 +1,19 @@
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import yaml
 
 from reverse_reap.config import ExperimentConfig
-from reverse_reap.controller import ControllerError, consumed_gpu_hours, expand_command, run_next
-from reverse_reap.state import Status, load_state
+from reverse_reap.controller import (
+    ControllerError,
+    consumed_gpu_hours,
+    expand_command,
+    recover_stale_tasks,
+    run_all,
+    run_next,
+)
+from reverse_reap.state import RunState, Status, atomic_write_state, load_state
 
 
 def config():
@@ -98,3 +105,32 @@ def test_command_environment_expansion_is_fail_closed(monkeypatch):
     assert expand_command(["command", "${REVERSE_REAP_TEST_VALUE}"]) == ["command", "resolved"]
     with pytest.raises(ControllerError, match="unresolved"):
         expand_command(["command", "${REVERSE_REAP_MISSING_VALUE}"])
+
+
+def test_recovers_stale_dead_process_for_bounded_retry(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state = RunState(run_id="fixture", task_id="stale", config_sha256="a" * 64)
+    state.transition(Status.PREFLIGHTED)
+    state.transition(Status.RUNNING)
+    state.heartbeat_at_utc = datetime.now(UTC) - timedelta(minutes=10)
+    state.process_id = 999999
+    atomic_write_state(state_dir / "stale.json", state)
+    monkeypatch.setattr("reverse_reap.controller._pid_alive", lambda process_id: False)
+    assert recover_stale_tasks(state_dir, stale_after_seconds=60) == ["stale"]
+    recovered = load_state(state_dir / "stale.json")
+    assert recovered.status == Status.FAILED_RETRYABLE
+    assert recovered.attempt == 1
+
+
+def test_run_all_completes_the_whole_plan(tmp_path):
+    first, second = tmp_path / "first.txt", tmp_path / "second.txt"
+    plan = write_plan(tmp_path, [task("first", first), task("second", second, ["first"])])
+    result = run_all(
+        plan,
+        config(),
+        tmp_path / "state",
+        run_id="fixture",
+        heartbeat_seconds=0.01,
+    )
+    assert result["status"] == "COMPLETE"
+    assert result["completed_this_run"] == ["first", "second"]

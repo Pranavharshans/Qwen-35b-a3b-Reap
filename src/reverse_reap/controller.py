@@ -7,7 +7,7 @@ import hashlib
 import os
 import subprocess
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -107,13 +107,99 @@ def _run_with_heartbeat(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log:
         process = subprocess.Popen(expand_command(command), stdout=log, stderr=subprocess.STDOUT)
+        state.process_id = process.pid
+        state.heartbeat_at_utc = datetime.now(UTC)
+        atomic_write_state(state_path, state)
         while True:
             try:
-                return process.wait(timeout=interval)
+                exit_code = process.wait(timeout=interval)
+                state.process_id = None
+                return exit_code
             except subprocess.TimeoutExpired:
                 state.heartbeat_at_utc = datetime.now(UTC)
                 state.updated_at_utc = state.heartbeat_at_utc
                 atomic_write_state(state_path, state)
+
+
+def _pid_alive(process_id: int | None) -> bool:
+    if process_id is None:
+        return False
+    try:
+        os.kill(process_id, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def recover_stale_tasks(state_dir: Path, *, stale_after_seconds: float) -> list[str]:
+    recovered = []
+    cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+    for path in state_dir.glob("*.json"):
+        state = load_state(path)
+        heartbeat = state.heartbeat_at_utc or state.updated_at_utc
+        if state.status != Status.RUNNING or heartbeat >= cutoff:
+            continue
+        if _pid_alive(state.process_id):
+            raise ControllerError(
+                f"task {state.task_id} has a stale heartbeat but process "
+                f"{state.process_id} is alive"
+            )
+        state.process_id = None
+        try:
+            state.register_retry("stale-dead-process")
+        except ValueError:
+            state.transition(Status.FAILED_TERMINAL)
+        else:
+            state.transition(Status.FAILED_RETRYABLE)
+            recovered.append(state.task_id)
+        atomic_write_state(path, state)
+    return recovered
+
+
+def run_status(state_dir: Path) -> dict[str, Any]:
+    states = [load_state(path) for path in sorted(state_dir.glob("*.json"))]
+    return {
+        "tasks": [
+            {
+                "task_id": state.task_id,
+                "status": state.status,
+                "attempt": state.attempt,
+                "heartbeat_at_utc": state.heartbeat_at_utc,
+                "process_id": state.process_id,
+                "failure_signature": state.failure_signature,
+            }
+            for state in states
+        ],
+        "consumed_gpu_hours": consumed_gpu_hours(state_dir),
+    }
+
+
+def run_all(
+    plan_path: Path,
+    config: ExperimentConfig,
+    state_dir: Path,
+    *,
+    run_id: str,
+    heartbeat_seconds: float = 30,
+    stale_after_seconds: float = 180,
+) -> dict[str, Any]:
+    """Recover safely and run eligible tasks until completion or a terminal state."""
+    recover_stale_tasks(state_dir, stale_after_seconds=stale_after_seconds)
+    completed = []
+    while True:
+        result = run_next(
+            plan_path,
+            config,
+            state_dir,
+            run_id=run_id,
+            heartbeat_seconds=heartbeat_seconds,
+        )
+        if result.get("task_id") and result["status"] == Status.COMPLETE:
+            completed.append(result["task_id"])
+            continue
+        if result["status"] == Status.FAILED_RETRYABLE:
+            continue
+        return {"status": result["status"], "completed_this_run": completed, "last": result}
 def run_next(
     plan_path: Path,
     config: ExperimentConfig,

@@ -66,6 +66,7 @@ class RunState(BaseModel):
     validation_command: list[str] | None = None
     validation_exit_code: int | None = None
     next_permitted_task: str | None = None
+    process_id: int | None = Field(default=None, ge=1)
     updated_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def transition(self, target: Status) -> None:

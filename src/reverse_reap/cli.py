@@ -9,7 +9,7 @@ from pathlib import Path
 
 from reverse_reap.causal import causal_gate_report, evaluate_condition
 from reverse_reap.config import load_config
-from reverse_reap.controller import run_next
+from reverse_reap.controller import run_all, run_next, run_status
 from reverse_reap.extraction import (
     architecture_from_weight_index,
     extract_experts,
@@ -41,7 +41,7 @@ def validate_config(path: Path) -> int:
 
 
 def emit_json(output: object, destination: Path | None = None) -> None:
-    rendered = json.dumps(output, indent=2, sort_keys=True) + "\n"
+    rendered = json.dumps(output, indent=2, sort_keys=True, default=str) + "\n"
     print(rendered, end="")
     if destination:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("plan", type=Path)
     run.add_argument("state_dir", type=Path)
     run.add_argument("--heartbeat-seconds", type=float, default=30)
+    run_all_parser = subparsers.add_parser("run-all")
+    run_all_parser.add_argument("config", type=Path)
+    run_all_parser.add_argument("plan", type=Path)
+    run_all_parser.add_argument("state_dir", type=Path)
+    run_all_parser.add_argument("--heartbeat-seconds", type=float, default=30)
+    run_all_parser.add_argument("--stale-after-seconds", type=float, default=180)
+    status = subparsers.add_parser("status")
+    status.add_argument("state_dir", type=Path)
     capture = subparsers.add_parser("capture")
     capture.add_argument("config", type=Path)
     capture.add_argument("model_path", type=Path)
@@ -125,6 +133,21 @@ def main() -> int:
         )
         emit_json(output)
         return 0 if output["status"] == "COMPLETE" else 2
+    if args.command == "run-all":
+        config = load_config(args.config)
+        output = run_all(
+            args.plan,
+            config,
+            args.state_dir,
+            run_id=config.run_id or config.resolve_run_id(git_sha()),
+            heartbeat_seconds=args.heartbeat_seconds,
+            stale_after_seconds=args.stale_after_seconds,
+        )
+        emit_json(output)
+        return 0 if output["status"] == "COMPLETE" else 2
+    if args.command == "status":
+        emit_json(run_status(args.state_dir))
+        return 0
     if args.command == "capture":
         output = capture_manifest(
             args.model_path,
