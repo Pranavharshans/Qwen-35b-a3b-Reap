@@ -14,7 +14,7 @@ from reverse_reap.causal import (
 )
 from reverse_reap.config import load_config
 from reverse_reap.controller import run_all, run_next, run_status
-from reverse_reap.datasets import freeze_tiers
+from reverse_reap.datasets import audit_manifest_token_lengths, freeze_tiers
 from reverse_reap.extraction import (
     architecture_from_weight_index,
     extract_experts,
@@ -107,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     tiers = subparsers.add_parser("freeze-dataset-tiers")
     tiers.add_argument("full_manifest", type=Path)
     tiers.add_argument("destination_dir", type=Path)
+    lengths = subparsers.add_parser("audit-token-lengths")
+    lengths.add_argument("manifest", type=Path)
+    lengths.add_argument("tokenizer_path", type=Path)
+    lengths.add_argument("output", type=Path)
+    lengths.add_argument("--max-input-tokens", type=int, required=True)
     analyze = subparsers.add_parser("analyze")
     analyze.add_argument("telemetry", type=Path)
     analyze.add_argument("output_dir", type=Path)
@@ -235,6 +240,14 @@ def main() -> int:
     if args.command == "freeze-dataset-tiers":
         emit_json(freeze_tiers(args.full_manifest, args.destination_dir))
         return 0
+    if args.command == "audit-token-lengths":
+        output = audit_manifest_token_lengths(
+            args.manifest,
+            args.tokenizer_path,
+            max_input_tokens=args.max_input_tokens,
+        )
+        emit_json(output, args.output)
+        return 0 if output["passed"] else 2
     if args.command == "analyze":
         output = analyze_telemetry(
             args.telemetry,

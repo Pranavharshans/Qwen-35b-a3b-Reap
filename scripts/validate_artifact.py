@@ -16,7 +16,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "kind",
-        choices=["preflight", "probe", "dataset", "candidate", "causal", "extraction"],
+        choices=[
+            "preflight",
+            "probe",
+            "dataset",
+            "dataset-lengths",
+            "candidate",
+            "causal",
+            "extraction",
+        ],
     )
     parser.add_argument("path", type=Path)
     parser.add_argument("--require-gate-pass", action="store_true")
@@ -26,7 +34,7 @@ def main() -> int:
         return 0 if rows else 2
     value = read_json(args.path)
     passed = True
-    if args.kind in {"preflight", "probe"}:
+    if args.kind in {"preflight", "probe", "dataset-lengths"}:
         passed = value.get("passed") is True
     elif args.kind == "candidate":
         passed = bool(value.get("experts")) and (

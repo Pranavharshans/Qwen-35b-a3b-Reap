@@ -7,6 +7,7 @@ def test_full_plan_contains_all_frozen_controls_and_replication_after_validation
     random_ids = {f"layer-random-{index:03d}" for index in range(20)}
     assert random_ids <= by_id.keys()
     assert "single-expert-intervention-probe" in by_id
+    assert "dataset-token-length-audit" in by_id
     assert "single-expert-intervention-probe" in by_id["selected-validation"].dependencies
     assert random_ids <= set(by_id["baseline-replication"].dependencies)
     assert random_ids <= set(by_id["selected-replication"].dependencies)

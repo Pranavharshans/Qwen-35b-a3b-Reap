@@ -9,6 +9,7 @@ def test_smoke_execution_plan_is_valid_and_dependency_complete():
     assert plan.tasks[0].task_id == "gpu-preflight"
     assert {task.task_id for task in plan.tasks} >= {
         "dataset-freeze",
+        "dataset-token-length-audit",
         "instrumentation-probe",
         "telemetry-smoke",
         "candidate-analysis",

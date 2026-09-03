@@ -11,6 +11,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 from pydantic import Field, model_validator
 
 from reverse_reap.config import StrictModel
@@ -269,3 +270,68 @@ def freeze_tiers(full_manifest: Path, destination_dir: Path) -> dict[str, Any]:
         reports[tier] = freeze_manifest(selected, path)
         previous_ids = selected_ids
     return {"schema_version": 1, "tiers": reports}
+
+
+def token_length_report(
+    samples: list[NormalizedSample], tokenizer: Any, *, max_input_tokens: int
+) -> dict[str, Any]:
+    """Measure exact tokenizer lengths and enforce predeclared coding/control balance gates."""
+    lengths: dict[str, list[int]] = {"coding": [], "control": []}
+    strata: dict[str, list[int]] = {}
+    for sample in samples:
+        token_ids = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+        length = len(token_ids)
+        lengths[sample.domain].append(length)
+        strata.setdefault(f"{sample.domain}:{sample.stratum}", []).append(length)
+    if not lengths["coding"] or not lengths["control"]:
+        raise DatasetError("token-length audit requires both coding and control samples")
+
+    def summary(values: list[int]) -> dict[str, float | int]:
+        array = np.asarray(values, dtype=np.float64)
+        return {
+            "count": len(values),
+            "min": int(array.min()),
+            "median": float(np.median(array)),
+            "p90": float(np.percentile(array, 90)),
+            "max": int(array.max()),
+            "over_max_input_fraction": float(np.mean(array > max_input_tokens)),
+        }
+
+    domain = {key: summary(value) for key, value in lengths.items()}
+    median_ratio = max(domain["coding"]["median"], domain["control"]["median"]) / max(
+        1.0, min(domain["coding"]["median"], domain["control"]["median"])
+    )
+    p90_ratio = max(domain["coding"]["p90"], domain["control"]["p90"]) / max(
+        1.0, min(domain["coding"]["p90"], domain["control"]["p90"])
+    )
+    criteria = {
+        "median_ratio_at_most_2_5": median_ratio <= 2.5,
+        "p90_ratio_at_most_3_0": p90_ratio <= 3.0,
+        "overlength_fraction_at_most_0_05": all(
+            value["over_max_input_fraction"] <= 0.05 for value in domain.values()
+        ),
+    }
+    return {
+        "schema_version": 1,
+        "passed": all(criteria.values()),
+        "tokenizer_length_semantics": "prompt-only-add_special_tokens-false",
+        "max_input_tokens": max_input_tokens,
+        "domains": domain,
+        "strata": {key: summary(value) for key, value in sorted(strata.items())},
+        "median_ratio": median_ratio,
+        "p90_ratio": p90_ratio,
+        "criteria": criteria,
+    }
+
+
+def audit_manifest_token_lengths(
+    manifest: Path, tokenizer_path: Path, *, max_input_tokens: int
+) -> dict[str, Any]:
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(tokenizer_path), local_files_only=True, trust_remote_code=False
+    )
+    return token_length_report(
+        load_manifest(manifest), tokenizer, max_input_tokens=max_input_tokens
+    )

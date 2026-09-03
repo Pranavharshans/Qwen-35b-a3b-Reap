@@ -48,6 +48,18 @@ tasks:
     estimated_storage_gb: 0.1
     failure_behavior: terminal
 
+  - task_id: dataset-token-length-audit
+    objective: Measure exact Qwen-tokenizer prompt lengths before attribution.
+    definition_of_done: Coding/control median, tail, and truncation balance gates pass.
+    command: [reverse-reap, audit-token-lengths, datasets/manifests/smoke.jsonl, /models/qwen, runs/smoke/dataset-token-lengths.json, --max-input-tokens, "1024"]
+    validation_command: [python, scripts/validate_artifact.py, dataset-lengths, runs/smoke/dataset-token-lengths.json]
+    inputs: [datasets/manifests/smoke.jsonl]
+    outputs: [runs/smoke/dataset-token-lengths.json]
+    dependencies: [dataset-tiers, gpu-preflight]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
+
   - task_id: telemetry-smoke
     objective: Capture streaming prompt, completion, and joint REAP statistics for twenty samples.
     definition_of_done: Token-level telemetry passes exact row-count, identity, and numeric invariants.
@@ -55,7 +67,7 @@ tasks:
     validation_command: [reverse-reap, validate-telemetry, runs/smoke/telemetry.jsonl, --output, runs/smoke/telemetry-validation.json]
     inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke.jsonl]
     outputs: [runs/smoke/telemetry.jsonl, runs/smoke/telemetry-validation.json]
-    dependencies: [instrumentation-probe, dataset-tiers]
+    dependencies: [instrumentation-probe, dataset-tiers, dataset-token-length-audit]
     estimated_gpu_hours: 1.5
     estimated_storage_gb: 1
     failure_behavior: retry

@@ -92,6 +92,30 @@ def build_full_plan(
             failure="terminal",
         ),
     ]
+    length_report = f"{run_dir}/dataset-token-lengths.json"
+    tasks.insert(
+        2,
+        _task(
+            "dataset-token-length-audit",
+            "Measure exact Qwen-tokenizer prompt lengths before attribution.",
+            "Coding/control median, tail, and truncation balance gates pass.",
+            [
+                rr,
+                "audit-token-lengths",
+                dataset_manifest,
+                model,
+                length_report,
+                "--max-input-tokens",
+                "1024",
+            ],
+            ["python", "scripts/validate_artifact.py", "dataset-lengths", length_report],
+            [length_report],
+            inputs=[dataset_manifest],
+            dependencies=["dataset-freeze", "gpu-preflight"],
+            storage_gb=1,
+            failure="terminal",
+        ),
+    )
     for split in ("calibration", "selection"):
         task_id = f"telemetry-{split}"
         path = f"{run_dir}/telemetry-{split}.jsonl"
@@ -105,7 +129,11 @@ def build_full_plan(
                 [rr, "validate-telemetry", path, "--output", report],
                 [path, report],
                 inputs=[pinned_config, dataset_manifest],
-                dependencies=["instrumentation-probe", "dataset-freeze"],
+                dependencies=[
+                    "instrumentation-probe",
+                    "dataset-freeze",
+                    "dataset-token-length-audit",
+                ],
                 gpu_hours=12,
                 storage_gb=30,
             )

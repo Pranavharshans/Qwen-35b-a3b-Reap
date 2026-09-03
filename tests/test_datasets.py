@@ -12,6 +12,7 @@ from reverse_reap.datasets import (
     freeze_tiers,
     load_manifest,
     normalize_sample,
+    token_length_report,
 )
 
 
@@ -108,3 +109,18 @@ def test_limited_subset_balances_domains_and_rotates_strata():
     selected = balanced_subset(samples, 8)
     assert [item.domain for item in selected] == ["coding", "control"] * 4
     assert {item.stratum for item in selected} == {"a", "b"}
+
+
+def test_token_length_report_uses_exact_tokenizer_and_rejects_gross_mismatch():
+    class Tokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            return {"input_ids": text.split()}
+
+    coding = normalize_sample(raw("c", "one two three four", "coding"), seed=1)
+    control = normalize_sample(raw("g", "one two three", "control"), seed=1)
+    report = token_length_report([coding, control], Tokenizer(), max_input_tokens=8)
+    assert report["passed"]
+    long = normalize_sample(raw("long", " ".join(["x"] * 40), "coding"), seed=1)
+    report = token_length_report([long, control], Tokenizer(), max_input_tokens=100)
+    assert not report["passed"]
