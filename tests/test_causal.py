@@ -36,6 +36,12 @@ def test_exact_scorer_extracts_final_answer():
     assert result["passed"]
 
 
+def test_multiple_choice_scorer_uses_final_standalone_letter():
+    item = sample().model_copy(update={"scorer": "multiple_choice", "reference": "B"})
+    result = score_response(item, "I considered A and C. Final: B", evaluator_image="unused")
+    assert result["passed"]
+
+
 def test_unit_test_scorer_uses_sandbox(monkeypatch):
     captured = {}
 

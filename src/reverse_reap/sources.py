@@ -23,7 +23,9 @@ class SourceDefinition(StrictModel):
     config: str | None = None
     split: str
     revision: str | None = None
-    adapter: Literal["humaneval", "mbpp", "humaneval_x", "cruxeval", "swebench", "gsm8k"]
+    adapter: Literal[
+        "humaneval", "mbpp", "humanevalpack", "cruxeval", "swebench", "gsm8k", "mmlu"
+    ]
     domain: Literal["coding", "control"]
     stratum: str
     license: str
@@ -72,14 +74,14 @@ def _adapt(
             "tests": tests,
             "scorer": "unit_tests",
         }
-    if source.adapter == "humaneval_x":
+    if source.adapter == "humanevalpack":
         return {
             **common,
-            "prompt": row.get("prompt", row.get("declaration")),
-            "reference": row.get("canonical_solution", row.get("canonical_solution")),
-            "tests": row.get("test", row.get("test_code")),
+            "prompt": row["prompt"],
+            "reference": row["canonical_solution"],
+            "tests": row["test"],
             "entry_point": row.get("entry_point"),
-            "language": source.language or row.get("language"),
+            "language": source.language,
             "scorer": "unit_tests",
         }
     if source.adapter == "cruxeval":
@@ -109,6 +111,17 @@ def _adapt(
             "prompt": row["question"],
             "reference": row["answer"],
             "scorer": "exact_match",
+        }
+    if source.adapter == "mmlu":
+        choices = "\n".join(
+            f"{letter}. {choice}" for letter, choice in zip("ABCD", row["choices"], strict=True)
+        )
+        return {
+            **common,
+            "source_id": f"{row['subject']}:{index}",
+            "prompt": f"{row['question']}\n{choices}\nAnswer with only A, B, C, or D.",
+            "reference": "ABCD"[int(row["answer"])],
+            "scorer": "multiple_choice",
         }
     raise SourceError(f"unsupported source adapter: {source.adapter}")
 

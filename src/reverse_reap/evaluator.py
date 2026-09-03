@@ -60,7 +60,7 @@ def evaluate_python(
             "--mount",
             f"type=bind,src={source},dst=/submission.py,readonly",
             image,
-            "python",
+            "python3",
             "-I",
             "-B",
             "/submission.py",
@@ -91,4 +91,69 @@ def evaluate_python(
         stdout=completed.stdout[-8192:],
         stderr=completed.stderr[-8192:],
         program_sha256=digest,
+    )
+
+
+def evaluate_java(
+    generated_code: str,
+    tests: str,
+    *,
+    image: str,
+    timeout_seconds: int = 20,
+    memory_mb: int = 768,
+) -> EvaluationResult:
+    """Compile and execute untrusted Java inside the same locked-down boundary."""
+    if "@sha256:" not in image:
+        raise EvaluationError("evaluator image must be pinned by sha256 digest")
+    program = generated_code.rstrip() + "\n\n" + tests.lstrip()
+    digest = hashlib.sha256(program.encode()).hexdigest()
+    with tempfile.TemporaryDirectory(prefix="reverse-reap-java-eval-") as directory:
+        source = Path(directory) / "Main.java"
+        source.write_text(program, encoding="utf-8")
+        command = [
+            "docker",
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--pids-limit=64",
+            f"--memory={memory_mb}m",
+            "--cpus=1",
+            "--tmpfs=/tmp:rw,exec,nosuid,size=128m",
+            "--user=65534:65534",
+            "--mount",
+            f"type=bind,src={source},dst=/submission/Main.java,readonly",
+            image,
+            "sh",
+            "-c",
+            "javac -d /tmp/classes /submission/Main.java && java -cp /tmp/classes Main",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except FileNotFoundError as error:
+            raise EvaluationError("Docker is required for generated-code evaluation") from error
+        except subprocess.TimeoutExpired as error:
+            return EvaluationResult(
+                False,
+                None,
+                True,
+                (error.stdout or "")[-8192:],
+                (error.stderr or "")[-8192:],
+                digest,
+            )
+    return EvaluationResult(
+        completed.returncode == 0,
+        completed.returncode,
+        False,
+        completed.stdout[-8192:],
+        completed.stderr[-8192:],
+        digest,
     )

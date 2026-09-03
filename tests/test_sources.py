@@ -48,3 +48,36 @@ def test_swebench_adapter_preserves_repository_issue_and_patch():
     )
     assert "project/repo" in result["prompt"]
     assert result["scorer"] == "swebench"
+
+
+def test_humanevalpack_java_adapter_uses_live_schema_fields():
+    result = _adapt(
+        source("humanevalpack", language="java"),
+        "c" * 40,
+        {
+            "task_id": "Java/0",
+            "prompt": "class Solution { public int answer() {",
+            "canonical_solution": "return 42; } }",
+            "test": "public class Main { public static void main(String[] x) {} }",
+            "entry_point": "answer",
+        },
+        0,
+    )
+    assert result["language"] == "java"
+    assert result["tests"].startswith("public class Main")
+
+
+def test_mmlu_adapter_formats_choices_and_answer_letter():
+    result = _adapt(
+        source("mmlu", domain="control", stratum="general-knowledge", language=None),
+        "d" * 40,
+        {
+            "question": "Which value?",
+            "subject": "math",
+            "choices": ["zero", "one", "two", "three"],
+            "answer": 2,
+        },
+        7,
+    )
+    assert "C. two" in result["prompt"]
+    assert result["reference"] == "C"

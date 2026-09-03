@@ -42,12 +42,12 @@ sources:
     language: mixed
     license: MIT
     citation: https://arxiv.org/abs/2310.06770
-  - name: humaneval-x-java
-    dataset_id: zai-org/humaneval-x
+  - name: humanevalpack-java
+    dataset_id: bigcode/humanevalpack
     config: java
     split: test
     revision: null
-    adapter: humaneval_x
+    adapter: humanevalpack
     domain: coding
     stratum: function-synthesis
     language: java
@@ -63,4 +63,15 @@ sources:
     stratum: matched-reasoning
     license: MIT
     citation: https://arxiv.org/abs/2110.14168
+    limit: 1000
+  - name: mmlu-general
+    dataset_id: cais/mmlu
+    config: all
+    split: test
+    revision: null
+    adapter: mmlu
+    domain: control
+    stratum: general-knowledge
+    license: MIT
+    citation: https://arxiv.org/abs/2009.03300
     limit: 1000

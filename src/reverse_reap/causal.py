@@ -12,7 +12,7 @@ import numpy as np
 
 from reverse_reap.config import ExperimentConfig
 from reverse_reap.datasets import NormalizedSample, load_manifest
-from reverse_reap.evaluator import EvaluationResult, evaluate_python
+from reverse_reap.evaluator import EvaluationResult, evaluate_java, evaluate_python
 from reverse_reap.instrumentation import instrument_qwen35
 from reverse_reap.qwen35 import inspect_qwen35_moe
 from reverse_reap.runtime import load_donor, validate_donor_contract
@@ -56,6 +56,14 @@ def score_response(
         predicted = _exact_answer(response)
         reference = _exact_answer(sample.reference or "")
         return {"scoreable": True, "passed": predicted == reference, "predicted": predicted}
+    if sample.scorer == "multiple_choice":
+        choices = re.findall(r"(?<![A-Z])[ABCD](?![A-Z])", response.upper())
+        predicted = choices[-1] if choices else ""
+        return {
+            "scoreable": True,
+            "passed": predicted == (sample.reference or "").strip().upper(),
+            "predicted": predicted,
+        }
     if sample.scorer == "unit_tests":
         code = _extract_code(response)
         if (
@@ -64,7 +72,10 @@ def score_response(
             and "def " in sample.prompt
         ):
             code = sample.prompt.rstrip() + "\n" + code
-        result: EvaluationResult = evaluate_python(
+        if sample.language == "java" and "class Solution" not in code:
+            code = sample.prompt.rstrip() + "\n" + code
+        evaluator = evaluate_java if sample.language == "java" else evaluate_python
+        result: EvaluationResult = evaluator(
             code,
             sample.tests or "",
             image=evaluator_image,

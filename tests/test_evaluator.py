@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from reverse_reap.evaluator import EvaluationError, evaluate_python
+from reverse_reap.evaluator import EvaluationError, evaluate_java, evaluate_python
 
 
 def test_requires_digest_pinned_container():
@@ -47,3 +47,21 @@ def test_timeout_is_a_scored_failure(monkeypatch):
     )
     assert result.timed_out and not result.passed
     assert result.return_code is None
+
+
+def test_java_uses_compiler_and_locked_down_container(monkeypatch):
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = evaluate_java(
+        "class Solution {}",
+        "public class Main { public static void main(String[] args) {} }",
+        image="evaluator@sha256:" + "c" * 64,
+    )
+    assert result.passed
+    assert "--network=none" in seen["command"]
+    assert any("javac -d /tmp/classes" in part for part in seen["command"])
