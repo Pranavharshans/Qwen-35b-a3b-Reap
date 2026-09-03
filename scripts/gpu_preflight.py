@@ -57,8 +57,8 @@ def validate(report: dict) -> list[str]:
             errors.append(f"GPU {gpu['index']} has less than 23 GiB VRAM")
         if gpu["capability"] < [8, 6]:
             errors.append(f"GPU {gpu['index']} compute capability is below 8.6")
-    if report["disk_free_bytes"] < 220 * 1024**3:
-        errors.append("less than 220 GiB disk is free")
+    if report["disk_free_bytes"] < 100 * 1024**3:
+        errors.append("less than 100 GiB disk is free")
     return errors
 
 

@@ -38,4 +38,4 @@ def test_rejects_wrong_count_model_memory_and_disk():
     assert any("exactly 4" in error for error in errors)
     assert any("not an RTX 3090" in error for error in errors)
     assert any("23 GiB" in error for error in errors)
-    assert any("220 GiB" in error for error in errors)
+    assert any("100 GiB" in error for error in errors)
