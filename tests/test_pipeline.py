@@ -32,18 +32,22 @@ def test_analysis_pipeline_writes_complete_candidate_bundle(tmp_path):
         bootstrap_iterations=10,
         permutation_iterations=10,
         seed=5,
+        cardinality_grid=(1, 2),
     )
     assert report["experts_ranked"] == 4
     ranking = json.loads((output / "expert-ranking.json").read_text())
     assert "differential_bootstrap_95ci" in ranking[0]
     assert "label_permutation_p_value" in ranking[0]
     assert "coding_routing_count" in ranking[0]
+    grid = json.loads((output / "cardinality-grid.json").read_text())
+    assert [item["top_n"] for item in grid["grid"]] == [1, 2]
     for filename in (
         "expert-ranking.json",
         "bootstrap-stability.json",
         "label-permutation.json",
         "candidate-manifest.json",
         "control-manifests.json",
+        "cardinality-grid.json",
     ):
         assert (output / filename).exists()
     assert len(list((output / "controls").glob("frequency-random-*.json"))) == 20

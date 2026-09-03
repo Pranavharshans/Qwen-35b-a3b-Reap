@@ -102,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--bootstrap-iterations", type=int, default=1000)
     analyze.add_argument("--permutation-iterations", type=int, default=1000)
     analyze.add_argument("--seed", type=int, default=20260903)
+    analyze.add_argument("--cardinality-grid", type=int, nargs="+")
     extract = subparsers.add_parser("extract")
     extract.add_argument("config", type=Path)
     extract.add_argument("model_path", type=Path)
@@ -219,6 +220,9 @@ def main() -> int:
             bootstrap_iterations=args.bootstrap_iterations,
             permutation_iterations=args.permutation_iterations,
             seed=args.seed,
+            cardinality_grid=(
+                tuple(args.cardinality_grid) if args.cardinality_grid is not None else None
+            ),
         )
         emit_json(output)
         return 0

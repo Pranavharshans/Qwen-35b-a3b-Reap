@@ -30,6 +30,7 @@ def analyze_telemetry(
     seed: int,
     splits: tuple[str, ...] = ("calibration", "selection"),
     segment: str = "joint",
+    cardinality_grid: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     token_rows = [
         row
@@ -90,12 +91,37 @@ def analyze_telemetry(
     ]
     output_dir.mkdir(parents=True, exist_ok=True)
     ranking = differential_ranking(observations)
-    bootstrap = bootstrap_stability(
-        observations, top_n=top_n, iterations=bootstrap_iterations, seed=seed
-    )
-    permutation = label_permutation(
-        observations, top_n=top_n, iterations=permutation_iterations, seed=seed
-    )
+    configured_top_n = top_n
+    cardinalities = sorted(set(cardinality_grid or (top_n,)))
+    if not cardinalities or any(value <= 0 for value in cardinalities):
+        raise ValueError("candidate cardinalities must be positive")
+    if top_n not in cardinalities:
+        cardinalities.append(top_n)
+        cardinalities.sort()
+    analyses = []
+    for cardinality in cardinalities:
+        current_bootstrap = bootstrap_stability(
+            observations, top_n=cardinality, iterations=bootstrap_iterations, seed=seed
+        )
+        current_permutation = label_permutation(
+            observations, top_n=cardinality, iterations=permutation_iterations, seed=seed
+        )
+        analyses.append(
+            {
+                "top_n": cardinality,
+                "gate_passed": current_bootstrap["median_jaccard"] >= 0.60
+                and current_permutation["p_value"] <= 0.05,
+                "median_bootstrap_jaccard": current_bootstrap["median_jaccard"],
+                "permutation_p_value": current_permutation["p_value"],
+                "bootstrap": current_bootstrap,
+                "permutation": current_permutation,
+            }
+        )
+    passing = [item for item in analyses if item["gate_passed"]]
+    chosen = passing[0] if passing else next(item for item in analyses if item["top_n"] == top_n)
+    top_n = chosen["top_n"]
+    bootstrap = chosen["bootstrap"]
+    permutation = chosen["permutation"]
     intervals = {
         (item["layer"], item["expert"]): item
         for item in bootstrap["differential_intervals"]
@@ -123,6 +149,24 @@ def analyze_telemetry(
     _write_json(output_dir / "expert-ranking.json", ranking)
     _write_json(output_dir / "bootstrap-stability.json", bootstrap)
     _write_json(output_dir / "label-permutation.json", permutation)
+    _write_json(
+        output_dir / "cardinality-grid.json",
+        {
+            "schema_version": 1,
+            "selection_rule": "smallest-grid-cardinality-passing-gate-c",
+            "configured_fallback_top_n": configured_top_n,
+            "selected_top_n": top_n,
+            "any_gate_passed": bool(passing),
+            "grid": [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"bootstrap", "permutation"}
+                }
+                for item in analyses
+            ],
+        },
+    )
     _write_json(output_dir / "control-manifests.json", controls)
     controls_dir = output_dir / "controls"
     controls_dir.mkdir(exist_ok=True)
@@ -159,6 +203,7 @@ def analyze_telemetry(
         "observations": len(observations),
         "experts_ranked": len(ranking),
         "candidate_gate_passed": candidates["gate_passed"],
+        "selected_top_n": top_n,
         "median_bootstrap_jaccard": bootstrap["median_jaccard"],
         "permutation_p_value": permutation["p_value"],
         "parquet_written": parquet_written,

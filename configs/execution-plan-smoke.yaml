@@ -63,10 +63,10 @@ tasks:
   - task_id: candidate-analysis
     objective: Rank coding differential experts, run bootstrap and permutation tests, and freeze candidates and controls.
     definition_of_done: Candidate, ranking, bootstrap, permutation, and all control manifests are immutable.
-    command: [reverse-reap, analyze, runs/smoke/telemetry.jsonl, runs/smoke/analysis, --top-n, "8", --bootstrap-iterations, "200", --permutation-iterations, "200"]
+    command: [reverse-reap, analyze, runs/smoke/telemetry.jsonl, runs/smoke/analysis, --top-n, "8", --cardinality-grid, "4", "8", "16", --bootstrap-iterations, "200", --permutation-iterations, "200"]
     validation_command: [python, scripts/validate_artifact.py, candidate, runs/smoke/analysis/candidate-manifest.json]
     inputs: [runs/smoke/telemetry.jsonl]
-    outputs: [runs/smoke/analysis/candidate-manifest.json, runs/smoke/analysis/bootstrap-stability.json, runs/smoke/analysis/label-permutation.json, runs/smoke/analysis/control-manifests.json]
+    outputs: [runs/smoke/analysis/candidate-manifest.json, runs/smoke/analysis/bootstrap-stability.json, runs/smoke/analysis/label-permutation.json, runs/smoke/analysis/control-manifests.json, runs/smoke/analysis/cardinality-grid.json]
     dependencies: [telemetry-smoke]
     estimated_gpu_hours: 0
     estimated_storage_gb: 1
