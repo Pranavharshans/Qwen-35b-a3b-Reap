@@ -7,6 +7,7 @@ from reverse_reap.datasets import (
     _lexical_fingerprint,
     _near_duplicate_candidates,
     audit_samples,
+    balanced_subset,
     freeze_manifest,
     freeze_tiers,
     load_manifest,
@@ -94,3 +95,16 @@ def test_frozen_tiers_are_nested_and_reproducible(tmp_path):
         tier_ids[tier] = {item.sample_id for item in load_manifest(path)}
         assert report["tiers"][tier]["manifest_sha256"]
     assert tier_ids["smoke"] <= tier_ids["pilot"] <= tier_ids["medium"] <= tier_ids["full"]
+
+
+def test_limited_subset_balances_domains_and_rotates_strata():
+    samples = []
+    for domain in ("coding", "control"):
+        for stratum in ("a", "b"):
+            for index in range(5):
+                value = raw(f"{domain}-{stratum}-{index}", f"{domain} {stratum} {index}", domain)
+                value["stratum"] = stratum
+                samples.append(normalize_sample(value, seed=11))
+    selected = balanced_subset(samples, 8)
+    assert [item.domain for item in selected] == ["coding", "control"] * 4
+    assert {item.stratum for item in selected} == {"a", "b"}

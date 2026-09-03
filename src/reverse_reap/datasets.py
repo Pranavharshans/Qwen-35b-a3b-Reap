@@ -207,6 +207,35 @@ def load_manifest(path: Path) -> list[NormalizedSample]:
     ]
 
 
+def balanced_subset(samples: list[NormalizedSample], limit: int | None) -> list[NormalizedSample]:
+    """Select a deterministic domain-balanced, stratum-rotating prefix."""
+    if limit is None or limit >= len(samples):
+        return samples
+    if limit <= 0:
+        raise DatasetError("sample limit must be positive")
+    queues: dict[str, dict[str, list[NormalizedSample]]] = {}
+    for sample in samples:
+        queues.setdefault(sample.domain, {}).setdefault(sample.stratum, []).append(sample)
+    domains = sorted(queues)
+    selected: list[NormalizedSample] = []
+    domain_cursor = 0
+    stratum_cursor = {domain: 0 for domain in domains}
+    while len(selected) < limit and domains:
+        domain = domains[domain_cursor % len(domains)]
+        strata = sorted(name for name, queue in queues[domain].items() if queue)
+        if not strata:
+            domains.remove(domain)
+            if domains:
+                domain_cursor %= len(domains)
+            continue
+        cursor = stratum_cursor[domain]
+        stratum = strata[cursor % len(strata)]
+        selected.append(queues[domain][stratum].pop(0))
+        stratum_cursor[domain] = cursor + 1
+        domain_cursor += 1
+    return selected
+
+
 def freeze_tiers(full_manifest: Path, destination_dir: Path) -> dict[str, Any]:
     """Create deterministic, nested cost-control tiers from one audited full manifest."""
     samples = load_manifest(full_manifest)

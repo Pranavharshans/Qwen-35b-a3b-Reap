@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from reverse_reap.config import ExperimentConfig
-from reverse_reap.datasets import NormalizedSample, load_manifest
+from reverse_reap.datasets import NormalizedSample, balanced_subset, load_manifest
 from reverse_reap.evaluator import EvaluationResult, evaluate_java, evaluate_python
 from reverse_reap.instrumentation import instrument_qwen35
 from reverse_reap.qwen35 import inspect_qwen35_moe
@@ -146,8 +146,7 @@ def evaluate_condition(
     validate_donor_contract(model, architecture)
     masked = load_expert_set(expert_manifest) if expert_manifest else frozenset()
     samples = [sample for sample in load_manifest(dataset_manifest) if sample.split == split]
-    if limit is not None:
-        samples = samples[:limit]
+    samples = balanced_subset(samples, limit)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         raise CausalError(f"refusing to overwrite evaluation: {destination}")

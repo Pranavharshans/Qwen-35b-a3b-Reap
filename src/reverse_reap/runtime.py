@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from reverse_reap.config import ExperimentConfig
-from reverse_reap.datasets import NormalizedSample, load_manifest
+from reverse_reap.datasets import NormalizedSample, balanced_subset, load_manifest
 from reverse_reap.instrumentation import CaptureState, instrument_qwen35
 from reverse_reap.qwen35 import ArchitectureError, Qwen35Architecture, inspect_qwen35_moe
 
@@ -220,8 +220,7 @@ def capture_manifest(
     samples = [
         sample for sample in load_manifest(manifest_path) if split == "all" or sample.split == split
     ]
-    if limit is not None:
-        samples = samples[:limit]
+    samples = balanced_subset(samples, limit)
     if not samples:
         raise RuntimeCompatibilityError(f"manifest has no samples for split {split}")
     destination.parent.mkdir(parents=True, exist_ok=True)
