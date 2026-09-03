@@ -16,6 +16,7 @@ from reverse_reap.extraction import (
     verify_extraction,
 )
 from reverse_reap.pipeline import analyze_telemetry
+from reverse_reap.reporting import build_run_bundle
 from reverse_reap.runtime import capture_manifest, probe_instrumentation
 from reverse_reap.sources import fetch_and_freeze
 
@@ -114,6 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("destination", type=Path)
     gate.add_argument("random", type=Path, nargs="+")
     gate.add_argument("--replication-direction-passed", action="store_true")
+    bundle = subparsers.add_parser("build-bundle")
+    bundle.add_argument("config", type=Path)
+    bundle.add_argument("run_dir", type=Path)
+    bundle.add_argument("state_dir", type=Path)
+    bundle.add_argument("destination", type=Path)
     return parser
 
 
@@ -218,6 +224,12 @@ def main() -> int:
             replication_direction_passed=args.replication_direction_passed,
         )
         emit_json(output, args.destination)
+        return 0
+    if args.command == "build-bundle":
+        output = build_run_bundle(
+            args.run_dir, args.state_dir, load_config(args.config), args.destination
+        )
+        emit_json(output)
         return 0
     raise AssertionError(f"unhandled command: {args.command}")
 
