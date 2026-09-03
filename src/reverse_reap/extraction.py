@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ class ExtractionError(RuntimeError):
 
 @dataclass(frozen=True)
 class ExtractedTensor:
+    source_shard: str
     source_key: str
     output_key: str
     shape: tuple[int, ...]
@@ -75,6 +77,13 @@ def load_weight_map(model_dir: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in weight_map.items()}
 
 
+def weight_index_path(model_dir: Path) -> Path:
+    indexes = sorted(model_dir.glob("*.safetensors.index.json"))
+    if len(indexes) != 1:
+        raise ExtractionError(f"expected one safetensors index, found {len(indexes)}")
+    return indexes[0]
+
+
 def _read_tensor(model_dir: Path, weight_map: dict[str, str], key: str) -> Any:
     shard = weight_map.get(key)
     if shard is None:
@@ -113,6 +122,11 @@ def extract_experts(
     *,
     model_id: str,
     model_revision: str,
+    run_id: str = "unresolved",
+    selection_status: str = "observational-candidates",
+    selection_metrics: dict[str, Any] | None = None,
+    causal_metrics: dict[str, Any] | None = None,
+    tool_git_revision: str | None = None,
 ) -> dict[str, Any]:
     """Extract each selected expert slice and verify logical tensor bytes after reload."""
     if destination.exists():
@@ -132,6 +146,7 @@ def extract_experts(
             tensors[output_key] = value
             records.append(
                 ExtractedTensor(
+                    source_shard=weight_map[source_key],
                     source_key=source_key,
                     output_key=output_key,
                     shape=tuple(value.shape),
@@ -163,17 +178,55 @@ def extract_experts(
     manifest = {
         "schema_version": 1,
         "label": "extracted",
-        "model_id": model_id,
-        "model_revision": model_revision,
+        "run_id": run_id,
+        "source_model_id": model_id,
+        "source_revision": model_revision,
+        "source_weight_index_hash": hashlib.sha256(
+            weight_index_path(model_dir).read_bytes()
+        ).hexdigest(),
+        "selection_status": selection_status,
+        "selection_metrics": selection_metrics or {},
+        "causal_metrics": causal_metrics or {},
+        "tool_git_revisions": {"reverse_reap": tool_git_revision or "unknown"},
+        "created_at_utc": datetime.now(UTC).isoformat(),
         "experts": [{"layer": layer, "expert": expert} for layer, expert in sorted(set(selected))],
         "tensors": verified,
         "tensor_file": tensor_path.name,
-        "tensor_file_sha256": hashlib.sha256(tensor_path.read_bytes()).hexdigest(),
+        "artifact_hash": hashlib.sha256(tensor_path.read_bytes()).hexdigest(),
         "total_parameter_bytes": sum(record.nbytes for record in records),
     }
     manifest_path = destination / "extraction-manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    source_map = {
+        record.output_key: {
+            "source_shard": record.source_shard,
+            "source_key": record.source_key,
+            "source_expert_axis_index": int(record.output_key.split(".")[3]),
+        }
+        for record in records
+    }
+    (destination / "source-to-extracted-map.json").write_text(
+        json.dumps(source_map, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (destination / "checksums.sha256").write_text(
+        f"{manifest['artifact_hash']}  {tensor_path.name}\n", encoding="utf-8"
+    )
+    verification = {
+        "valid": True,
+        "tensor_count": len(records),
+        "all_tensor_bytes_verified": all(item["verified"] for item in verified),
+    }
+    (destination / "verification-report.json").write_text(
+        json.dumps(verification, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (destination / "README.md").write_text(
+        "# Extracted routed experts\n\n"
+        "These tensors are not a standalone model. They depend on the donor representation, "
+        "original layer context, router, shared expert path, attention stack, and residual "
+        "stream.\n",
+        encoding="utf-8",
     )
     return manifest
 
@@ -182,8 +235,16 @@ def verify_extraction(destination: Path, model_dir: Path) -> dict[str, Any]:
     """Reload both artifacts independently and re-prove every manifest assertion."""
     manifest = json.loads((destination / "extraction-manifest.json").read_text(encoding="utf-8"))
     tensor_path = destination / manifest["tensor_file"]
-    if hashlib.sha256(tensor_path.read_bytes()).hexdigest() != manifest["tensor_file_sha256"]:
+    if hashlib.sha256(tensor_path.read_bytes()).hexdigest() != manifest["artifact_hash"]:
         raise ExtractionError("extracted safetensors file hash mismatch")
+    expected_keys = {
+        f"layers.{item['layer']}.experts.{item['expert']}.{suffix}"
+        for item in manifest["experts"]
+        for suffix in ("gate_up_proj", "down_proj")
+    }
+    manifest_keys = {item["output_key"] for item in manifest["tensors"]}
+    if manifest_keys != expected_keys:
+        raise ExtractionError("manifest does not account for every expected expert tensor")
     weight_map = load_weight_map(model_dir)
     try:
         import torch  # noqa: F401
@@ -199,4 +260,14 @@ def verify_extraction(destination: Path, model_dir: Path) -> dict[str, Any]:
             output = extracted.get_tensor(record["output_key"])
             if tensor_bytes(source_slice) != tensor_bytes(output):
                 raise ExtractionError(f"source bytes differ for {record['output_key']}")
-    return {"valid": True, "tensor_count": len(manifest["tensors"])}
+    source_index_valid = (
+        hashlib.sha256(weight_index_path(model_dir).read_bytes()).hexdigest()
+        == manifest["source_weight_index_hash"]
+    )
+    if not source_index_valid:
+        raise ExtractionError("source weight index hash mismatch")
+    return {
+        "valid": True,
+        "tensor_count": len(manifest["tensors"]),
+        "source_weight_index_hash_valid": source_index_valid,
+    }

@@ -199,6 +199,17 @@ def main() -> int:
             args.destination,
             model_id=config.model.id,
             model_revision=config.model.revision,
+            run_id=config.run_id or config.resolve_run_id(git_sha()),
+            selection_status=(
+                "domain-differential candidate"
+                if candidates.get("gate_passed")
+                else "observational-candidates"
+            ),
+            selection_metrics={
+                "method": candidates.get("selection_method"),
+                "thresholds": candidates.get("thresholds"),
+            },
+            tool_git_revision=git_sha(),
         )
         emit_json(output)
         return 0

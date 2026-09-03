@@ -52,7 +52,21 @@ def test_extracts_selected_slices_and_verifies_source_bytes(tmp_path):
         arrays["model.language_model.layers.0.mlp.experts.gate_up_proj"][2],
     )
     assert manifest["total_parameter_bytes"] == 96
-    assert verify_extraction(destination, tmp_path) == {"valid": True, "tensor_count": 2}
+    verification = verify_extraction(destination, tmp_path)
+    assert verification == {
+        "valid": True,
+        "tensor_count": 2,
+        "source_weight_index_hash_valid": True,
+    }
+    assert manifest["source_model_id"] == "fixture/qwen"
+    assert manifest["tensors"][0]["source_shard"] == "model-00001-of-00001.safetensors"
+    for filename in (
+        "source-to-extracted-map.json",
+        "checksums.sha256",
+        "verification-report.json",
+        "README.md",
+    ):
+        assert (destination / filename).exists()
 
 
 def test_refuses_to_overwrite_extraction(tmp_path):

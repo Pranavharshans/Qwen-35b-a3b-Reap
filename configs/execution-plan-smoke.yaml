@@ -82,7 +82,7 @@ tasks:
     command: [reverse-reap, extract, configs/smoke-3090-bf16.yaml, /models/qwen, runs/smoke/analysis/candidate-manifest.json, runs/smoke/extraction]
     validation_command: [python, scripts/validate_artifact.py, extraction, runs/smoke/extraction/extraction-manifest.json]
     inputs: [configs/smoke-3090-bf16.yaml, runs/smoke/analysis/candidate-manifest.json]
-    outputs: [runs/smoke/extraction/extraction-manifest.json, runs/smoke/extraction/experts.safetensors]
+    outputs: [runs/smoke/extraction/extraction-manifest.json, runs/smoke/extraction/experts.safetensors, runs/smoke/extraction/source-to-extracted-map.json, runs/smoke/extraction/checksums.sha256, runs/smoke/extraction/verification-report.json, runs/smoke/extraction/README.md]
     dependencies: [candidate-analysis]
     estimated_gpu_hours: 0.1
     estimated_storage_gb: 10
