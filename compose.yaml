@@ -1,0 +1,31 @@
+services:
+  reverse-reap:
+    build:
+      context: .
+      args:
+        # Mandatory digest-pinned CUDA/PyTorch image, e.g. repository@sha256:...
+        BASE_IMAGE: ${REVERSE_REAP_BASE_IMAGE:?set a digest-pinned GPU base image}
+    image: reverse-reap:${REVERSE_REAP_IMAGE_TAG:-local}
+    ipc: host
+    shm_size: 16gb
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16g,exec
+      - /opt/uv-cache:size=4g
+    volumes:
+      - ${REVERSE_REAP_MODEL_DIR:?set model directory}:/models/qwen:ro
+      - ${REVERSE_REAP_DATA_DIR:-./datasets}:/workspace/datasets:rw
+      - ${REVERSE_REAP_RUN_DIR:-./runs}:/workspace/runs:rw
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 4
+              capabilities: [gpu]
+    environment:
+      CUDA_VISIBLE_DEVICES: "0,1,2,3"
+      TOKENIZERS_PARALLELISM: "false"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    stop_grace_period: 2m
