@@ -211,7 +211,9 @@ def capture_manifest(
     except ArchitectureError as error:
         raise RuntimeCompatibilityError(str(error)) from error
     architecture_report = validate_donor_contract(model, architecture)
-    samples = [sample for sample in load_manifest(manifest_path) if sample.split == split]
+    samples = [
+        sample for sample in load_manifest(manifest_path) if split == "all" or sample.split == split
+    ]
     if limit is not None:
         samples = samples[:limit]
     if not samples:

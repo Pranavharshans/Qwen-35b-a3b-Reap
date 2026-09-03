@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import os
 import subprocess
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -83,12 +84,29 @@ def _completed(state_dir: Path, task_id: str) -> bool:
     return path.exists() and load_state(path).status == Status.COMPLETE
 
 
+def consumed_gpu_hours(state_dir: Path) -> float:
+    total = 0.0
+    for path in state_dir.glob("*.json"):
+        state = load_state(path)
+        if state.status == Status.COMPLETE:
+            total += state.consumed_gpu_hours
+    return total
+
+
+def expand_command(command: list[str]) -> list[str]:
+    expanded = [os.path.expandvars(part) for part in command]
+    unresolved = [part for part in expanded if "${" in part or "$" in part]
+    if unresolved:
+        raise ControllerError(f"command has unresolved environment variables: {unresolved}")
+    return expanded
+
+
 def _run_with_heartbeat(
     command: list[str], state: RunState, state_path: Path, log_path: Path, interval: float
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log:
-        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(expand_command(command), stdout=log, stderr=subprocess.STDOUT)
         while True:
             try:
                 return process.wait(timeout=interval)
@@ -96,8 +114,6 @@ def _run_with_heartbeat(
                 state.heartbeat_at_utc = datetime.now(UTC)
                 state.updated_at_utc = state.heartbeat_at_utc
                 atomic_write_state(state_path, state)
-
-
 def run_next(
     plan_path: Path,
     config: ExperimentConfig,
@@ -141,7 +157,7 @@ def run_next(
             atomic_write_state(path, state)
         decision = evaluate_budget(
             config.budget,
-            consumed_gpu_hours=state.consumed_gpu_hours,
+            consumed_gpu_hours=consumed_gpu_hours(state_dir),
             projected_stage_gpu_hours=eligible.estimated_gpu_hours,
         )
         if not decision.allowed or eligible.estimated_storage_gb > config.budget.storage_limit_gb:
@@ -177,7 +193,7 @@ def run_next(
             return {"status": state.status, "exit_code": exit_code, "log": str(log_path)}
         state.transition(Status.VALIDATING)
         atomic_write_state(path, state)
-        validation = subprocess.run(eligible.validation_command, check=False)
+        validation = subprocess.run(expand_command(eligible.validation_command), check=False)
         state.validation_exit_code = validation.returncode
         missing_outputs = [str(item) for item in eligible.outputs if not item.exists()]
         if validation.returncode or missing_outputs:
@@ -189,7 +205,7 @@ def run_next(
             state.transition(Status.FAILED_TERMINAL)
         else:
             state.output_hashes = {str(item): file_sha256(item) for item in eligible.outputs}
-            state.consumed_gpu_hours += eligible.estimated_gpu_hours
+            state.consumed_gpu_hours = eligible.estimated_gpu_hours
             state.consumed_cost_usd = (
                 state.consumed_gpu_hours * config.budget.provider_rate_usd_per_hour
             )

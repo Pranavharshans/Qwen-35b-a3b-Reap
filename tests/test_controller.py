@@ -5,7 +5,7 @@ import pytest
 import yaml
 
 from reverse_reap.config import ExperimentConfig
-from reverse_reap.controller import ControllerError, run_next
+from reverse_reap.controller import ControllerError, consumed_gpu_hours, expand_command, run_next
 from reverse_reap.state import Status, load_state
 
 
@@ -71,6 +71,7 @@ def test_run_next_executes_one_dependency_ordered_task_per_call(tmp_path):
     assert state.next_permitted_task == "second"
     run_next(plan, config(), state_dir, run_id="fixture", heartbeat_seconds=0.01)
     assert second.exists()
+    assert consumed_gpu_hours(state_dir) == 0
 
 
 def test_missing_inputs_fail_before_process_launch(tmp_path):
@@ -90,3 +91,10 @@ def test_budget_denial_enters_waiting_for_human(tmp_path):
     result = run_next(plan, config(), tmp_path / "state", run_id="fixture")
     assert result["status"] == Status.WAITING_FOR_HUMAN
     assert not output.exists()
+
+
+def test_command_environment_expansion_is_fail_closed(monkeypatch):
+    monkeypatch.setenv("REVERSE_REAP_TEST_VALUE", "resolved")
+    assert expand_command(["command", "${REVERSE_REAP_TEST_VALUE}"]) == ["command", "resolved"]
+    with pytest.raises(ControllerError, match="unresolved"):
+        expand_command(["command", "${REVERSE_REAP_MISSING_VALUE}"])
