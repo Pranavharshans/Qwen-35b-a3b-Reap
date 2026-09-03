@@ -31,7 +31,9 @@ class NormalizedSample(StrictModel):
     language: str | None = None
     prompt: str = Field(min_length=1)
     reference: str | None = None
-    scorer: Literal["exact_match", "unit_tests", "multiple_choice"]
+    scorer: Literal["exact_match", "unit_tests", "multiple_choice", "swebench"]
+    tests: str | None = None
+    entry_point: str | None = None
     timeout_seconds: int = Field(default=10, ge=1, le=120)
     split: Literal["calibration", "selection", "validation", "replication"]
     prompt_template_version: str = Field(min_length=1)
@@ -41,6 +43,8 @@ class NormalizedSample(StrictModel):
     def require_code_language(self) -> NormalizedSample:
         if self.domain == "coding" and not self.language:
             raise ValueError("coding samples require a programming language")
+        if self.scorer == "unit_tests" and not self.tests:
+            raise ValueError("unit-test samples require tests")
         return self
 
 
@@ -72,6 +76,7 @@ def normalize_sample(raw: dict[str, Any], *, seed: int) -> NormalizedSample:
     content = {
         "prompt": str(raw["prompt"]).strip(),
         "reference": raw.get("reference"),
+        "tests": raw.get("tests"),
     }
     return NormalizedSample(
         sample_id=sha256(identity.encode())[:24],
@@ -83,6 +88,8 @@ def normalize_sample(raw: dict[str, Any], *, seed: int) -> NormalizedSample:
         language=raw.get("language"),
         prompt=content["prompt"],
         reference=content["reference"],
+        tests=content["tests"],
+        entry_point=raw.get("entry_point"),
         scorer=raw["scorer"],
         timeout_seconds=int(raw.get("timeout_seconds", 10)),
         split=assign_split(str(raw["source"]), str(raw["source_id"]), seed),

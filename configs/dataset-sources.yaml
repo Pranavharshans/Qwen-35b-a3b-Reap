@@ -1,0 +1,66 @@
+schema_version: 1
+seed: 20260903
+sources:
+  - name: humaneval-python
+    dataset_id: openai/openai_humaneval
+    split: test
+    revision: null
+    adapter: humaneval
+    domain: coding
+    stratum: function-synthesis
+    language: python
+    license: MIT
+    citation: https://arxiv.org/abs/2107.03374
+  - name: mbpp-python
+    dataset_id: google-research-datasets/mbpp
+    config: sanitized
+    split: test
+    revision: null
+    adapter: mbpp
+    domain: coding
+    stratum: function-synthesis
+    language: python
+    license: CC-BY-4.0
+    citation: https://arxiv.org/abs/2108.07732
+  - name: cruxeval-python
+    dataset_id: cruxeval-org/cruxeval
+    split: test
+    revision: null
+    adapter: cruxeval
+    domain: coding
+    stratum: code-understanding
+    language: python
+    license: MIT
+    citation: https://arxiv.org/abs/2401.03065
+  - name: swebench-lite
+    dataset_id: princeton-nlp/SWE-bench_Lite
+    split: test
+    revision: null
+    adapter: swebench
+    domain: coding
+    stratum: repository-bug-repair
+    language: mixed
+    license: MIT
+    citation: https://arxiv.org/abs/2310.06770
+  - name: humaneval-x-java
+    dataset_id: zai-org/humaneval-x
+    config: java
+    split: test
+    revision: null
+    adapter: humaneval_x
+    domain: coding
+    stratum: function-synthesis
+    language: java
+    license: Apache-2.0
+    citation: https://arxiv.org/abs/2303.17568
+  - name: gsm8k-matched-reasoning
+    dataset_id: openai/gsm8k
+    config: main
+    split: test
+    revision: null
+    adapter: gsm8k
+    domain: control
+    stratum: matched-reasoning
+    license: MIT
+    citation: https://arxiv.org/abs/2110.14168
+    limit: 1000

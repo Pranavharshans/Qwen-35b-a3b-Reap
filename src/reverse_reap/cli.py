@@ -10,6 +10,7 @@ from pathlib import Path
 from reverse_reap.config import load_config
 from reverse_reap.controller import run_next
 from reverse_reap.runtime import capture_manifest, probe_instrumentation
+from reverse_reap.sources import fetch_and_freeze
 
 
 def git_sha() -> str:
@@ -55,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument(
         "--prompt", default="Write a Python function that returns the sum of two integers."
     )
+    fetch = subparsers.add_parser("fetch-datasets")
+    fetch.add_argument("catalog", type=Path)
+    fetch.add_argument("destination", type=Path)
     return parser
 
 
@@ -89,6 +93,10 @@ def main() -> int:
         output = probe_instrumentation(args.model_path, load_config(args.config), args.prompt)
         print(json.dumps(output, indent=2, sort_keys=True))
         return 0 if output["passed"] else 3
+    if args.command == "fetch-datasets":
+        output = fetch_and_freeze(args.catalog, args.destination)
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0
     raise AssertionError(f"unhandled command: {args.command}")
 
 
