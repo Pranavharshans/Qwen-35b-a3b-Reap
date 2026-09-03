@@ -108,6 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
     tiers = subparsers.add_parser("freeze-dataset-tiers")
     tiers.add_argument("full_manifest", type=Path)
     tiers.add_argument("destination_dir", type=Path)
+    rebalance = subparsers.add_parser("rebalance-controls")
+    rebalance.add_argument("full_manifest", type=Path)
+    rebalance.add_argument("destination_dir", type=Path)
+    rebalance.add_argument("tokenizer_path", type=Path)
+    rebalance.add_argument("--seed", type=int, default=20260903)
     lengths = subparsers.add_parser("audit-token-lengths")
     lengths.add_argument("manifest", type=Path)
     lengths.add_argument("tokenizer_path", type=Path)
@@ -248,6 +253,20 @@ def main() -> int:
         return 0
     if args.command == "freeze-dataset-tiers":
         emit_json(freeze_tiers(args.full_manifest, args.destination_dir))
+        return 0
+    if args.command == "rebalance-controls":
+        from transformers import AutoTokenizer
+
+        from reverse_reap.datasets import rebalance_controls_by_length
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(args.tokenizer_path), local_files_only=True, trust_remote_code=False
+        )
+        emit_json(
+            rebalance_controls_by_length(
+                args.full_manifest, args.destination_dir, tokenizer, seed=args.seed
+            )
+        )
         return 0
     if args.command == "audit-token-lengths":
         output = audit_manifest_token_lengths(

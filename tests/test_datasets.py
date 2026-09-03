@@ -12,6 +12,7 @@ from reverse_reap.datasets import (
     freeze_tiers,
     load_manifest,
     normalize_sample,
+    rebalance_controls_by_length,
     token_length_report,
 )
 
@@ -109,6 +110,56 @@ def test_limited_subset_balances_domains_and_rotates_strata():
     selected = balanced_subset(samples, 8)
     assert [item.domain for item in selected] == ["coding", "control"] * 4
     assert {item.stratum for item in selected} == {"a", "b"}
+
+
+def test_length_rebalance_preserves_coding_and_prefers_long_controls(tmp_path):
+    """Regression: smoke-tier p90 gate failed 3.24 > 3.0 on SWE-bench tails.
+
+    Rebalancing must keep every coding row byte-identical, reselect controls
+    longest-first from the pool, record discarded/added IDs, and never touch
+    the original manifests.
+    """
+
+    class Tokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": text.split()}
+
+    samples = []
+    samples.append(normalize_sample(raw("code-short", "a b", "coding"), seed=1))
+    samples.append(
+        normalize_sample(raw("code-long", " ".join(["w"] * 60), "coding"), seed=1)
+    )
+    for index in range(6):
+        samples.append(
+            normalize_sample(
+                raw(f"ctrl-{index}", " ".join(["x"] * (index + 1)), "control"), seed=1
+            )
+        )
+    full = tmp_path / "source-full.jsonl"
+    freeze_manifest(samples, full)
+    tiers_dir = tmp_path / "tiers"
+    tiers_dir.mkdir()
+    # Hand-built smoke tier: 2 coding + 2 shortest controls (fails a p90-style gate).
+    smoke = [samples[0], samples[1], samples[2], samples[3]]
+    freeze_manifest(smoke, tiers_dir / "smoke.jsonl")
+    for tier in ("pilot", "medium", "full"):
+        freeze_manifest(samples, tiers_dir / f"{tier}.jsonl")
+    report = rebalance_controls_by_length(full, tiers_dir, Tokenizer(), seed=5)
+    rebalanced = {
+        item.sample_id: item for item in load_manifest(tiers_dir / "smoke-lengthmatched.jsonl")
+    }
+    for item in smoke:
+        if item.domain == "coding":
+            assert rebalanced[item.sample_id].prompt == item.prompt
+    control_lengths = sorted(
+        len(item.prompt.split()) for item in rebalanced.values() if item.domain == "control"
+    )
+    assert control_lengths == [5, 6]
+    assert report["tiers"]["smoke"]["discarded_control_ids"]
+    assert report["tiers"]["smoke"]["control_lengths_before"] == [1, 2]
+    assert report["tiers"]["smoke"]["control_lengths_after"] == [5, 6]
+    # Original manifest untouched: refreeze the same rows and expect identity.
+    assert freeze_manifest(smoke, tiers_dir / "smoke.jsonl")["manifest_sha256"]
 
 
 def test_token_length_report_uses_exact_tokenizer_and_rejects_gross_mismatch():

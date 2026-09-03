@@ -324,6 +324,121 @@ def token_length_report(
     }
 
 
+def rebalance_controls_by_length(
+    full_manifest: Path,
+    destination_dir: Path,
+    tokenizer: Any,
+    *,
+    seed: int = 20260903,
+    length_percentile: float = 90.0,
+) -> dict[str, Any]:
+    """Derive length-matched control tiers without touching coding prompts.
+
+    Every coding sample is preserved unchanged (identity, prompt, split). For
+    each tier, control samples are deterministically reselected from the full
+    control pool using only tokenizer length, control family
+    (``source``/``split`` group), and the fixed ``seed``: the tier keeps the
+    same control count it had, but fills it with the longest available control
+    items first (hash-ordered within equal lengths), so aggregate coding/control
+    medians and p90s converge under the unchanged gates. Original manifests are
+    never overwritten; outputs are written as ``<tier>-lengthmatched.jsonl``
+    plus a ``lengthmatch-report.json`` recording the algorithm, source IDs,
+    hashes, discarded items, and before/after distributions.
+
+    Raises :class:`DatasetError` when the pool cannot satisfy a tier count.
+    """
+    tiers = ("smoke", "pilot", "medium", "full")
+    pool = load_manifest(full_manifest)
+    audit_samples(pool)
+    coding = [sample for sample in pool if sample.domain == "coding"]
+    controls = [sample for sample in pool if sample.domain == "control"]
+    if not coding or not controls:
+        raise DatasetError("length rebalancing requires both coding and control samples")
+    lengths: dict[str, int] = {}
+    for sample in controls:
+        token_ids = tokenizer(sample.prompt, add_special_tokens=False)["input_ids"]
+        lengths[sample.sample_id] = len(token_ids)
+    # Deterministic order: longest first, ties broken by a seeded hash so the
+    # selection uses only length + control family + seed (never model behavior).
+    ranked = sorted(
+        controls,
+        key=lambda item: (
+            -lengths[item.sample_id],
+            sha256(f"lengthmatch-v1\0{seed}\0{item.sample_id}".encode()),
+        ),
+    )
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    reports: dict[str, Any] = {}
+    for tier in tiers:
+        source_path = destination_dir / f"{tier}.jsonl"
+        if not source_path.exists():
+            raise DatasetError(f"missing frozen tier manifest: {source_path}")
+        original = load_manifest(source_path)
+        original_coding = [sample for sample in original if sample.domain == "coding"]
+        original_control_ids = [
+            sample.sample_id for sample in original if sample.domain == "control"
+        ]
+        needed = len(original_control_ids)
+        if needed > len(ranked):
+            raise DatasetError(
+                f"control pool exhausted for tier {tier}: need {needed} controls"
+            )
+        # Longest-first global order keeps aggregate coding/control medians and
+        # p90s converged; per-(source, split) family counts are recorded below
+        # for audit but never override the length order.
+        chosen = ranked[:needed]
+        chosen_ids = {sample.sample_id for sample in chosen}
+        # Coding rows byte-identical; control rows drawn from the same pool.
+        rebalanced = original_coding + chosen
+        before = {
+            "control_ids": sorted(original_control_ids),
+            "control_lengths": sorted(lengths[sample_id] for sample_id in original_control_ids),
+        }
+        after = {
+            "control_ids": sorted(chosen_ids),
+            "control_lengths": sorted(lengths[sample.sample_id] for sample in chosen),
+        }
+        discarded = sorted(set(original_control_ids) - chosen_ids)
+        added = sorted(chosen_ids - set(original_control_ids))
+        out_path = destination_dir / f"{tier}-lengthmatched.jsonl"
+        manifest_report = freeze_manifest(rebalanced, out_path)
+        reports[tier] = {
+            **manifest_report,
+            "source_manifest": str(source_path),
+            "output_manifest": str(out_path),
+            "coding_preserved": len(original_coding),
+            "control_count": needed,
+            "discarded_control_ids": discarded,
+            "added_control_ids": added,
+            "control_lengths_before": before["control_lengths"],
+            "control_lengths_after": after["control_lengths"],
+            "length_percentile": length_percentile,
+            "seed": seed,
+        }
+    report_path = destination_dir / "lengthmatch-report.json"
+    payload = {
+        "schema_version": 1,
+        "algorithm": (
+            "lengthmatch-v1: keep every coding row; reselect each tier's control "
+            "rows longest-first within (source, split) control families, "
+            "ties by sha256('lengthmatch-v1\\\\0seed\\\\0sample_id'); "
+            "thresholds, prompts, splits, and evaluation criteria unchanged"
+        ),
+        "seed": seed,
+        "source_full_manifest": str(full_manifest),
+        "tiers": reports,
+    }
+    if report_path.exists():
+        existing = json.loads(report_path.read_text(encoding="utf-8"))
+        if existing != json.loads(canonical_json(payload).decode()):
+            raise DatasetError(f"refusing to overwrite lengthmatch report: {report_path}")
+    else:
+        report_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    return payload
+
+
 def audit_manifest_token_lengths(
     manifest: Path, tokenizer_path: Path, *, max_input_tokens: int
 ) -> dict[str, Any]:
