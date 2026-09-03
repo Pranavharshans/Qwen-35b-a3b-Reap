@@ -102,6 +102,16 @@ def test_builds_predeclared_causal_control_sets():
     assert len(controls["lowest_differential_set"]) == 2
 
 
+def test_per_expert_reports_include_uncertainty_and_empirical_null():
+    rows = observations()
+    bootstrap = bootstrap_stability(rows, top_n=1, iterations=20, seed=3)
+    permutation = label_permutation(rows, top_n=1, iterations=20, seed=3)
+    assert bootstrap["differential_intervals"]
+    assert all(item["observations"] == 20 for item in bootstrap["differential_intervals"])
+    assert permutation["expert_p_values"]
+    assert all(0 < item["p_value"] <= 1 for item in permutation["expert_p_values"])
+
+
 def test_rejects_too_few_random_controls():
     with pytest.raises(AnalysisError, match="at least 20"):
         build_control_sets([], [], random_sets=19, seed=1)

@@ -41,19 +41,37 @@ def analyze_telemetry(
     ]
     if not token_rows:
         raise ValueError("no telemetry rows match the requested splits and segment")
+    sample_token_counts: dict[str, int] = {}
+    token_identities: dict[str, set[int]] = {}
+    for row in token_rows:
+        if "token_index" in row:
+            token_identities.setdefault(row["sample_id"], set()).add(int(row["token_index"]))
+    sample_token_counts.update({key: len(value) for key, value in token_identities.items()})
     grouped: dict[tuple[str, str, str, int, int], dict[str, float]] = {}
     for row in token_rows:
         layer = int(row.get("layer_index", row.get("layer")))
         expert = int(row.get("expert_index", row.get("expert")))
         key = (row["sample_id"], row["domain"], row["stratum"], layer, expert)
-        values = grouped.setdefault(key, {"count": 0.0, "weighted_norm": 0.0})
-        values["count"] += 1
+        values = grouped.setdefault(
+            key,
+            {
+                "count": 0.0,
+                "router_weight_sum": 0.0,
+                "expert_output_norm_sum": 0.0,
+                "weighted_norm": 0.0,
+            },
+        )
+        routed_count = int(row.get("routed_count", 1))
+        values["count"] += routed_count
         if "expert_output_l2" in row:
-            values["weighted_norm"] += float(row["router_weight"]) * float(
-                row["expert_output_l2"]
-            )
+            weight = float(row["router_weight"])
+            norm = float(row["expert_output_l2"])
+            values["router_weight_sum"] += weight
+            values["expert_output_norm_sum"] += norm
+            values["weighted_norm"] += weight * norm
         else:
-            values["weighted_norm"] += float(row["reap_saliency"])
+            values["router_weight_sum"] += float(row.get("router_mass", 0))
+            values["weighted_norm"] += float(row["reap_saliency"]) * routed_count
     observations = [
         {
             "sample_id": key[0],
@@ -62,6 +80,10 @@ def analyze_telemetry(
             "layer": key[3],
             "expert": key[4],
             "routed_count": int(value["count"]),
+            "token_count": sample_token_counts.get(key[0], int(value["count"])),
+            "router_weight_sum": value["router_weight_sum"],
+            "expert_output_norm_sum": value["expert_output_norm_sum"],
+            "weighted_norm_sum": value["weighted_norm"],
             "reap_saliency": value["weighted_norm"] / value["count"],
         }
         for key, value in grouped.items()
@@ -74,6 +96,18 @@ def analyze_telemetry(
     permutation = label_permutation(
         observations, top_n=top_n, iterations=permutation_iterations, seed=seed
     )
+    intervals = {
+        (item["layer"], item["expert"]): item
+        for item in bootstrap["differential_intervals"]
+    }
+    p_values = {
+        (item["layer"], item["expert"]): item for item in permutation["expert_p_values"]
+    }
+    for row in ranking:
+        key = (row["layer"], row["expert"])
+        interval = intervals[key]
+        row["differential_bootstrap_95ci"] = [interval["low"], interval["high"]]
+        row["label_permutation_p_value"] = p_values[key]["p_value"]
     source_hash = hashlib.sha256(telemetry_path.read_bytes()).hexdigest()
     candidate_path = output_dir / "candidate-manifest.json"
     candidates = freeze_candidates(

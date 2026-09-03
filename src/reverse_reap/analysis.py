@@ -37,6 +37,10 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
         "control": defaultdict(list),
     }
     routing_counts: dict[tuple[int, int], list[float]] = defaultdict(list)
+    domain_metrics: dict[str, dict[tuple[int, int], dict[str, float]]] = {
+        "coding": defaultdict(lambda: defaultdict(float)),
+        "control": defaultdict(lambda: defaultdict(float)),
+    }
     for row in observations:
         domain = row.get("domain")
         if domain not in grouped:
@@ -47,6 +51,18 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
         grouped[domain][(int(row["layer"]), int(row["expert"]))].append(value)
         routing_counts[(int(row["layer"]), int(row["expert"]))].append(
             float(row.get("routed_count", 0))
+        )
+        key = (int(row["layer"]), int(row["expert"]))
+        metrics = domain_metrics[domain][key]
+        metrics["routing_count"] += float(row.get("routed_count", 0))
+        metrics["token_count"] += float(row.get("token_count", 0))
+        metrics["router_weight_sum"] += float(row.get("router_weight_sum", 0))
+        metrics["expert_output_norm_sum"] += float(row.get("expert_output_norm_sum", 0))
+        metrics["weighted_norm_sum"] += float(
+            row.get(
+                "weighted_norm_sum",
+                float(row["reap_saliency"]) * float(row.get("routed_count", 0)),
+            )
         )
     keys = set(grouped["coding"]) | set(grouped["control"])
     incomplete = [
@@ -60,19 +76,42 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
     }
     coding_z = _zscore_by_layer(means["coding"])
     control_z = _zscore_by_layer(means["control"])
-    rows = [
-        {
+    rows = []
+    for layer, expert in keys:
+        key = (layer, expert)
+        row = {
             "layer": layer,
             "expert": expert,
-            "coding_mean_reap": means["coding"][(layer, expert)],
-            "control_mean_reap": means["control"][(layer, expert)],
-            "coding_z": coding_z[(layer, expert)],
-            "control_z": control_z[(layer, expert)],
-            "differential": coding_z[(layer, expert)] - control_z[(layer, expert)],
-            "routing_frequency": float(np.mean(routing_counts[(layer, expert)])),
+            "observed": True,
+            "coding_mean_reap": means["coding"][key],
+            "control_mean_reap": means["control"][key],
+            "coding_z": coding_z[key],
+            "control_z": control_z[key],
+            "differential": coding_z[key] - control_z[key],
+            "routing_frequency": float(np.mean(routing_counts[key])),
         }
-        for layer, expert in keys
-    ]
+        for domain in ("coding", "control"):
+            metric = domain_metrics[domain][key]
+            count = metric["routing_count"]
+            tokens = metric["token_count"]
+            prefix = f"{domain}_"
+            row.update(
+                {
+                    f"{prefix}routing_count": int(count),
+                    f"{prefix}routing_rate": count / tokens if tokens else None,
+                    f"{prefix}router_weight_sum": metric["router_weight_sum"],
+                    f"{prefix}router_weight_mean": (
+                        metric["router_weight_sum"] / count if count else None
+                    ),
+                    f"{prefix}expert_output_norm_mean": (
+                        metric["expert_output_norm_sum"] / count if count else None
+                    ),
+                    f"{prefix}standard_reap_saliency": (
+                        metric["weighted_norm_sum"] / count if count else None
+                    ),
+                }
+            )
+        rows.append(row)
     return sorted(rows, key=lambda row: (-row["differential"], row["layer"], row["expert"]))
 
 
@@ -97,6 +136,7 @@ def bootstrap_stability(
     rng = np.random.default_rng(seed)
     jaccards = []
     selection_counts: dict[tuple[int, int], int] = defaultdict(int)
+    differential_samples: dict[tuple[int, int], list[float]] = defaultdict(list)
     for _ in range(iterations):
         sampled: list[dict[str, Any]] = []
         for ids in groups.values():
@@ -105,6 +145,8 @@ def bootstrap_stability(
                 sampled.extend(rows_by_sample[str(sample_id)])
         ranked = differential_ranking(sampled)
         selected = {(row["layer"], row["expert"]) for row in ranked[:top_n]}
+        for row in ranked:
+            differential_samples[(row["layer"], row["expert"])].append(row["differential"])
         for key in selected:
             selection_counts[key] += 1
         union = target | selected
@@ -118,6 +160,16 @@ def bootstrap_stability(
         "selection_frequency": [
             {"layer": key[0], "expert": key[1], "frequency": count / iterations}
             for key, count in sorted(selection_counts.items())
+        ],
+        "differential_intervals": [
+            {
+                "layer": key[0],
+                "expert": key[1],
+                "low": float(np.percentile(values, 2.5)),
+                "high": float(np.percentile(values, 97.5)),
+                "observations": len(values),
+            }
+            for key, values in sorted(differential_samples.items())
         ],
     }
 
@@ -139,6 +191,11 @@ def label_permutation(
     strata = {key: sorted(set(ids)) for key, ids in strata.items()}
     rng = np.random.default_rng(seed)
     null_scores = []
+    observed_by_key = {
+        (row["layer"], row["expert"]): float(row["differential"]) for row in baseline
+    }
+    expert_exceedances: dict[tuple[int, int], int] = defaultdict(int)
+    expert_null_observations: dict[tuple[int, int], int] = defaultdict(int)
     for _ in range(iterations):
         permuted_labels: dict[str, str] = {}
         for ids in strata.values():
@@ -154,6 +211,11 @@ def label_permutation(
         except AnalysisError:
             continue
         null_scores.append(float(sum(row["differential"] for row in ranking[:top_n])))
+        for row in ranking:
+            key = (row["layer"], row["expert"])
+            expert_null_observations[key] += 1
+            if float(row["differential"]) >= observed_by_key[key]:
+                expert_exceedances[key] += 1
     if not null_scores:
         raise AnalysisError("no valid label permutations; ensure both domains exist within strata")
     exceedances = sum(score >= observed for score in null_scores)
@@ -165,6 +227,16 @@ def label_permutation(
         "observed_top_sum": observed,
         "p_value": (exceedances + 1) / (len(null_scores) + 1),
         "null_scores": null_scores,
+        "expert_p_values": [
+            {
+                "layer": key[0],
+                "expert": key[1],
+                "p_value": (expert_exceedances[key] + 1)
+                / (expert_null_observations[key] + 1),
+                "null_observations": expert_null_observations[key],
+            }
+            for key in sorted(expert_null_observations)
+        ],
     }
 
 
