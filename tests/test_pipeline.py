@@ -54,3 +54,4 @@ def test_analysis_pipeline_writes_complete_candidate_bundle(tmp_path):
     assert len(list((output / "controls").glob("frequency-random-*.json"))) == 20
     assert (output / "controls" / "frequency-matched.json").exists()
     assert (output / "controls" / "highest-frequency.json").exists()
+    assert (output / "controls" / "task-agnostic-reap.json").exists()

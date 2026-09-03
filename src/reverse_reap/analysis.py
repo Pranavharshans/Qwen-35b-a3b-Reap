@@ -358,6 +358,17 @@ def build_control_sets(
         (row for row in ranking if (row["layer"], row["expert"]) not in selected_set),
         key=lambda row: (-float(row.get("routing_frequency", 0.0)), row["layer"], row["expert"]),
     )[: len(selected)]
+    task_agnostic_reap = sorted(
+        (row for row in ranking if (row["layer"], row["expert"]) not in selected_set),
+        key=lambda row: (
+            -(
+                float(row.get("coding_mean_reap", 0))
+                + float(row.get("control_mean_reap", 0))
+            ),
+            row["layer"],
+            row["expert"],
+        ),
+    )[: len(selected)]
     return {
         "schema_version": 1,
         "seed": seed,
@@ -366,6 +377,10 @@ def build_control_sets(
         # Kept as an explicit negative control, distinct from differential ranking.
         "highest_frequency_set": [
             {"layer": row["layer"], "expert": row["expert"]} for row in highest_frequency
+        ],
+        "task_agnostic_reap_set": [
+            {"layer": row["layer"], "expert": row["expert"]}
+            for row in task_agnostic_reap
         ],
         "lowest_differential_set": [
             {"layer": row["layer"], "expert": row["expert"]} for row in lowest

@@ -187,6 +187,13 @@ def analyze_telemetry(
         {"control_id": "highest-frequency", "experts": controls["highest_frequency_set"]},
     )
     _write_json(
+        controls_dir / "task-agnostic-reap.json",
+        {
+            "control_id": "task-agnostic-reap",
+            "experts": controls["task_agnostic_reap_set"],
+        },
+    )
+    _write_json(
         controls_dir / "lowest-differential.json",
         {"control_id": "lowest-differential", "experts": controls["lowest_differential_set"]},
     )

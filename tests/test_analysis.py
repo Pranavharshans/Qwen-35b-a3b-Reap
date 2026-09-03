@@ -99,6 +99,7 @@ def test_builds_predeclared_causal_control_sets():
     assert len(controls["frequency_matched_random_sets"]) == 20
     assert all(len(item["experts"]) == 2 for item in controls["frequency_matched_random_sets"])
     assert len(controls["highest_frequency_set"]) == 2
+    assert len(controls["task_agnostic_reap_set"]) == 2
     assert len(controls["lowest_differential_set"]) == 2
 
 
