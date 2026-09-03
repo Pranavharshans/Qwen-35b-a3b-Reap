@@ -495,6 +495,7 @@ def build_full_plan(
             gpu_hours=0.2,
             storage_gb=20,
             failure="terminal",
+            run_if=gate_c,
         )
     )
     tasks.append(

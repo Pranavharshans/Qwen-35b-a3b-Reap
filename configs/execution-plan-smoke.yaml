@@ -119,6 +119,10 @@ tasks:
     estimated_gpu_hours: 0.25
     estimated_storage_gb: 0.1
     failure_behavior: terminal
+    run_if:
+      path: "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json"
+      field: gate_passed
+      equals: true
 
   - task_id: selected-ablation-validation
     objective: Evaluate the frozen candidate set with zero contribution and no router renormalization.
@@ -131,6 +135,10 @@ tasks:
     estimated_gpu_hours: 0.75
     estimated_storage_gb: 1
     failure_behavior: retry
+    run_if:
+      path: "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json"
+      field: gate_passed
+      equals: true
 
   - task_id: extract-candidates
     objective: Extract every frozen candidate tensor and independently prove byte equality.
@@ -143,3 +151,7 @@ tasks:
     estimated_gpu_hours: 0.1
     estimated_storage_gb: 10
     failure_behavior: terminal
+    run_if:
+      path: "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json"
+      field: gate_passed
+      equals: true
