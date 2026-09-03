@@ -14,10 +14,116 @@ from reverse_reap.analysis import (
     freeze_candidates,
     label_permutation,
 )
+from reverse_reap.analysis_fast import fast_analysis_outputs, load_or_build_cells
 
 
 def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _freeze_analysis_artifacts(
+    output_dir: Path,
+    *,
+    ranking: list[dict[str, Any]],
+    bootstrap: dict[str, Any],
+    permutation: dict[str, Any],
+    analyses: list[dict[str, Any]],
+    chosen_top_n: int,
+    configured_top_n: int,
+    any_gate_passed: bool,
+    source_hash: str,
+    seed: int,
+) -> dict[str, Any]:
+    """Shared artifact-writing tail for both analysis engines."""
+    intervals = {
+        (item["layer"], item["expert"]): item
+        for item in bootstrap["differential_intervals"]
+    }
+    p_values = {
+        (item["layer"], item["expert"]): item for item in permutation["expert_p_values"]
+    }
+    for row in ranking:
+        if not row.get("observed", True):
+            continue  # unranked single-domain experts carry no interval or p-value
+        key = (row["layer"], row["expert"])
+        interval = intervals[key]
+        row["differential_bootstrap_95ci"] = [interval["low"], interval["high"]]
+        row["label_permutation_p_value"] = p_values[key]["p_value"]
+    candidate_path = output_dir / "candidate-manifest.json"
+    candidates = freeze_candidates(
+        ranking,
+        bootstrap,
+        permutation,
+        top_n=chosen_top_n,
+        source_hashes={"telemetry": source_hash},
+        destination=candidate_path,
+    )
+    selected = [(item["layer"], item["expert"]) for item in candidates["experts"]]
+    controls = build_control_sets(ranking, selected, random_sets=20, seed=seed)
+    _write_json(output_dir / "expert-ranking.json", ranking)
+    _write_json(output_dir / "bootstrap-stability.json", bootstrap)
+    _write_json(output_dir / "label-permutation.json", permutation)
+    _write_json(
+        output_dir / "cardinality-grid.json",
+        {
+            "schema_version": 1,
+            "selection_rule": "smallest-grid-cardinality-passing-gate-c",
+            "configured_fallback_top_n": configured_top_n,
+            "selected_top_n": chosen_top_n,
+            "any_gate_passed": any_gate_passed,
+            "grid": [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"bootstrap", "permutation"}
+                }
+                for item in analyses
+            ],
+        },
+    )
+    _write_json(output_dir / "control-manifests.json", controls)
+    ranked_count = sum(1 for row in ranking if row.get("observed", True))
+    unranked_count = len(ranking) - ranked_count
+    _write_json(
+        output_dir / "unobserved-experts.json",
+        {
+            "schema_version": 1,
+            "selection_universe": "experts-observed-in-both-domains",
+            "experts_ranked": ranked_count,
+            "experts_unranked_single_domain": unranked_count,
+            "unranked": [row for row in ranking if not row.get("observed", True)],
+        },
+    )
+    controls_dir = output_dir / "controls"
+    controls_dir.mkdir(exist_ok=True)
+    for item in controls["layer_matched_random_sets"]:
+        _write_json(controls_dir / f"{item['control_id']}.json", item)
+    for item in controls["frequency_matched_random_sets"]:
+        _write_json(controls_dir / f"{item['control_id']}.json", item)
+    _write_json(
+        controls_dir / "frequency-matched.json",
+        {
+            "control_id": "frequency-matched",
+            "experts": controls["frequency_matched_random_sets"][0]["experts"],
+            "source_control_id": controls["frequency_matched_random_sets"][0]["control_id"],
+        },
+    )
+    _write_json(
+        controls_dir / "highest-frequency.json",
+        {"control_id": "highest-frequency", "experts": controls["highest_frequency_set"]},
+    )
+    _write_json(
+        controls_dir / "task-agnostic-reap.json",
+        {
+            "control_id": "task-agnostic-reap",
+            "experts": controls["task_agnostic_reap_set"],
+        },
+    )
+    _write_json(
+        controls_dir / "lowest-differential.json",
+        {"control_id": "lowest-differential", "experts": controls["lowest_differential_set"]},
+    )
+    return candidates
 
 
 def analyze_telemetry(
@@ -31,7 +137,24 @@ def analyze_telemetry(
     splits: tuple[str, ...] = ("calibration", "selection"),
     segment: str = "joint",
     cardinality_grid: tuple[int, ...] | None = None,
+    engine: str = "fast",
+    cache_dir: Path | None = None,
 ) -> dict[str, Any]:
+    if engine == "fast":
+        return _analyze_telemetry_fast(
+            telemetry_path,
+            output_dir,
+            top_n=top_n,
+            bootstrap_iterations=bootstrap_iterations,
+            permutation_iterations=permutation_iterations,
+            seed=seed,
+            splits=splits,
+            segment=segment,
+            cardinality_grid=cardinality_grid,
+            cache_dir=cache_dir,
+        )
+    if engine != "reference":
+        raise ValueError(f"unknown analysis engine: {engine!r}")
     token_rows = [
         row
         for line in telemetry_path.read_text(encoding="utf-8").splitlines()
@@ -129,92 +252,18 @@ def analyze_telemetry(
     top_n = chosen["top_n"]
     bootstrap = chosen["bootstrap"]
     permutation = chosen["permutation"]
-    intervals = {
-        (item["layer"], item["expert"]): item
-        for item in bootstrap["differential_intervals"]
-    }
-    p_values = {
-        (item["layer"], item["expert"]): item for item in permutation["expert_p_values"]
-    }
-    for row in ranking:
-        if not row.get("observed", True):
-            continue  # unranked single-domain experts carry no interval or p-value
-        key = (row["layer"], row["expert"])
-        interval = intervals[key]
-        row["differential_bootstrap_95ci"] = [interval["low"], interval["high"]]
-        row["label_permutation_p_value"] = p_values[key]["p_value"]
     source_hash = hashlib.sha256(telemetry_path.read_bytes()).hexdigest()
-    candidate_path = output_dir / "candidate-manifest.json"
-    candidates = freeze_candidates(
-        ranking,
-        bootstrap,
-        permutation,
-        top_n=top_n,
-        source_hashes={"telemetry": source_hash},
-        destination=candidate_path,
-    )
-    selected = [(item["layer"], item["expert"]) for item in candidates["experts"]]
-    controls = build_control_sets(ranking, selected, random_sets=20, seed=seed)
-    _write_json(output_dir / "expert-ranking.json", ranking)
-    _write_json(output_dir / "bootstrap-stability.json", bootstrap)
-    _write_json(output_dir / "label-permutation.json", permutation)
-    _write_json(
-        output_dir / "cardinality-grid.json",
-        {
-            "schema_version": 1,
-            "selection_rule": "smallest-grid-cardinality-passing-gate-c",
-            "configured_fallback_top_n": configured_top_n,
-            "selected_top_n": top_n,
-            "any_gate_passed": bool(passing),
-            "grid": [
-                {
-                    key: value
-                    for key, value in item.items()
-                    if key not in {"bootstrap", "permutation"}
-                }
-                for item in analyses
-            ],
-        },
-    )
-    _write_json(output_dir / "control-manifests.json", controls)
-    _write_json(
-        output_dir / "unobserved-experts.json",
-        {
-            "schema_version": 1,
-            "selection_universe": "experts-observed-in-both-domains",
-            "experts_ranked": ranked_count,
-            "experts_unranked_single_domain": unranked_count,
-            "unranked": [row for row in ranking if not row.get("observed", True)],
-        },
-    )
-    controls_dir = output_dir / "controls"
-    controls_dir.mkdir(exist_ok=True)
-    for item in controls["layer_matched_random_sets"]:
-        _write_json(controls_dir / f"{item['control_id']}.json", item)
-    for item in controls["frequency_matched_random_sets"]:
-        _write_json(controls_dir / f"{item['control_id']}.json", item)
-    _write_json(
-        controls_dir / "frequency-matched.json",
-        {
-            "control_id": "frequency-matched",
-            "experts": controls["frequency_matched_random_sets"][0]["experts"],
-            "source_control_id": controls["frequency_matched_random_sets"][0]["control_id"],
-        },
-    )
-    _write_json(
-        controls_dir / "highest-frequency.json",
-        {"control_id": "highest-frequency", "experts": controls["highest_frequency_set"]},
-    )
-    _write_json(
-        controls_dir / "task-agnostic-reap.json",
-        {
-            "control_id": "task-agnostic-reap",
-            "experts": controls["task_agnostic_reap_set"],
-        },
-    )
-    _write_json(
-        controls_dir / "lowest-differential.json",
-        {"control_id": "lowest-differential", "experts": controls["lowest_differential_set"]},
+    candidates = _freeze_analysis_artifacts(
+        output_dir,
+        ranking=ranking,
+        bootstrap=bootstrap,
+        permutation=permutation,
+        analyses=analyses,
+        chosen_top_n=top_n,
+        configured_top_n=configured_top_n,
+        any_gate_passed=bool(passing),
+        source_hash=source_hash,
+        seed=seed,
     )
     try:
         import pyarrow as pa
@@ -233,6 +282,70 @@ def analyze_telemetry(
         "selected_top_n": top_n,
         "median_bootstrap_jaccard": bootstrap["median_jaccard"],
         "permutation_p_value": permutation["p_value"],
+        "parquet_written": parquet_written,
+        "output_dir": str(output_dir),
+    }
+
+
+def _analyze_telemetry_fast(
+    telemetry_path: Path,
+    output_dir: Path,
+    *,
+    top_n: int,
+    bootstrap_iterations: int,
+    permutation_iterations: int,
+    seed: int,
+    splits: tuple[str, ...],
+    segment: str,
+    cardinality_grid: tuple[int, ...] | None,
+    cache_dir: Path | None,
+) -> dict[str, Any]:
+    """Optimized engine: streaming cells + SHA-keyed cache + vectorized inference."""
+    table = load_or_build_cells(telemetry_path, splits=splits, segment=segment, cache_dir=cache_dir)
+    outputs = fast_analysis_outputs(
+        table,
+        top_n=top_n,
+        bootstrap_iterations=bootstrap_iterations,
+        permutation_iterations=permutation_iterations,
+        seed=seed,
+        cardinality_grid=cardinality_grid,
+    )
+    ranking = outputs["ranking"]
+    chosen = outputs["chosen"]
+    top_n = chosen["top_n"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    from reverse_reap.analysis_fast import telemetry_sha256
+
+    source_hash = telemetry_sha256(telemetry_path)
+    candidates = _freeze_analysis_artifacts(
+        output_dir,
+        ranking=ranking,
+        bootstrap=chosen["bootstrap"],
+        permutation=chosen["permutation"],
+        analyses=outputs["analyses"],
+        chosen_top_n=top_n,
+        configured_top_n=outputs["configured_top_n"],
+        any_gate_passed=any(item["gate_passed"] for item in outputs["analyses"]),
+        source_hash=source_hash,
+        seed=seed,
+    )
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError:
+        parquet_written = False
+    else:
+        pq.write_table(pa.Table.from_pylist(ranking), output_dir / "expert-ranking.parquet")
+        parquet_written = True
+    return {
+        "routing_rows": table.routing_rows,
+        "observations": table.n_cells,
+        "experts_ranked": outputs["ranked_count"],
+        "experts_unranked_single_domain": outputs["unranked_count"],
+        "candidate_gate_passed": candidates["gate_passed"],
+        "selected_top_n": top_n,
+        "median_bootstrap_jaccard": chosen["bootstrap"]["median_jaccard"],
+        "permutation_p_value": chosen["permutation"]["p_value"],
         "parquet_written": parquet_written,
         "output_dir": str(output_dir),
     }

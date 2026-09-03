@@ -22,6 +22,9 @@ runs/
 *.bin
 *.parquet
 
+# Derived analysis aggregate cache (telemetry-SHA-keyed .npz files).
+.cache/
+
 # Keep only safe templates and tiny fixtures.
 !tests/fixtures/**
 
