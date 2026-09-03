@@ -9,6 +9,7 @@ def test_smoke_execution_plan_is_valid_and_dependency_complete():
     assert plan.tasks[0].task_id == "gpu-preflight"
     assert {task.task_id for task in plan.tasks} >= {
         "dataset-freeze",
+        "dataset-lengthmatch",
         "dataset-token-length-audit",
         "instrumentation-probe",
         "telemetry-smoke",
@@ -18,3 +19,13 @@ def test_smoke_execution_plan_is_valid_and_dependency_complete():
         "selected-ablation-validation",
         "extract-candidates",
     }
+    by_id = {task.task_id: task for task in plan.tasks}
+    lengthmatch = by_id["dataset-lengthmatch"]
+    assert "datasets/manifests/smoke-lengthmatched.jsonl" in [
+        str(path) for path in lengthmatch.outputs
+    ]
+    audit = by_id["dataset-token-length-audit"]
+    assert "datasets/manifests/smoke-lengthmatched.jsonl" in [
+        str(part) for part in audit.command
+    ]
+    assert "dataset-lengthmatch" in audit.dependencies

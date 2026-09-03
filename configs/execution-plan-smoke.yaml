@@ -36,6 +36,18 @@ tasks:
     estimated_storage_gb: 4
     failure_behavior: terminal
 
+  - task_id: dataset-lengthmatch
+    objective: Reselect control rows longest-first so length-matched tiers satisfy the frozen gates.
+    definition_of_done: Length-matched smoke tier exists with report; originals untouched; coding rows byte-identical.
+    command: [reverse-reap, rebalance-controls, datasets/manifests/source-full.jsonl, datasets/manifests, /models/qwen]
+    validation_command: [python, scripts/validate_artifact.py, dataset, datasets/manifests/smoke-lengthmatched.jsonl]
+    inputs: [datasets/manifests/source-full.jsonl, datasets/manifests/smoke.jsonl]
+    outputs: [datasets/manifests/smoke-lengthmatched.jsonl, datasets/manifests/pilot-lengthmatched.jsonl, datasets/manifests/medium-lengthmatched.jsonl, datasets/manifests/full-lengthmatched.jsonl, datasets/manifests/lengthmatch-report.json]
+    dependencies: [dataset-tiers]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 4
+    failure_behavior: terminal
+
   - task_id: instrumentation-probe
     objective: Prove capture leaves logits byte-exact and records top-8 routes across all 40 layers.
     definition_of_done: Probe reports exact logits and the expected number of routed records.
@@ -51,11 +63,11 @@ tasks:
   - task_id: dataset-token-length-audit
     objective: Measure exact Qwen-tokenizer prompt lengths before attribution.
     definition_of_done: Coding/control median, tail, and truncation balance gates pass.
-    command: [reverse-reap, audit-token-lengths, datasets/manifests/smoke.jsonl, /models/qwen, runs/smoke/dataset-token-lengths.json, --max-input-tokens, "1024"]
+    command: [reverse-reap, audit-token-lengths, datasets/manifests/smoke-lengthmatched.jsonl, /models/qwen, runs/smoke/dataset-token-lengths.json, --max-input-tokens, "1024"]
     validation_command: [python, scripts/validate_artifact.py, dataset-lengths, runs/smoke/dataset-token-lengths.json]
-    inputs: [datasets/manifests/smoke.jsonl]
+    inputs: [datasets/manifests/smoke-lengthmatched.jsonl]
     outputs: [runs/smoke/dataset-token-lengths.json]
-    dependencies: [dataset-tiers, gpu-preflight]
+    dependencies: [dataset-lengthmatch, gpu-preflight]
     estimated_gpu_hours: 0
     estimated_storage_gb: 0.1
     failure_behavior: terminal
@@ -63,11 +75,11 @@ tasks:
   - task_id: telemetry-smoke
     objective: Capture streaming prompt, completion, and joint REAP statistics for twenty samples.
     definition_of_done: Token-level telemetry passes exact row-count, identity, and numeric invariants.
-    command: [reverse-reap, capture, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke.jsonl, runs/smoke/telemetry.jsonl, --split, all, --limit, "20"]
+    command: [reverse-reap, capture, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/telemetry.jsonl, --split, all, --limit, "20"]
     validation_command: [reverse-reap, validate-telemetry, runs/smoke/telemetry.jsonl, --output, runs/smoke/telemetry-validation.json]
-    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke.jsonl]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl]
     outputs: [runs/smoke/telemetry.jsonl, runs/smoke/telemetry-validation.json]
-    dependencies: [instrumentation-probe, dataset-tiers, dataset-token-length-audit]
+    dependencies: [instrumentation-probe, dataset-lengthmatch, dataset-token-length-audit]
     estimated_gpu_hours: 1.5
     estimated_storage_gb: 1
     failure_behavior: retry
@@ -87,9 +99,9 @@ tasks:
   - task_id: baseline-validation
     objective: Establish an intact deterministic validation baseline on scoreable frozen items.
     definition_of_done: Every requested sample has a recorded score or explicit scorer failure.
-    command: [reverse-reap, evaluate, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke.jsonl, runs/smoke/baseline-validation.jsonl, --split, validation, --condition-id, C0, --evaluator-image, "${REVERSE_REAP_EVALUATOR_IMAGE}", --limit, "20"]
+    command: [reverse-reap, evaluate, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/baseline-validation.jsonl, --split, validation, --condition-id, C0, --evaluator-image, "${REVERSE_REAP_EVALUATOR_IMAGE}", --limit, "20"]
     validation_command: [python, scripts/validate_artifact.py, dataset, runs/smoke/baseline-validation.jsonl]
-    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke.jsonl]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl]
     outputs: [runs/smoke/baseline-validation.jsonl]
     dependencies: [instrumentation-probe, dataset-tiers]
     estimated_gpu_hours: 0.75
@@ -99,9 +111,9 @@ tasks:
   - task_id: single-expert-intervention-probe
     objective: Prove one routed candidate can be zeroed with exact no-op semantics.
     definition_of_done: One real routed sample has bit-exact no-op logits and changed masked logits.
-    command: [reverse-reap, probe-intervention, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke.jsonl, runs/smoke/analysis/candidate-manifest.json, runs/smoke/intervention-probe.json, --split, selection, --limit, "20"]
+    command: [reverse-reap, probe-intervention, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/analysis/candidate-manifest.json, runs/smoke/intervention-probe.json, --split, selection, --limit, "20"]
     validation_command: [python, scripts/validate_artifact.py, probe, runs/smoke/intervention-probe.json]
-    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke.jsonl, runs/smoke/analysis/candidate-manifest.json]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/analysis/candidate-manifest.json]
     outputs: [runs/smoke/intervention-probe.json]
     dependencies: [candidate-analysis]
     estimated_gpu_hours: 0.25
@@ -111,9 +123,9 @@ tasks:
   - task_id: selected-ablation-validation
     objective: Evaluate the frozen candidate set with zero contribution and no router renormalization.
     definition_of_done: Selected-set results contain the same requested validation sample identities.
-    command: [reverse-reap, evaluate, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke.jsonl, runs/smoke/selected-validation.jsonl, --split, validation, --condition-id, C2, --evaluator-image, "${REVERSE_REAP_EVALUATOR_IMAGE}", --expert-manifest, runs/smoke/analysis/candidate-manifest.json, --limit, "20"]
+    command: [reverse-reap, evaluate, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/selected-validation.jsonl, --split, validation, --condition-id, C2, --evaluator-image, "${REVERSE_REAP_EVALUATOR_IMAGE}", --expert-manifest, runs/smoke/analysis/candidate-manifest.json, --limit, "20"]
     validation_command: [python, scripts/validate_artifact.py, dataset, runs/smoke/selected-validation.jsonl]
-    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke.jsonl, runs/smoke/analysis/candidate-manifest.json]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/analysis/candidate-manifest.json]
     outputs: [runs/smoke/selected-validation.jsonl]
     dependencies: [single-expert-intervention-probe, baseline-validation]
     estimated_gpu_hours: 0.75
