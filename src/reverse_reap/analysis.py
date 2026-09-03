@@ -67,14 +67,13 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
                 float(row["reap_saliency"]) * float(row.get("routed_count", 0)),
             )
         )
-    keys = set(grouped["coding"]) | set(grouped["control"])
-    incomplete = [
-        key for key in keys if key not in grouped["coding"] or key not in grouped["control"]
-    ]
-    if incomplete:
-        raise AnalysisError(f"experts missing a coding or control observation: {incomplete[:5]}")
+    shared = set(grouped["coding"]) & set(grouped["control"])
+    if not shared:
+        raise AnalysisError("no experts observed in both coding and control")
     means = {
-        domain: {key: float(np.mean(values)) for key, values in domain_values.items()}
+        domain: {
+            key: float(np.mean(values)) for key, values in domain_values.items() if key in shared
+        }
         for domain, domain_values in grouped.items()
     }
     domain_token_counts = {
@@ -87,12 +86,13 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
     coding_z = _zscore_by_layer(means["coding"])
     control_z = _zscore_by_layer(means["control"])
     rows = []
-    for layer, expert in keys:
+    for layer, expert in shared:
         key = (layer, expert)
         row = {
             "layer": layer,
             "expert": expert,
             "observed": True,
+            "observed_in": ["coding", "control"],
             "coding_mean_reap": means["coding"][key],
             "control_mean_reap": means["control"][key],
             "coding_z": coding_z[key],
@@ -122,7 +122,42 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
                 }
             )
         rows.append(row)
-    return sorted(rows, key=lambda row: (-row["differential"], row["layer"], row["expert"]))
+    for layer, expert in sorted((set(grouped["coding"]) | set(grouped["control"])) - shared):
+        key = (layer, expert)
+        observed_in = sorted(
+            domain for domain in ("coding", "control") if key in grouped[domain]
+        )
+        rows.append(
+            {
+                "layer": layer,
+                "expert": expert,
+                "observed": False,
+                "observed_in": observed_in,
+                "coding_mean_reap": means["coding"].get(key),
+                "control_mean_reap": means["control"].get(key),
+                "coding_z": None,
+                "control_z": None,
+                "differential": None,
+                "routing_frequency": float(np.mean(routing_counts[key])),
+                "exclusion_reason": "observed in only one domain; not ranked",
+            }
+        )
+    ranked = sorted(
+        (row for row in rows if row["observed"]),
+        key=lambda row: (-row["differential"], row["layer"], row["expert"]),
+    )
+    unranked = sorted(
+        (row for row in rows if not row["observed"]),
+        key=lambda row: (row["layer"], row["expert"]),
+    )
+    return ranked + unranked
+
+
+def unobserved_experts(
+    ranking: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return the recorded-but-unranked experts excluded from the differential."""
+    return [row for row in ranking if not row.get("observed", True)]
 
 
 def _sample_groups(observations: list[dict[str, Any]]) -> dict[tuple[str, str], list[str]]:
@@ -137,7 +172,9 @@ def bootstrap_stability(
 ) -> dict[str, Any]:
     if top_n <= 0 or iterations <= 0:
         raise ValueError("top_n and iterations must be positive")
-    baseline = differential_ranking(observations)
+    baseline = [row for row in differential_ranking(observations) if row["observed"]]
+    if not baseline:
+        raise AnalysisError("no experts observed in both coding and control")
     target = {(row["layer"], row["expert"]) for row in baseline[:top_n]}
     groups = _sample_groups(observations)
     rows_by_sample: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -153,7 +190,7 @@ def bootstrap_stability(
             chosen = rng.choice(ids, size=len(ids), replace=True)
             for sample_id in chosen:
                 sampled.extend(rows_by_sample[str(sample_id)])
-        ranked = differential_ranking(sampled)
+        ranked = [row for row in differential_ranking(sampled) if row["observed"]]
         selected = {(row["layer"], row["expert"]) for row in ranked[:top_n]}
         for row in ranked:
             differential_samples[(row["layer"], row["expert"])].append(row["differential"])
@@ -188,7 +225,9 @@ def label_permutation(
     observations: list[dict[str, Any]], *, top_n: int, iterations: int, seed: int
 ) -> dict[str, Any]:
     """Permute domain labels at sample level while preserving group sizes."""
-    baseline = differential_ranking(observations)
+    baseline = [row for row in differential_ranking(observations) if row["observed"]]
+    if not baseline:
+        raise AnalysisError("no experts observed in both coding and control")
     observed = float(sum(row["differential"] for row in baseline[:top_n]))
     rows_by_sample: dict[str, list[dict[str, Any]]] = defaultdict(list)
     sample_labels: dict[str, str] = {}
@@ -220,11 +259,12 @@ def label_permutation(
             ranking = differential_ranking(permuted)
         except AnalysisError:
             continue
-        null_scores.append(float(sum(row["differential"] for row in ranking[:top_n])))
-        for row in ranking:
+        ranked = [row for row in ranking if row["observed"]]
+        null_scores.append(float(sum(row["differential"] for row in ranked[:top_n])))
+        for row in ranked:
             key = (row["layer"], row["expert"])
             expert_null_observations[key] += 1
-            if float(row["differential"]) >= observed_by_key[key]:
+            if key in observed_by_key and float(row["differential"]) >= observed_by_key[key]:
                 expert_exceedances[key] += 1
     if not null_scores:
         raise AnalysisError("no valid label permutations; ensure both domains exist within strata")
@@ -259,16 +299,25 @@ def freeze_candidates(
     source_hashes: dict[str, str],
     destination: Path,
 ) -> dict[str, Any]:
+    ranked = [row for row in ranking if row.get("observed", True)]
+    unranked = [row for row in ranking if not row.get("observed", True)]
+    if len(ranked) < top_n:
+        raise AnalysisError(
+            f"only {len(ranked)} experts observed in both domains; cannot select top-{top_n}"
+        )
     payload = {
         "schema_version": 1,
         "status": "domain-differential candidate",
         "selection_method": "within-layer-zscore-coding-minus-control",
+        "selection_universe": "experts-observed-in-both-domains",
         "top_n": top_n,
         "thresholds": {"median_bootstrap_jaccard": 0.60, "permutation_p_value": 0.05},
         "gate_passed": bootstrap["median_jaccard"] >= 0.60 and permutation["p_value"] <= 0.05,
+        "experts_ranked": len(ranked),
+        "experts_unranked_single_domain": len(unranked),
         "experts": [
             {"layer": row["layer"], "expert": row["expert"], "differential": row["differential"]}
-            for row in ranking[:top_n]
+            for row in ranked[:top_n]
         ],
         "source_hashes": dict(sorted(source_hashes.items())),
     }
@@ -299,13 +348,19 @@ def build_control_sets(
     random_sets: int = 20,
     seed: int,
 ) -> dict[str, Any]:
-    """Precompute layer-matched, frequency-matched, and negative controls."""
+    """Precompute layer-matched, frequency-matched, and negative controls.
+
+    Control pools use only ranked (both-domain-observed) experts so every
+    control is a valid differential comparator for a selected candidate.
+    """
     if random_sets < 20:
         raise AnalysisError("v0 requires at least 20 random control sets")
     selected_set = set(selected)
     by_layer: dict[int, list[int]] = defaultdict(list)
     row_by_key = {}
     for row in ranking:
+        if not row.get("observed", True):
+            continue
         key = (int(row["layer"]), int(row["expert"]))
         row_by_key[key] = row
         if key not in selected_set:
@@ -350,16 +405,21 @@ def build_control_sets(
         frequency_matched_sets.append(
             {"control_id": f"frequency-random-{index:03d}", "experts": members}
         )
+    eligible = [
+        row
+        for row in ranking
+        if row.get("observed", True) and (row["layer"], row["expert"]) not in selected_set
+    ]
     lowest = sorted(
-        (row for row in ranking if (row["layer"], row["expert"]) not in selected_set),
+        eligible,
         key=lambda row: (row["differential"], row["layer"], row["expert"]),
     )[: len(selected)]
     highest_frequency = sorted(
-        (row for row in ranking if (row["layer"], row["expert"]) not in selected_set),
+        eligible,
         key=lambda row: (-float(row.get("routing_frequency", 0.0)), row["layer"], row["expert"]),
     )[: len(selected)]
     task_agnostic_reap = sorted(
-        (row for row in ranking if (row["layer"], row["expert"]) not in selected_set),
+        eligible,
         key=lambda row: (
             -(
                 float(row.get("coding_mean_reap", 0))

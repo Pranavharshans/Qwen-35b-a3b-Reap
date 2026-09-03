@@ -91,6 +91,13 @@ def analyze_telemetry(
     ]
     output_dir.mkdir(parents=True, exist_ok=True)
     ranking = differential_ranking(observations)
+    ranked_count = sum(1 for row in ranking if row.get("observed", True))
+    unranked_count = len(ranking) - ranked_count
+    if ranked_count < top_n:
+        raise ValueError(
+            f"only {ranked_count} experts observed in both domains; "
+            f"cannot evaluate top-{top_n}"
+        )
     configured_top_n = top_n
     cardinalities = sorted(set(cardinality_grid or (top_n,)))
     if not cardinalities or any(value <= 0 for value in cardinalities):
@@ -168,6 +175,16 @@ def analyze_telemetry(
         },
     )
     _write_json(output_dir / "control-manifests.json", controls)
+    _write_json(
+        output_dir / "unobserved-experts.json",
+        {
+            "schema_version": 1,
+            "selection_universe": "experts-observed-in-both-domains",
+            "experts_ranked": ranked_count,
+            "experts_unranked_single_domain": unranked_count,
+            "unranked": [row for row in ranking if not row.get("observed", True)],
+        },
+    )
     controls_dir = output_dir / "controls"
     controls_dir.mkdir(exist_ok=True)
     for item in controls["layer_matched_random_sets"]:
@@ -208,7 +225,8 @@ def analyze_telemetry(
     return {
         "routing_rows": len(token_rows),
         "observations": len(observations),
-        "experts_ranked": len(ranking),
+        "experts_ranked": ranked_count,
+        "experts_unranked_single_domain": unranked_count,
         "candidate_gate_passed": candidates["gate_passed"],
         "selected_top_n": top_n,
         "median_bootstrap_jaccard": bootstrap["median_jaccard"],

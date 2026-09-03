@@ -49,8 +49,23 @@ def test_bootstrap_and_permutation_are_seed_deterministic():
     assert 0 < permutation["p_value"] <= 1
 
 
-def test_ranking_rejects_missing_control_evidence():
-    with pytest.raises(AnalysisError, match="missing a coding or control"):
+def test_ranking_records_single_domain_experts_without_ranking_them():
+    rows = observations()
+    # Drop every control observation of expert 2 so it is coding-only.
+    partial = [row for row in rows if not (row["domain"] == "control" and row["expert"] == 2)]
+    ranking = differential_ranking(partial)
+    ranked = [row for row in ranking if row["observed"]]
+    unranked = [row for row in ranking if not row["observed"]]
+    assert {(row["layer"], row["expert"]) for row in ranked} == {(0, 0), (0, 1)}
+    assert ranking[:2] == ranked  # ranked intersection first, unranked trailing
+    assert [(row["layer"], row["expert"]) for row in unranked] == [(0, 2)]
+    assert unranked[0]["observed_in"] == ["coding"]
+    assert unranked[0]["differential"] is None
+    assert unranked[0]["exclusion_reason"]
+
+
+def test_ranking_rejects_empty_shared_universe():
+    with pytest.raises(AnalysisError, match="no experts observed in both"):
         differential_ranking([observations()[0]])
 
 
