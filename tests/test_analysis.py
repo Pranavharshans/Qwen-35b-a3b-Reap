@@ -5,6 +5,7 @@ import pytest
 from reverse_reap.analysis import (
     AnalysisError,
     bootstrap_stability,
+    build_control_sets,
     differential_ranking,
     freeze_candidates,
     label_permutation,
@@ -78,3 +79,27 @@ def test_candidate_manifest_is_hashed_and_cannot_be_mutated(tmp_path):
             source_hashes={"telemetry": "a" * 64},
             destination=path,
         )
+
+
+def test_builds_predeclared_causal_control_sets():
+    ranking = []
+    for layer in range(2):
+        for expert in range(6):
+            ranking.append(
+                {
+                    "layer": layer,
+                    "expert": expert,
+                    "differential": 10 - expert,
+                    "routing_frequency": expert / 10,
+                }
+            )
+    controls = build_control_sets(ranking, [(0, 0), (1, 0)], random_sets=20, seed=9)
+    assert len(controls["layer_matched_random_sets"]) == 20
+    assert all(len(item["experts"]) == 2 for item in controls["layer_matched_random_sets"])
+    assert len(controls["frequency_matched_set"]) == 2
+    assert len(controls["lowest_differential_set"]) == 2
+
+
+def test_rejects_too_few_random_controls():
+    with pytest.raises(AnalysisError, match="at least 20"):
+        build_control_sets([], [], random_sets=19, seed=1)

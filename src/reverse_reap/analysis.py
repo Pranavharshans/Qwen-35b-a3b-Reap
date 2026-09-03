@@ -36,6 +36,7 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
         "coding": defaultdict(list),
         "control": defaultdict(list),
     }
+    routing_counts: dict[tuple[int, int], list[float]] = defaultdict(list)
     for row in observations:
         domain = row.get("domain")
         if domain not in grouped:
@@ -44,6 +45,9 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
         if not np.isfinite(value):
             raise AnalysisError("REAP observations must be finite")
         grouped[domain][(int(row["layer"]), int(row["expert"]))].append(value)
+        routing_counts[(int(row["layer"]), int(row["expert"]))].append(
+            float(row.get("routed_count", 0))
+        )
     keys = set(grouped["coding"]) | set(grouped["control"])
     incomplete = [
         key for key in keys if key not in grouped["coding"] or key not in grouped["control"]
@@ -65,6 +69,7 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
             "coding_z": coding_z[(layer, expert)],
             "control_z": control_z[(layer, expert)],
             "differential": coding_z[(layer, expert)] - control_z[(layer, expert)],
+            "routing_frequency": float(np.mean(routing_counts[(layer, expert)])),
         }
         for layer, expert in keys
     ]
@@ -203,3 +208,67 @@ def freeze_candidates(
             if os.path.exists(temporary):
                 os.unlink(temporary)
     return payload
+
+
+def build_control_sets(
+    ranking: list[dict[str, Any]],
+    selected: list[tuple[int, int]],
+    *,
+    random_sets: int = 20,
+    seed: int,
+) -> dict[str, Any]:
+    """Precompute layer-matched, frequency-matched, and negative controls."""
+    if random_sets < 20:
+        raise AnalysisError("v0 requires at least 20 random control sets")
+    selected_set = set(selected)
+    by_layer: dict[int, list[int]] = defaultdict(list)
+    row_by_key = {}
+    for row in ranking:
+        key = (int(row["layer"]), int(row["expert"]))
+        row_by_key[key] = row
+        if key not in selected_set:
+            by_layer[key[0]].append(key[1])
+    required_by_layer: dict[int, int] = defaultdict(int)
+    for layer, _ in selected:
+        required_by_layer[layer] += 1
+    rng = np.random.default_rng(seed)
+    layer_matched = []
+    for index in range(random_sets):
+        members = []
+        for layer, count in sorted(required_by_layer.items()):
+            pool = sorted(by_layer[layer])
+            if len(pool) < count:
+                raise AnalysisError(f"insufficient non-selected experts in layer {layer}")
+            experts = rng.choice(pool, size=count, replace=False)
+            members.extend({"layer": layer, "expert": int(expert)} for expert in experts)
+        layer_matched.append({"control_id": f"layer-random-{index:03d}", "experts": members})
+
+    frequency_matched = []
+    available = set(row_by_key) - selected_set
+    for target in selected:
+        target_frequency = float(row_by_key[target].get("routing_frequency", 0.0))
+        same_layer = [key for key in available if key[0] == target[0]]
+        if not same_layer:
+            raise AnalysisError(f"no frequency control available for {target}")
+        chosen = min(
+            same_layer,
+            key=lambda key: (
+                abs(float(row_by_key[key].get("routing_frequency", 0.0)) - target_frequency),
+                key,
+            ),
+        )
+        available.remove(chosen)
+        frequency_matched.append({"layer": chosen[0], "expert": chosen[1]})
+    lowest = sorted(
+        (row for row in ranking if (row["layer"], row["expert"]) not in selected_set),
+        key=lambda row: (row["differential"], row["layer"], row["expert"]),
+    )[: len(selected)]
+    return {
+        "schema_version": 1,
+        "seed": seed,
+        "layer_matched_random_sets": layer_matched,
+        "frequency_matched_set": frequency_matched,
+        "lowest_differential_set": [
+            {"layer": row["layer"], "expert": row["expert"]} for row in lowest
+        ],
+    }
