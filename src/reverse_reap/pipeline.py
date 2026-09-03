@@ -64,6 +64,18 @@ def analyze_telemetry(
     _write_json(output_dir / "bootstrap-stability.json", bootstrap)
     _write_json(output_dir / "label-permutation.json", permutation)
     _write_json(output_dir / "control-manifests.json", controls)
+    controls_dir = output_dir / "controls"
+    controls_dir.mkdir(exist_ok=True)
+    for item in controls["layer_matched_random_sets"]:
+        _write_json(controls_dir / f"{item['control_id']}.json", item)
+    _write_json(
+        controls_dir / "frequency-matched.json",
+        {"control_id": "frequency-matched", "experts": controls["frequency_matched_set"]},
+    )
+    _write_json(
+        controls_dir / "lowest-differential.json",
+        {"control_id": "lowest-differential", "experts": controls["lowest_differential_set"]},
+    )
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq

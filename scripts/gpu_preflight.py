@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import subprocess
@@ -62,11 +63,17 @@ def validate(report: dict) -> list[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
     report = collect()
     errors = validate(report)
     report["passed"] = not errors
     report["errors"] = errors
     print(json.dumps(report, indent=2, sort_keys=True))
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return 0 if not errors else 2
 
 

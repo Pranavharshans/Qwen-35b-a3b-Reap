@@ -7,6 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from reverse_reap.causal import causal_gate_report, evaluate_condition
 from reverse_reap.config import load_config
 from reverse_reap.controller import run_next
 from reverse_reap.extraction import (
@@ -39,6 +40,14 @@ def validate_config(path: Path) -> int:
     return 0
 
 
+def emit_json(output: object, destination: Path | None = None) -> None:
+    rendered = json.dumps(output, indent=2, sort_keys=True) + "\n"
+    print(rendered, end="")
+    if destination:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(rendered, encoding="utf-8")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="reverse-reap")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -62,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument(
         "--prompt", default="Write a Python function that returns the sum of two integers."
     )
+    probe.add_argument("--output", type=Path)
     fetch = subparsers.add_parser("fetch-datasets")
     fetch.add_argument("catalog", type=Path)
     fetch.add_argument("destination", type=Path)
@@ -80,6 +90,22 @@ def build_parser() -> argparse.ArgumentParser:
     verify = subparsers.add_parser("verify-extraction")
     verify.add_argument("model_path", type=Path)
     verify.add_argument("destination", type=Path)
+    evaluate = subparsers.add_parser("evaluate")
+    evaluate.add_argument("config", type=Path)
+    evaluate.add_argument("model_path", type=Path)
+    evaluate.add_argument("dataset_manifest", type=Path)
+    evaluate.add_argument("destination", type=Path)
+    evaluate.add_argument("--split", required=True)
+    evaluate.add_argument("--condition-id", required=True)
+    evaluate.add_argument("--evaluator-image", required=True)
+    evaluate.add_argument("--expert-manifest", type=Path)
+    evaluate.add_argument("--limit", type=int)
+    gate = subparsers.add_parser("causal-report")
+    gate.add_argument("baseline", type=Path)
+    gate.add_argument("selected", type=Path)
+    gate.add_argument("destination", type=Path)
+    gate.add_argument("random", type=Path, nargs="+")
+    gate.add_argument("--replication-direction-passed", action="store_true")
     return parser
 
 
@@ -97,7 +123,7 @@ def main() -> int:
             run_id=resolved_run_id,
             heartbeat_seconds=args.heartbeat_seconds,
         )
-        print(json.dumps(output, indent=2, sort_keys=True))
+        emit_json(output)
         return 0 if output["status"] == "COMPLETE" else 2
     if args.command == "capture":
         output = capture_manifest(
@@ -108,15 +134,15 @@ def main() -> int:
             split=args.split,
             limit=args.limit,
         )
-        print(json.dumps(output, indent=2, sort_keys=True))
+        emit_json(output)
         return 0
     if args.command == "probe":
         output = probe_instrumentation(args.model_path, load_config(args.config), args.prompt)
-        print(json.dumps(output, indent=2, sort_keys=True))
+        emit_json(output, args.output)
         return 0 if output["passed"] else 3
     if args.command == "fetch-datasets":
         output = fetch_and_freeze(args.catalog, args.destination)
-        print(json.dumps(output, indent=2, sort_keys=True))
+        emit_json(output)
         return 0
     if args.command == "analyze":
         output = analyze_telemetry(
@@ -127,7 +153,7 @@ def main() -> int:
             permutation_iterations=args.permutation_iterations,
             seed=args.seed,
         )
-        print(json.dumps(output, indent=2, sort_keys=True))
+        emit_json(output)
         return 0
     if args.command == "extract":
         config = load_config(args.config)
@@ -141,11 +167,34 @@ def main() -> int:
             model_id=config.model.id,
             model_revision=config.model.revision,
         )
-        print(json.dumps(output, indent=2, sort_keys=True))
+        emit_json(output)
         return 0
     if args.command == "verify-extraction":
         output = verify_extraction(args.destination, args.model_path)
-        print(json.dumps(output, indent=2, sort_keys=True))
+        emit_json(output)
+        return 0
+    if args.command == "evaluate":
+        output = evaluate_condition(
+            args.model_path,
+            args.dataset_manifest,
+            args.destination,
+            load_config(args.config),
+            split=args.split,
+            condition_id=args.condition_id,
+            evaluator_image=args.evaluator_image,
+            expert_manifest=args.expert_manifest,
+            limit=args.limit,
+        )
+        emit_json(output)
+        return 0
+    if args.command == "causal-report":
+        output = causal_gate_report(
+            args.baseline,
+            args.selected,
+            args.random,
+            replication_direction_passed=args.replication_direction_passed,
+        )
+        emit_json(output, args.destination)
         return 0
     raise AssertionError(f"unhandled command: {args.command}")
 
