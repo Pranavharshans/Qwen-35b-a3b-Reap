@@ -205,3 +205,38 @@ def load_manifest(path: Path) -> list[NormalizedSample]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def freeze_tiers(full_manifest: Path, destination_dir: Path) -> dict[str, Any]:
+    """Create deterministic, nested cost-control tiers from one audited full manifest."""
+    samples = load_manifest(full_manifest)
+    audit_samples(samples)
+    # Per source/split caps retain source and held-out split coverage at every tier.
+    caps: dict[str, int | None] = {"smoke": 2, "pilot": 8, "medium": 32, "full": None}
+    ordered = sorted(
+        samples,
+        key=lambda item: (
+            item.source,
+            item.split,
+            sha256(f"tier-v1\0{item.sample_id}".encode()),
+        ),
+    )
+    groups: dict[tuple[str, str], list[NormalizedSample]] = {}
+    for sample in ordered:
+        groups.setdefault((sample.source, sample.split), []).append(sample)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    reports: dict[str, Any] = {}
+    previous_ids: set[str] = set()
+    for tier, cap in caps.items():
+        selected = [
+            sample
+            for group in groups.values()
+            for sample in (group if cap is None else group[:cap])
+        ]
+        selected_ids = {sample.sample_id for sample in selected}
+        if not previous_ids <= selected_ids:
+            raise DatasetError(f"tier {tier} is not a superset of the previous tier")
+        path = destination_dir / f"{tier}.jsonl"
+        reports[tier] = freeze_manifest(selected, path)
+        previous_ids = selected_ids
+    return {"schema_version": 1, "tiers": reports}

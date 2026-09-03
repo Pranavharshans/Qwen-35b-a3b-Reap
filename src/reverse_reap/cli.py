@@ -14,6 +14,7 @@ from reverse_reap.causal import (
 )
 from reverse_reap.config import load_config
 from reverse_reap.controller import run_all, run_next, run_status
+from reverse_reap.datasets import freeze_tiers
 from reverse_reap.extraction import (
     architecture_from_weight_index,
     extract_experts,
@@ -91,6 +92,9 @@ def build_parser() -> argparse.ArgumentParser:
     fetch = subparsers.add_parser("fetch-datasets")
     fetch.add_argument("catalog", type=Path)
     fetch.add_argument("destination", type=Path)
+    tiers = subparsers.add_parser("freeze-dataset-tiers")
+    tiers.add_argument("full_manifest", type=Path)
+    tiers.add_argument("destination_dir", type=Path)
     analyze = subparsers.add_parser("analyze")
     analyze.add_argument("telemetry", type=Path)
     analyze.add_argument("output_dir", type=Path)
@@ -203,6 +207,9 @@ def main() -> int:
     if args.command == "fetch-datasets":
         output = fetch_and_freeze(args.catalog, args.destination)
         emit_json(output)
+        return 0
+    if args.command == "freeze-dataset-tiers":
+        emit_json(freeze_tiers(args.full_manifest, args.destination_dir))
         return 0
     if args.command == "analyze":
         output = analyze_telemetry(

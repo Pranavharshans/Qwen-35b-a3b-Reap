@@ -8,6 +8,8 @@ from reverse_reap.datasets import (
     _near_duplicate_candidates,
     audit_samples,
     freeze_manifest,
+    freeze_tiers,
+    load_manifest,
     normalize_sample,
 )
 
@@ -71,3 +73,24 @@ def test_blocking_nominates_near_duplicate_without_all_pairs_scan():
     ]
     candidates = _near_duplicate_candidates([_lexical_fingerprint(text) for text in texts])
     assert (0, 1) in candidates
+
+
+def test_frozen_tiers_are_nested_and_reproducible(tmp_path):
+    samples = []
+    for domain in ("coding", "control"):
+        for index in range(40):
+            samples.append(
+                normalize_sample(
+                    raw(f"{domain}-{index}", f"unique prompt {domain} {index}", domain),
+                    seed=11,
+                )
+            )
+    full = tmp_path / "source-full.jsonl"
+    freeze_manifest(samples, full)
+    report = freeze_tiers(full, tmp_path / "tiers")
+    tier_ids = {}
+    for tier in ("smoke", "pilot", "medium", "full"):
+        path = tmp_path / "tiers" / f"{tier}.jsonl"
+        tier_ids[tier] = {item.sample_id for item in load_manifest(path)}
+        assert report["tiers"][tier]["manifest_sha256"]
+    assert tier_ids["smoke"] <= tier_ids["pilot"] <= tier_ids["medium"] <= tier_ids["full"]
