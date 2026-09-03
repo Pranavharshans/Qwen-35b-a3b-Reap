@@ -41,6 +41,7 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
         "coding": defaultdict(lambda: defaultdict(float)),
         "control": defaultdict(lambda: defaultdict(float)),
     }
+    sample_token_counts: dict[tuple[str, str], float] = {}
     for row in observations:
         domain = row.get("domain")
         if domain not in grouped:
@@ -48,6 +49,9 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
         value = float(row["reap_saliency"])
         if not np.isfinite(value):
             raise AnalysisError("REAP observations must be finite")
+        sample_key = (domain, str(row["sample_id"]))
+        token_count = float(row.get("token_count", 0))
+        sample_token_counts[sample_key] = max(sample_token_counts.get(sample_key, 0), token_count)
         grouped[domain][(int(row["layer"]), int(row["expert"]))].append(value)
         routing_counts[(int(row["layer"]), int(row["expert"]))].append(
             float(row.get("routed_count", 0))
@@ -55,7 +59,6 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
         key = (int(row["layer"]), int(row["expert"]))
         metrics = domain_metrics[domain][key]
         metrics["routing_count"] += float(row.get("routed_count", 0))
-        metrics["token_count"] += float(row.get("token_count", 0))
         metrics["router_weight_sum"] += float(row.get("router_weight_sum", 0))
         metrics["expert_output_norm_sum"] += float(row.get("expert_output_norm_sum", 0))
         metrics["weighted_norm_sum"] += float(
@@ -73,6 +76,13 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
     means = {
         domain: {key: float(np.mean(values)) for key, values in domain_values.items()}
         for domain, domain_values in grouped.items()
+    }
+    domain_token_counts = {
+        domain: sum(
+            count for (sample_domain, _), count in sample_token_counts.items()
+            if sample_domain == domain
+        )
+        for domain in ("coding", "control")
     }
     coding_z = _zscore_by_layer(means["coding"])
     control_z = _zscore_by_layer(means["control"])
@@ -93,7 +103,7 @@ def differential_ranking(observations: list[dict[str, Any]]) -> list[dict[str, A
         for domain in ("coding", "control"):
             metric = domain_metrics[domain][key]
             count = metric["routing_count"]
-            tokens = metric["token_count"]
+            tokens = domain_token_counts[domain]
             prefix = f"{domain}_"
             row.update(
                 {

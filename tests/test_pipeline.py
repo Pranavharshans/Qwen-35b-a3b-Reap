@@ -39,6 +39,7 @@ def test_analysis_pipeline_writes_complete_candidate_bundle(tmp_path):
     assert "differential_bootstrap_95ci" in ranking[0]
     assert "label_permutation_p_value" in ranking[0]
     assert "coding_routing_count" in ranking[0]
+    assert ranking[0]["coding_routing_rate"] == 1.0
     grid = json.loads((output / "cardinality-grid.json").read_text())
     assert [item["top_n"] for item in grid["grid"]] == [1, 2]
     for filename in (
