@@ -15,6 +15,7 @@ from reverse_reap.extraction import (
     extract_experts,
     verify_extraction,
 )
+from reverse_reap.model_preflight import download_verified_weights, preflight_model
 from reverse_reap.pipeline import analyze_telemetry
 from reverse_reap.reporting import build_run_bundle
 from reverse_reap.runtime import capture_manifest, probe_instrumentation
@@ -124,6 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry = subparsers.add_parser("validate-telemetry")
     telemetry.add_argument("path", type=Path)
     telemetry.add_argument("--output", type=Path)
+    model_preflight = subparsers.add_parser("preflight-model")
+    model_preflight.add_argument("template_config", type=Path)
+    model_preflight.add_argument("pinned_config", type=Path)
+    model_preflight.add_argument("metadata_dir", type=Path)
+    model_preflight.add_argument("report", type=Path)
+    weights = subparsers.add_parser("download-weights")
+    weights.add_argument("preflight_report", type=Path)
+    weights.add_argument("destination", type=Path)
     return parser
 
 
@@ -249,6 +258,16 @@ def main() -> int:
     if args.command == "validate-telemetry":
         output = validate_telemetry(args.path)
         emit_json(output, args.output)
+        return 0
+    if args.command == "preflight-model":
+        output = preflight_model(
+            args.template_config, args.pinned_config, args.metadata_dir, args.report
+        )
+        emit_json(output)
+        return 0 if output["passed"] else 2
+    if args.command == "download-weights":
+        output = download_verified_weights(args.preflight_report, args.destination)
+        emit_json(output)
         return 0
     raise AssertionError(f"unhandled command: {args.command}")
 
