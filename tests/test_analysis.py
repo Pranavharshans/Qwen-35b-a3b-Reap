@@ -69,6 +69,108 @@ def test_ranking_rejects_empty_shared_universe():
         differential_ranking([observations()[0]])
 
 
+def _stratified_rows(strata_assignments, saliency_by_domain, sample_offset=0.0):
+    """Build observations: strata_assignments maps stratum -> list of domains."""
+    rows = []
+    sample_number = 0
+    for stratum, domains in strata_assignments.items():
+        for domain in domains:
+            for expert in range(2):
+                rows.append(
+                    {
+                        "sample_id": f"s{sample_number}",
+                        "domain": domain,
+                        "stratum": stratum,
+                        "layer": 0,
+                        "expert": expert,
+                        "reap_saliency": (
+                            saliency_by_domain[domain][expert]
+                            + sample_number * sample_offset
+                        ),
+                    }
+                )
+            sample_number += 1
+    return rows
+
+
+def test_permutation_single_domain_strata_switch_to_global_fallback():
+    rows = _stratified_rows(
+        {"only-coding": ["coding", "coding"], "only-control": ["control", "control"]},
+        {"coding": [8.0, 7.0], "control": [1.0, 2.0]},
+    )
+    report = label_permutation(rows, top_n=1, iterations=200, seed=7)
+    assert report["method"] == "global-count-preserving-exact-enumeration"
+    assert "stratified" not in report["method"]
+    assert report["assignment_mode"] == "exact-enumeration"
+    assert report["permutation_design"]["mixed_strata"] == 0
+    assert report["permutation_design"]["single_domain_strata"] == 2
+    assert report["permutation_design"]["coding_samples"] == 2
+    assert report["permutation_design"]["control_samples"] == 2
+    assert report["global_fallback_limitation"]
+    assert report["attainable_assignments"] == 6  # C(4, 2)
+    assert report["assignments_evaluated"] == 6
+    assert report["permutations_changed_labels"] is True
+    assert report["permutation_design_valid"] is True
+    assert report["unique_null_statistics"] > 1
+    assert 0 < report["p_value"] <= 1
+
+
+def test_permutation_mixed_strata_stay_stratified():
+    rows = _stratified_rows(
+        {"shared": ["coding", "control", "coding", "control"]},
+        {"coding": [8.0, 7.0], "control": [1.0, 2.0]},
+    )
+    report = label_permutation(rows, top_n=1, iterations=200, seed=7)
+    assert report["method"] == "stratified-count-preserving-exact-enumeration"
+    assert report["permutation_design"]["mixed_strata"] == 1
+    assert report["global_fallback_limitation"] is None
+    assert report["attainable_assignments"] == 6  # C(4, 2) in the single stratum
+    assert report["assignments_evaluated"] == 6
+    assert report["unique_null_statistics"] > 1
+
+
+def test_permutation_exact_enumeration_is_deterministic():
+    rows = _stratified_rows(
+        {"only-coding": ["coding", "coding"], "only-control": ["control", "control"]},
+        {"coding": [8.0, 7.0], "control": [1.0, 2.0]},
+        sample_offset=0.01,
+    )
+    def strip_seed(report):
+        return {key: value for key, value in report.items() if key != "seed"}
+
+    first = label_permutation(rows, top_n=1, iterations=200, seed=7)
+    second = label_permutation(rows, top_n=1, iterations=200, seed=99)
+    assert strip_seed(first) == strip_seed(second)  # enumeration ignores the seed
+    assert label_permutation(rows, top_n=1, iterations=200, seed=7) == first
+
+
+def test_permutation_monte_carlo_is_deterministic_and_deduplicates():
+    rows = _stratified_rows(
+        {"big": ["coding"] * 12 + ["control"] * 12},
+        {"coding": [8.0, 7.0], "control": [1.0, 2.0]},
+        sample_offset=0.01,
+    )
+    first = label_permutation(rows, top_n=1, iterations=25, seed=11)
+    second = label_permutation(rows, top_n=1, iterations=25, seed=11)
+    assert first == second
+    assert first["assignment_mode"] == "monte-carlo"
+    assert first["method"] == "stratified-count-preserving-monte-carlo"
+    assert first["assignments_evaluated"] <= 25
+    # Monte Carlo never repeats an assignment: every evaluated assignment is unique.
+    assert first["unique_assignments_evaluated"] == first["assignments_evaluated"]
+    assert first["unique_null_statistics"] > 1
+    assert first["permutation_design_valid"] is True
+
+
+def test_permutation_fails_closed_on_degenerate_null():
+    rows = _stratified_rows(
+        {"only-coding": ["coding"], "only-control": ["control"]},
+        {"coding": [5.0, 5.0], "control": [5.0, 5.0]},
+    )
+    with pytest.raises(AnalysisError, match="degenerate"):
+        label_permutation(rows, top_n=1, iterations=200, seed=3)
+
+
 def test_candidate_manifest_is_hashed_and_cannot_be_mutated(tmp_path):
     rows = observations()
     ranking = differential_ranking(rows)

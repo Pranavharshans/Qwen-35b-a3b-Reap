@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 from collections import defaultdict
+from itertools import combinations, product
 from pathlib import Path
 from typing import Any
 
@@ -221,61 +223,285 @@ def bootstrap_stability(
     }
 
 
+def _sample_fields(
+    observations: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, list[str]], dict[str, list[dict[str, Any]]]]:
+    labels: dict[str, str] = {}
+    stratum_of: dict[str, str] = {}
+    rows_by_sample: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in observations:
+        sample_id = str(row["sample_id"])
+        labels[sample_id] = str(row["domain"])
+        stratum_of[sample_id] = str(row.get("stratum", "default"))
+        rows_by_sample[sample_id].append(row)
+    members: dict[str, list[str]] = defaultdict(list)
+    for sample_id in sorted(labels):
+        members[stratum_of[sample_id]].append(sample_id)
+    return labels, dict(sorted(members.items())), rows_by_sample
+
+
+def _design_report(labels: dict[str, str], strata: dict[str, list[str]]) -> dict[str, Any]:
+    entries = []
+    for name, ids in strata.items():
+        coding = sum(1 for sample_id in ids if labels[sample_id] == "coding")
+        control = len(ids) - coding
+        entries.append(
+            {
+                "stratum": name,
+                "coding_samples": coding,
+                "control_samples": control,
+                "mixed": coding > 0 and control > 0,
+            }
+        )
+    mixed = sum(1 for entry in entries if entry["mixed"])
+    return {
+        "strata": entries,
+        "mixed_strata": mixed,
+        "single_domain_strata": len(entries) - mixed,
+        "samples": len(labels),
+        "coding_samples": sum(1 for label in labels.values() if label == "coding"),
+        "control_samples": sum(1 for label in labels.values() if label == "control"),
+    }
+
+
+PERMUTATION_ENUMERATION_LIMIT = 4096
+_PERMUTATION_ATTEMPT_FACTOR = 50
+_GLOBAL_FALLBACK_LIMITATION = (
+    "global fallback: domain labels are exchanged across all samples ignoring strata "
+    "because every declared stratum is single-domain; stratum balance is therefore "
+    "not preserved under the null, so this test is a count-preserving global "
+    "permutation, not a stratified one"
+)
+
+
+def _permuted_statistic(
+    assignment: dict[str, str],
+    rows_by_sample: dict[str, list[dict[str, Any]]],
+    *,
+    top_n: int,
+    observed_by_key: dict[tuple[int, int], float],
+    expert_exceedances: dict[tuple[int, int], int],
+    expert_null_observations: dict[tuple[int, int], int],
+) -> float:
+    permuted = [
+        {**row, "domain": assignment[str(row["sample_id"])]}
+        for rows in rows_by_sample.values()
+        for row in rows
+    ]
+    ranked = [row for row in differential_ranking(permuted) if row["observed"]]
+    for row in ranked:
+        key = (row["layer"], row["expert"])
+        expert_null_observations[key] += 1
+        if key in observed_by_key and float(row["differential"]) >= observed_by_key[key]:
+            expert_exceedances[key] += 1
+    return float(sum(row["differential"] for row in ranked[:top_n]))
+
+
 def label_permutation(
     observations: list[dict[str, Any]], *, top_n: int, iterations: int, seed: int
 ) -> dict[str, Any]:
-    """Permute domain labels at sample level while preserving group sizes."""
+    """Permutation test with a mandatory design guard and fail-closed semantics.
+
+    The design guard inspects sample-level strata. When every declared stratum
+    is single-domain (strata confounded with domain), within-stratum shuffling
+    never changes any label, so the test switches explicitly to a global
+    count-preserving sample-level permutation that preserves the original
+    coding/control counts. The fallback is never described as stratified.
+
+    Assignments are exact-enumerated when the attainable assignment count is
+    tractable (``<= PERMUTATION_ENUMERATION_LIMIT``); otherwise a deterministic
+    seeded Monte Carlo runs without duplicate assignments where practical.
+
+    Fails closed via :class:`AnalysisError` when labels can never change, when
+    the null has only one attainable assignment/statistic, or when no
+    assignment can be evaluated.
+    """
     baseline = [row for row in differential_ranking(observations) if row["observed"]]
     if not baseline:
         raise AnalysisError("no experts observed in both coding and control")
     observed = float(sum(row["differential"] for row in baseline[:top_n]))
-    rows_by_sample: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    sample_labels: dict[str, str] = {}
-    strata: dict[str, list[str]] = defaultdict(list)
-    for row in observations:
-        sample_id = str(row["sample_id"])
-        rows_by_sample[sample_id].append(row)
-        sample_labels[sample_id] = str(row["domain"])
-        strata[str(row.get("stratum", "default"))].append(sample_id)
-    strata = {key: sorted(set(ids)) for key, ids in strata.items()}
-    rng = np.random.default_rng(seed)
-    null_scores = []
     observed_by_key = {
         (row["layer"], row["expert"]): float(row["differential"]) for row in baseline
     }
+    sample_labels, strata, rows_by_sample = _sample_fields(observations)
+    design = _design_report(sample_labels, strata)
+    rng = np.random.default_rng(seed)
+    unique_assignments = 0
+    null_scores: list[float] = []
     expert_exceedances: dict[tuple[int, int], int] = defaultdict(int)
     expert_null_observations: dict[tuple[int, int], int] = defaultdict(int)
-    for _ in range(iterations):
-        permuted_labels: dict[str, str] = {}
-        for ids in strata.values():
-            labels = [sample_labels[sample_id] for sample_id in ids]
-            shuffled = rng.permutation(labels)
-            permuted_labels.update(zip(ids, shuffled, strict=True))
-        permuted = [
-            {**row, "domain": permuted_labels[str(row["sample_id"])]}
-            for row in observations
+
+    saw_changed_labels = False
+
+    def evaluate(assignment: dict[str, str]) -> float:
+        nonlocal saw_changed_labels
+        if assignment != sample_labels:
+            saw_changed_labels = True
+        return _permuted_statistic(
+            assignment,
+            rows_by_sample,
+            top_n=top_n,
+            observed_by_key=observed_by_key,
+            expert_exceedances=expert_exceedances,
+            expert_null_observations=expert_null_observations,
+        )
+
+    global_fallback = design["mixed_strata"] == 0
+    if global_fallback:
+        all_ids = sorted(sample_labels)
+        coding_ids = sorted(
+            sample_id for sample_id in all_ids if sample_labels[sample_id] == "coding"
+        )
+        attainable = math.comb(len(all_ids), len(coding_ids))
+        if attainable <= 1:
+            raise AnalysisError(
+                "permutation design invalid: with these domain counts no assignment "
+                "can change any label; the requested test cannot be evaluated"
+            )
+        limitation: str | None = _GLOBAL_FALLBACK_LIMITATION
+        if attainable <= PERMUTATION_ENUMERATION_LIMIT:
+            method = "global-count-preserving-exact-enumeration"
+            mode = "exact-enumeration"
+            for coding_subset in combinations(all_ids, len(coding_ids)):
+                assignment = {
+                    sample_id: ("coding" if sample_id in set(coding_subset) else "control")
+                    for sample_id in all_ids
+                }
+                null_scores.append(evaluate(assignment))
+            unique_assignments = len(null_scores)
+        else:
+            method = "global-count-preserving-monte-carlo"
+            mode = "monte-carlo"
+            seen: set[tuple[int, ...]] = set()
+            attempts = 0
+            while (
+                len(null_scores) < min(iterations, attainable)
+                and attempts < iterations * _PERMUTATION_ATTEMPT_FACTOR
+            ):
+                attempts += 1
+                chosen = tuple(
+                    sorted(
+                        rng.choice(len(all_ids), size=len(coding_ids), replace=False).tolist()
+                    )
+                )
+                if chosen in seen:
+                    continue
+                seen.add(chosen)
+                assignment = {
+                    sample_id: ("coding" if index in chosen else "control")
+                    for index, sample_id in enumerate(all_ids)
+                }
+                null_scores.append(evaluate(assignment))
+            unique_assignments = len(seen)
+    else:
+        attainable = 1
+        mixed_names = [
+            name for name, ids in strata.items()
+            if any(sample_labels[s] == "coding" for s in ids)
+            and any(sample_labels[s] == "control" for s in ids)
         ]
-        try:
-            ranking = differential_ranking(permuted)
-        except AnalysisError:
-            continue
-        ranked = [row for row in ranking if row["observed"]]
-        null_scores.append(float(sum(row["differential"] for row in ranked[:top_n])))
-        for row in ranked:
-            key = (row["layer"], row["expert"])
-            expert_null_observations[key] += 1
-            if key in observed_by_key and float(row["differential"]) >= observed_by_key[key]:
-                expert_exceedances[key] += 1
+        for name in mixed_names:
+            ids = strata[name]
+            coding_in_stratum = sum(1 for s in ids if sample_labels[s] == "coding")
+            attainable *= math.comb(len(ids), coding_in_stratum)
+        limitation = None
+        if attainable <= 1:
+            raise AnalysisError(
+                "permutation design invalid: no stratum can exchange labels; "
+                "the requested test cannot be evaluated"
+            )
+        if attainable <= PERMUTATION_ENUMERATION_LIMIT:
+            method = "stratified-count-preserving-exact-enumeration"
+            mode = "exact-enumeration"
+            fixed = {}
+            per_stratum_options = []
+            for name, ids in strata.items():
+                coding_in_stratum = {
+                    s for s in ids if sample_labels[s] == "coding"
+                }
+                if name in mixed_names:
+                    per_stratum_options.append(
+                        [
+                            set(combo)
+                            for combo in combinations(ids, len(coding_in_stratum))
+                        ]
+                    )
+                else:
+                    fixed.update(
+                        {sample_id: sample_labels[sample_id] for sample_id in ids}
+                    )
+            for combo_set in product(*per_stratum_options):
+                coding_subset = set().union(*combo_set) if combo_set else set()
+                assignment = {
+                    **fixed,
+                    **{
+                        sample_id: ("coding" if sample_id in coding_subset else "control")
+                        for name in mixed_names
+                        for sample_id in strata[name]
+                    },
+                }
+                null_scores.append(evaluate(assignment))
+            unique_assignments = len(null_scores)
+        else:
+            method = "stratified-count-preserving-monte-carlo"
+            mode = "monte-carlo"
+            seen = set()
+            attempts = 0
+            strata_plan = []
+            for name in mixed_names:
+                ids = strata[name]
+                coding_in_stratum = sum(1 for s in ids if sample_labels[s] == "coding")
+                strata_plan.append((name, ids, coding_in_stratum))
+            while (
+                len(null_scores) < min(iterations, attainable)
+                and attempts < iterations * _PERMUTATION_ATTEMPT_FACTOR
+            ):
+                attempts += 1
+                coding_subset: set[str] = set()
+                key_parts = []
+                for name, ids, coding_in_stratum in strata_plan:
+                    chosen = tuple(
+                        sorted(
+                            rng.permutation(len(ids))[:coding_in_stratum].tolist()
+                        )
+                    )
+                    key_parts.append((name, chosen))
+                    coding_subset.update(ids[index] for index in chosen)
+                key = tuple(key_parts)
+                if key in seen:
+                    continue
+                seen.add(key)
+                assignment = {
+                    sample_id: ("coding" if sample_id in coding_subset else "control")
+                    for name, ids, _ in strata_plan
+                    for sample_id in ids
+                }
+                null_scores.append(evaluate(assignment))
+            unique_assignments = len(seen)
     if not null_scores:
-        raise AnalysisError("no valid label permutations; ensure both domains exist within strata")
+        raise AnalysisError("permutation test cannot be evaluated: no assignments ran")
+    if not saw_changed_labels:
+        raise AnalysisError(
+            "permutation test invalid: no evaluated assignment changed any label"
+        )
+    if len(set(null_scores)) <= 1:
+        raise AnalysisError(
+            "permutation null is degenerate: every attainable assignment yields the "
+            "same statistic, so the test carries no information"
+        )
+    labels_changed = saw_changed_labels
     exceedances = sum(score >= observed for score in null_scores)
+    if mode == "exact-enumeration":
+        p_value = exceedances / len(null_scores)
+    else:
+        p_value = (exceedances + 1) / (len(null_scores) + 1)
     return {
         "iterations_requested": iterations,
         "iterations_valid": len(null_scores),
         "top_n": top_n,
         "seed": seed,
         "observed_top_sum": observed,
-        "p_value": (exceedances + 1) / (len(null_scores) + 1),
+        "p_value": p_value,
         "null_scores": null_scores,
         "expert_p_values": [
             {
@@ -287,6 +513,16 @@ def label_permutation(
             }
             for key in sorted(expert_null_observations)
         ],
+        "method": method,
+        "assignment_mode": mode,
+        "permutation_design": design,
+        "attainable_assignments": attainable,
+        "assignments_evaluated": len(null_scores),
+        "unique_assignments_evaluated": unique_assignments,
+        "permutations_changed_labels": labels_changed,
+        "unique_null_statistics": len(set(null_scores)),
+        "permutation_design_valid": True,
+        "global_fallback_limitation": limitation,
     }
 
 
