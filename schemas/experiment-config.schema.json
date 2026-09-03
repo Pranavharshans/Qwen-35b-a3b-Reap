@@ -1,0 +1,251 @@
+{
+  "$defs": {
+    "BudgetConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline_utc": {
+          "format": "date-time",
+          "title": "Deadline Utc",
+          "type": "string"
+        },
+        "max_cost_usd": {
+          "exclusiveMinimum": 0,
+          "title": "Max Cost Usd",
+          "type": "number"
+        },
+        "max_gpu_hours": {
+          "exclusiveMinimum": 0,
+          "title": "Max Gpu Hours",
+          "type": "number"
+        },
+        "provider_rate_usd_per_hour": {
+          "exclusiveMinimum": 0,
+          "title": "Provider Rate Usd Per Hour",
+          "type": "number"
+        },
+        "storage_limit_gb": {
+          "exclusiveMinimum": 0,
+          "title": "Storage Limit Gb",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_gpu_hours",
+        "max_cost_usd",
+        "provider_rate_usd_per_hour",
+        "storage_limit_gb",
+        "deadline_utc"
+      ],
+      "title": "BudgetConfig",
+      "type": "object"
+    },
+    "DatasetConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "manifest": {
+          "format": "path",
+          "title": "Manifest",
+          "type": "string"
+        },
+        "split": {
+          "enum": [
+            "smoke",
+            "pilot",
+            "medium",
+            "full"
+          ],
+          "title": "Split",
+          "type": "string"
+        }
+      },
+      "required": [
+        "manifest",
+        "split"
+      ],
+      "title": "DatasetConfig",
+      "type": "object"
+    },
+    "InterventionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "manifest": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manifest"
+        },
+        "mode": {
+          "default": "none",
+          "enum": [
+            "none",
+            "zero_contribution"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "renormalize_router_weights": {
+          "const": false,
+          "default": false,
+          "title": "Renormalize Router Weights",
+          "type": "boolean"
+        }
+      },
+      "title": "InterventionConfig",
+      "type": "object"
+    },
+    "ModelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "execution_precision": {
+          "enum": [
+            "bf16",
+            "fp16"
+          ],
+          "title": "Execution Precision",
+          "type": "string"
+        },
+        "id": {
+          "const": "Qwen/Qwen3.5-35B-A3B",
+          "title": "Id",
+          "type": "string"
+        },
+        "revision": {
+          "maxLength": 64,
+          "minLength": 40,
+          "pattern": "^[0-9a-f]+$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "source_precision": {
+          "const": "bf16",
+          "default": "bf16",
+          "title": "Source Precision",
+          "type": "string"
+        },
+        "text_only": {
+          "const": true,
+          "default": true,
+          "title": "Text Only",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "execution_precision"
+      ],
+      "title": "ModelConfig",
+      "type": "object"
+    },
+    "RuntimeConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_size": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "deterministic": {
+          "default": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "enable_thinking": {
+          "default": false,
+          "title": "Enable Thinking",
+          "type": "boolean"
+        },
+        "max_input_tokens": {
+          "minimum": 64,
+          "title": "Max Input Tokens",
+          "type": "integer"
+        },
+        "max_new_tokens": {
+          "minimum": 0,
+          "title": "Max New Tokens",
+          "type": "integer"
+        },
+        "seed": {
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "speculative_decoding": {
+          "const": false,
+          "default": false,
+          "title": "Speculative Decoding",
+          "type": "boolean"
+        },
+        "use_cache": {
+          "default": false,
+          "title": "Use Cache",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "seed",
+        "max_input_tokens",
+        "max_new_tokens"
+      ],
+      "title": "RuntimeConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "budget": {
+      "$ref": "#/$defs/BudgetConfig"
+    },
+    "datasets": {
+      "$ref": "#/$defs/DatasetConfig"
+    },
+    "intervention": {
+      "$ref": "#/$defs/InterventionConfig",
+      "default": {
+        "manifest": null,
+        "mode": "none",
+        "renormalize_router_weights": false
+      }
+    },
+    "model": {
+      "$ref": "#/$defs/ModelConfig"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeConfig"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "model",
+    "runtime",
+    "budget",
+    "datasets"
+  ],
+  "title": "ExperimentConfig",
+  "type": "object"
+}

@@ -1,0 +1,196 @@
+{
+  "$defs": {
+    "ExpertIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "expert": {
+          "minimum": 0,
+          "title": "Expert",
+          "type": "integer"
+        },
+        "layer": {
+          "minimum": 0,
+          "title": "Layer",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer",
+        "expert"
+      ],
+      "title": "ExpertIdentity",
+      "type": "object"
+    },
+    "ExtractedTensorRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "dtype": {
+          "minLength": 1,
+          "title": "Dtype",
+          "type": "string"
+        },
+        "nbytes": {
+          "exclusiveMinimum": 0,
+          "title": "Nbytes",
+          "type": "integer"
+        },
+        "output_key": {
+          "minLength": 1,
+          "title": "Output Key",
+          "type": "string"
+        },
+        "shape": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Shape",
+          "type": "array"
+        },
+        "source_key": {
+          "minLength": 1,
+          "title": "Source Key",
+          "type": "string"
+        },
+        "source_shard": {
+          "minLength": 1,
+          "title": "Source Shard",
+          "type": "string"
+        },
+        "verified": {
+          "const": true,
+          "title": "Verified",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source_shard",
+        "source_key",
+        "output_key",
+        "shape",
+        "dtype",
+        "nbytes",
+        "content_sha256",
+        "verified"
+      ],
+      "title": "ExtractedTensorRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Artifact Hash",
+      "type": "string"
+    },
+    "causal_metrics": {
+      "additionalProperties": true,
+      "title": "Causal Metrics",
+      "type": "object"
+    },
+    "created_at_utc": {
+      "title": "Created At Utc",
+      "type": "string"
+    },
+    "experts": {
+      "items": {
+        "$ref": "#/$defs/ExpertIdentity"
+      },
+      "title": "Experts",
+      "type": "array"
+    },
+    "label": {
+      "const": "extracted",
+      "title": "Label",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "selection_metrics": {
+      "additionalProperties": true,
+      "title": "Selection Metrics",
+      "type": "object"
+    },
+    "selection_status": {
+      "enum": [
+        "observational-candidates",
+        "unreplicated-candidates",
+        "coding-critical-v0"
+      ],
+      "title": "Selection Status",
+      "type": "string"
+    },
+    "source_model_id": {
+      "const": "Qwen/Qwen3.5-35B-A3B",
+      "title": "Source Model Id",
+      "type": "string"
+    },
+    "source_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Source Revision",
+      "type": "string"
+    },
+    "source_weight_index_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Weight Index Hash",
+      "type": "string"
+    },
+    "tensor_file": {
+      "minLength": 1,
+      "title": "Tensor File",
+      "type": "string"
+    },
+    "tensors": {
+      "items": {
+        "$ref": "#/$defs/ExtractedTensorRecord"
+      },
+      "title": "Tensors",
+      "type": "array"
+    },
+    "tool_git_revisions": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Tool Git Revisions",
+      "type": "object"
+    },
+    "total_parameter_bytes": {
+      "exclusiveMinimum": 0,
+      "title": "Total Parameter Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "label",
+    "run_id",
+    "source_model_id",
+    "source_revision",
+    "source_weight_index_hash",
+    "selection_status",
+    "selection_metrics",
+    "causal_metrics",
+    "tool_git_revisions",
+    "created_at_utc",
+    "experts",
+    "tensors",
+    "tensor_file",
+    "artifact_hash",
+    "total_parameter_bytes"
+  ],
+  "title": "ExtractionManifest",
+  "type": "object"
+}

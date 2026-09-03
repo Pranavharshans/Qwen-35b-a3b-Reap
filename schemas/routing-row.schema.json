@@ -1,0 +1,117 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "chunk_id": {
+      "minLength": 1,
+      "title": "Chunk Id",
+      "type": "string"
+    },
+    "condition_id": {
+      "minLength": 1,
+      "title": "Condition Id",
+      "type": "string"
+    },
+    "domain": {
+      "enum": [
+        "coding",
+        "control"
+      ],
+      "title": "Domain",
+      "type": "string"
+    },
+    "expert_index": {
+      "minimum": 0,
+      "title": "Expert Index",
+      "type": "integer"
+    },
+    "expert_output_l2": {
+      "minimum": 0,
+      "title": "Expert Output L2",
+      "type": "number"
+    },
+    "layer_index": {
+      "minimum": 0,
+      "title": "Layer Index",
+      "type": "integer"
+    },
+    "route_rank": {
+      "minimum": 0,
+      "title": "Route Rank",
+      "type": "integer"
+    },
+    "router_weight": {
+      "minimum": 0,
+      "title": "Router Weight",
+      "type": "number"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "sample_id": {
+      "minLength": 1,
+      "title": "Sample Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "segment": {
+      "enum": [
+        "prompt",
+        "reference",
+        "generated"
+      ],
+      "title": "Segment",
+      "type": "string"
+    },
+    "split": {
+      "enum": [
+        "calibration",
+        "selection",
+        "validation",
+        "replication"
+      ],
+      "title": "Split",
+      "type": "string"
+    },
+    "stratum": {
+      "minLength": 1,
+      "title": "Stratum",
+      "type": "string"
+    },
+    "token_id": {
+      "minimum": 0,
+      "title": "Token Id",
+      "type": "integer"
+    },
+    "token_index": {
+      "minimum": 0,
+      "title": "Token Index",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "sample_id",
+    "condition_id",
+    "split",
+    "domain",
+    "stratum",
+    "segment",
+    "token_index",
+    "token_id",
+    "layer_index",
+    "expert_index",
+    "route_rank",
+    "router_weight",
+    "expert_output_l2",
+    "chunk_id"
+  ],
+  "title": "RoutingRow",
+  "type": "object"
+}

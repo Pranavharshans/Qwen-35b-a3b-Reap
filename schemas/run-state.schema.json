@@ -1,0 +1,202 @@
+{
+  "$defs": {
+    "Status": {
+      "enum": [
+        "PENDING",
+        "PREFLIGHTED",
+        "RUNNING",
+        "VALIDATING",
+        "COMPLETE",
+        "FAILED_RETRYABLE",
+        "FAILED_TERMINAL",
+        "WAITING_FOR_HUMAN"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attempt": {
+      "default": 0,
+      "maximum": 2,
+      "minimum": 0,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "completed_at_utc": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At Utc"
+    },
+    "config_sha256": {
+      "title": "Config Sha256",
+      "type": "string"
+    },
+    "consumed_cost_usd": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Consumed Cost Usd",
+      "type": "number"
+    },
+    "consumed_gpu_hours": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Consumed Gpu Hours",
+      "type": "number"
+    },
+    "failure_signature": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Signature"
+    },
+    "heartbeat_at_utc": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Heartbeat At Utc"
+    },
+    "input_hashes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Input Hashes",
+      "type": "object"
+    },
+    "last_validated_chunk": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Validated Chunk"
+    },
+    "next_permitted_task": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Permitted Task"
+    },
+    "output_hashes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Output Hashes",
+      "type": "object"
+    },
+    "process_id": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Process Id"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "started_at_utc": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Started At Utc"
+    },
+    "status": {
+      "$ref": "#/$defs/Status",
+      "default": "PENDING"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "updated_at_utc": {
+      "format": "date-time",
+      "title": "Updated At Utc",
+      "type": "string"
+    },
+    "validation_command": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Validation Command"
+    },
+    "validation_exit_code": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Validation Exit Code"
+    }
+  },
+  "required": [
+    "run_id",
+    "task_id",
+    "config_sha256"
+  ],
+  "title": "RunState",
+  "type": "object"
+}
