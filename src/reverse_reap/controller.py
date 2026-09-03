@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -102,20 +103,63 @@ def consumed_gpu_hours(state_dir: Path) -> float:
     return total
 
 
-def expand_command(command: list[str]) -> list[str]:
-    expanded = [os.path.expandvars(part) for part in command]
-    unresolved = [part for part in expanded if "${" in part or "$" in part]
+_ENV_VARIABLE = re.compile(
+    r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}|\$(?P<name2>[A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+def expand_command(command: list[str], env: dict[str, str] | None = None) -> list[str]:
+    source = os.environ if env is None else env
+
+    def substitute(part: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            name = match.group("name") or match.group("name2")
+            return str(source.get(name, match.group(0)))
+
+        return _ENV_VARIABLE.sub(replace, part)
+
+    expanded = [substitute(part) for part in command]
+    unresolved = [part for part in expanded if "$" in part]
     if unresolved:
         raise ControllerError(f"command has unresolved environment variables: {unresolved}")
     return expanded
 
 
+RUN_ID_VARIABLE = "RUN_ID"
+
+
+def expand_scoped_path(path: Path, run_id: str) -> Path:
+    """Resolve the run-scoped ``${RUN_ID}`` placeholder in declared task paths.
+
+    Plan outputs and inputs may embed ``${RUN_ID}`` so each governed run writes
+    to its own namespace instead of colliding with a previous run's frozen
+    artifacts. Any other unresolved variable fails closed.
+    """
+    text = str(path).replace("${RUN_ID}", run_id).replace("$RUN_ID", run_id)
+    if "$" in text:
+        raise ControllerError(f"path has unresolved variables: {path}")
+    return Path(text)
+
+
+def _subprocess_env(run_id: str) -> dict[str, str]:
+    env = dict(os.environ)
+    env[RUN_ID_VARIABLE] = run_id
+    return env
+
+
 def _run_with_heartbeat(
-    command: list[str], state: RunState, state_path: Path, log_path: Path, interval: float
+    command: list[str],
+    state: RunState,
+    state_path: Path,
+    log_path: Path,
+    interval: float,
+    env: dict[str, str],
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log:
-        process = subprocess.Popen(expand_command(command), stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(
+            expand_command(command, env), stdout=log, stderr=subprocess.STDOUT, env=env
+        )
         state.process_id = process.pid
         state.heartbeat_at_utc = datetime.now(UTC)
         atomic_write_state(state_path, state)
@@ -236,7 +280,7 @@ def run_next(
             return {"status": "COMPLETE", "message": "no eligible unfinished tasks"}
         path = _state_path(state_dir, eligible.task_id)
         if eligible.run_if is not None:
-            condition_path = eligible.run_if.path
+            condition_path = expand_scoped_path(eligible.run_if.path, run_id)
             if not condition_path.exists():
                 raise ControllerError(f"task gate artifact is missing: {condition_path}")
             condition_payload = json.loads(condition_path.read_text(encoding="utf-8"))
@@ -273,14 +317,18 @@ def run_next(
             if state.status not in {Status.FAILED_RETRYABLE, Status.PREFLIGHTED}:
                 raise ControllerError(f"task is not resumable from {state.status}")
         else:
-            missing = [str(item) for item in eligible.inputs if not item.exists()]
+            expanded_inputs = [expand_scoped_path(item, run_id) for item in eligible.inputs]
+            missing = [str(item) for item in expanded_inputs if not item.exists()]
             if missing:
                 raise ControllerError(f"task inputs are missing: {missing}")
             state = RunState(
                 run_id=run_id,
                 task_id=eligible.task_id,
                 config_sha256=config.fingerprint(),
-                input_hashes={str(item): file_sha256(item) for item in eligible.inputs},
+                input_hashes={
+                    str(item): file_sha256(item)
+                    for item in expanded_inputs
+                },
                 validation_command=eligible.validation_command,
             )
             state.transition(Status.PREFLIGHTED)
@@ -303,7 +351,10 @@ def run_next(
             state.transition(Status.RUNNING)
         atomic_write_state(path, state)
         log_path = state_dir / "logs" / f"{eligible.task_id}.log"
-        exit_code = _run_with_heartbeat(eligible.command, state, path, log_path, heartbeat_seconds)
+        env = _subprocess_env(run_id)
+        exit_code = _run_with_heartbeat(
+            eligible.command, state, path, log_path, heartbeat_seconds, env
+        )
         if exit_code != 0:
             signature = hashlib.sha256(f"exit:{exit_code}".encode()).hexdigest()[:16]
             try:
@@ -321,9 +372,12 @@ def run_next(
             return {"status": state.status, "exit_code": exit_code, "log": str(log_path)}
         state.transition(Status.VALIDATING)
         atomic_write_state(path, state)
-        validation = subprocess.run(expand_command(eligible.validation_command), check=False)
+        validation = subprocess.run(
+            expand_command(eligible.validation_command, env), check=False, env=env
+        )
         state.validation_exit_code = validation.returncode
-        missing_outputs = [str(item) for item in eligible.outputs if not item.exists()]
+        expanded_outputs = [expand_scoped_path(item, run_id) for item in eligible.outputs]
+        missing_outputs = [str(item) for item in expanded_outputs if not item.exists()]
         if validation.returncode or missing_outputs:
             state.failure_signature = (
                 f"validation-exit-{validation.returncode}"
@@ -332,7 +386,7 @@ def run_next(
             )
             state.transition(Status.FAILED_TERMINAL)
         else:
-            state.output_hashes = {str(item): file_sha256(item) for item in eligible.outputs}
+            state.output_hashes = {str(item): file_sha256(item) for item in expanded_outputs}
             state.consumed_gpu_hours = eligible.estimated_gpu_hours
             state.consumed_cost_usd = (
                 state.consumed_gpu_hours * config.budget.provider_rate_usd_per_hour

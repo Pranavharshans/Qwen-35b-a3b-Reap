@@ -108,6 +108,48 @@ def test_command_environment_expansion_is_fail_closed(monkeypatch):
         expand_command(["command", "${REVERSE_REAP_MISSING_VALUE}"])
 
 
+def test_run_id_scopes_outputs_and_never_collides_with_previous_runs(tmp_path):
+    previous = tmp_path / "runs" / "previous-run" / "out.txt"
+    previous.parent.mkdir(parents=True)
+    previous.write_text("stale")
+    scoped = str(tmp_path / "runs" / "${RUN_ID}" / "out.txt")
+    code = (
+        "import os\nfrom pathlib import Path\n"
+        "target = Path(os.path.expandvars(" + repr(scoped) + "))\n"
+        "target.parent.mkdir(parents=True, exist_ok=True)\n"
+        "target.write_text('fresh')\n"
+    )
+    definition = {
+        "task_id": "scoped",
+        "objective": "fixture task",
+        "definition_of_done": "run-scoped output exists",
+        "command": [sys.executable, "-c", code],
+        "validation_command": [sys.executable, "-c", "raise SystemExit(0)"],
+        "outputs": [scoped],
+        "dependencies": [],
+        "estimated_gpu_hours": 0,
+        "estimated_storage_gb": 0.001,
+        "failure_behavior": "retry",
+    }
+    plan = write_plan(tmp_path, [definition])
+    result = run_next(
+        plan, config(), tmp_path / "state", run_id="fresh-run", heartbeat_seconds=0.01
+    )
+    assert result["status"] == Status.COMPLETE
+    fresh = tmp_path / "runs" / "fresh-run" / "out.txt"
+    assert fresh.read_text() == "fresh"
+    assert previous.read_text() == "stale"
+    state = load_state(tmp_path / "state" / "scoped.json")
+    assert str(tmp_path / "runs" / "fresh-run" / "out.txt") in state.output_hashes
+
+
+def test_scoped_paths_fail_closed_on_unresolved_variables(tmp_path):
+    definition = task("scoped", tmp_path / "runs" / "${OTHER_VAR}" / "out.txt")
+    plan = write_plan(tmp_path, [definition])
+    with pytest.raises(ControllerError, match="unresolved"):
+        run_next(plan, config(), tmp_path / "state", run_id="fixture")
+
+
 def test_recovers_stale_dead_process_for_bounded_retry(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     state = RunState(run_id="fixture", task_id="stale", config_sha256="a" * 64)

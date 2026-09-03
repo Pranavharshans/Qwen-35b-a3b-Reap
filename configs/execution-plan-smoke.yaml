@@ -3,10 +3,10 @@ tasks:
   - task_id: gpu-preflight
     objective: Verify the exact approved four-RTX-3090 runtime before loading weights.
     definition_of_done: Preflight report passes exact GPU, VRAM, compute capability, and disk gates.
-    command: [python, scripts/gpu_preflight.py, --output, runs/smoke/preflight.json]
-    validation_command: [python, scripts/validate_artifact.py, preflight, runs/smoke/preflight.json]
+    command: [python, scripts/gpu_preflight.py, --output, "runs/smoke/${RUN_ID}/preflight.json"]
+    validation_command: [python, scripts/validate_artifact.py, preflight, "runs/smoke/${RUN_ID}/preflight.json"]
     inputs: []
-    outputs: [runs/smoke/preflight.json]
+    outputs: ["runs/smoke/${RUN_ID}/preflight.json"]
     dependencies: []
     estimated_gpu_hours: 0.01
     estimated_storage_gb: 0.001
@@ -51,10 +51,10 @@ tasks:
   - task_id: instrumentation-probe
     objective: Prove capture leaves logits byte-exact and records top-8 routes across all 40 layers.
     definition_of_done: Probe reports exact logits and the expected number of routed records.
-    command: [reverse-reap, probe, configs/pinned-3090-bf16.yaml, /models/qwen, --output, runs/smoke/probe.json]
-    validation_command: [python, scripts/validate_artifact.py, probe, runs/smoke/probe.json]
+    command: [reverse-reap, probe, configs/pinned-3090-bf16.yaml, /models/qwen, --output, "runs/smoke/${RUN_ID}/probe.json"]
+    validation_command: [python, scripts/validate_artifact.py, probe, "runs/smoke/${RUN_ID}/probe.json"]
     inputs: [configs/pinned-3090-bf16.yaml]
-    outputs: [runs/smoke/probe.json]
+    outputs: ["runs/smoke/${RUN_ID}/probe.json"]
     dependencies: [gpu-preflight]
     estimated_gpu_hours: 0.25
     estimated_storage_gb: 0.1
@@ -63,10 +63,10 @@ tasks:
   - task_id: dataset-token-length-audit
     objective: Measure exact Qwen-tokenizer prompt lengths before attribution.
     definition_of_done: Coding/control median, tail, and truncation balance gates pass.
-    command: [reverse-reap, audit-token-lengths, datasets/manifests/smoke-lengthmatched.jsonl, /models/qwen, runs/smoke/dataset-token-lengths.json, --max-input-tokens, "1024"]
-    validation_command: [python, scripts/validate_artifact.py, dataset-lengths, runs/smoke/dataset-token-lengths.json]
+    command: [reverse-reap, audit-token-lengths, datasets/manifests/smoke-lengthmatched.jsonl, /models/qwen, "runs/smoke/${RUN_ID}/dataset-token-lengths.json", --max-input-tokens, "1024"]
+    validation_command: [python, scripts/validate_artifact.py, dataset-lengths, "runs/smoke/${RUN_ID}/dataset-token-lengths.json"]
     inputs: [datasets/manifests/smoke-lengthmatched.jsonl]
-    outputs: [runs/smoke/dataset-token-lengths.json]
+    outputs: ["runs/smoke/${RUN_ID}/dataset-token-lengths.json"]
     dependencies: [dataset-lengthmatch, gpu-preflight]
     estimated_gpu_hours: 0
     estimated_storage_gb: 0.1
@@ -75,10 +75,10 @@ tasks:
   - task_id: telemetry-smoke
     objective: Capture streaming prompt, completion, and joint REAP statistics for twenty samples.
     definition_of_done: Token-level telemetry passes exact row-count, identity, and numeric invariants.
-    command: [reverse-reap, capture, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/telemetry.jsonl, --split, all, --limit, "20"]
-    validation_command: [reverse-reap, validate-telemetry, runs/smoke/telemetry.jsonl, --output, runs/smoke/telemetry-validation.json]
+    command: [reverse-reap, capture, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, "runs/smoke/${RUN_ID}/telemetry.jsonl", --split, all, --limit, "20"]
+    validation_command: [reverse-reap, validate-telemetry, "runs/smoke/${RUN_ID}/telemetry.jsonl", --output, "runs/smoke/${RUN_ID}/telemetry-validation.json"]
     inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl]
-    outputs: [runs/smoke/telemetry.jsonl, runs/smoke/telemetry-validation.json]
+    outputs: ["runs/smoke/${RUN_ID}/telemetry.jsonl", "runs/smoke/${RUN_ID}/telemetry-validation.json"]
     dependencies: [instrumentation-probe, dataset-lengthmatch, dataset-token-length-audit]
     estimated_gpu_hours: 1.5
     estimated_storage_gb: 1
@@ -87,10 +87,10 @@ tasks:
   - task_id: candidate-analysis
     objective: Rank coding differential experts, run bootstrap and permutation tests, and freeze candidates and controls.
     definition_of_done: Candidate, ranking, bootstrap, permutation, and all control manifests are immutable.
-    command: [reverse-reap, analyze, runs/smoke/telemetry.jsonl, runs/smoke/analysis, --top-n, "8", --cardinality-grid, "4", "8", "16", --bootstrap-iterations, "200", --permutation-iterations, "200"]
-    validation_command: [python, scripts/validate_artifact.py, candidate, runs/smoke/analysis/candidate-manifest.json]
-    inputs: [runs/smoke/telemetry.jsonl]
-    outputs: [runs/smoke/analysis/candidate-manifest.json, runs/smoke/analysis/bootstrap-stability.json, runs/smoke/analysis/label-permutation.json, runs/smoke/analysis/control-manifests.json, runs/smoke/analysis/cardinality-grid.json]
+    command: [reverse-reap, analyze, "runs/smoke/${RUN_ID}/telemetry.jsonl", "runs/smoke/${RUN_ID}/analysis", --top-n, "8", --cardinality-grid, "4", "8", "16", --bootstrap-iterations, "200", --permutation-iterations, "200"]
+    validation_command: [python, scripts/validate_artifact.py, candidate, "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json"]
+    inputs: ["runs/smoke/${RUN_ID}/telemetry.jsonl"]
+    outputs: ["runs/smoke/${RUN_ID}/analysis/candidate-manifest.json", "runs/smoke/${RUN_ID}/analysis/bootstrap-stability.json", "runs/smoke/${RUN_ID}/analysis/label-permutation.json", "runs/smoke/${RUN_ID}/analysis/control-manifests.json", "runs/smoke/${RUN_ID}/analysis/cardinality-grid.json"]
     dependencies: [telemetry-smoke]
     estimated_gpu_hours: 0
     estimated_storage_gb: 1
@@ -99,10 +99,10 @@ tasks:
   - task_id: baseline-validation
     objective: Establish an intact deterministic validation baseline on scoreable frozen items.
     definition_of_done: Every requested sample has a recorded score or explicit scorer failure.
-    command: [reverse-reap, evaluate, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/baseline-validation.jsonl, --split, validation, --condition-id, C0, --evaluator-image, "${REVERSE_REAP_EVALUATOR_IMAGE}", --limit, "20"]
-    validation_command: [python, scripts/validate_artifact.py, dataset, runs/smoke/baseline-validation.jsonl]
+    command: [reverse-reap, evaluate, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, "runs/smoke/${RUN_ID}/baseline-validation.jsonl", --split, validation, --condition-id, C0, --evaluator-image, "${REVERSE_REAP_EVALUATOR_IMAGE}", --limit, "20"]
+    validation_command: [python, scripts/validate_artifact.py, dataset, "runs/smoke/${RUN_ID}/baseline-validation.jsonl"]
     inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl]
-    outputs: [runs/smoke/baseline-validation.jsonl]
+    outputs: ["runs/smoke/${RUN_ID}/baseline-validation.jsonl"]
     dependencies: [instrumentation-probe, dataset-tiers]
     estimated_gpu_hours: 0.75
     estimated_storage_gb: 1
@@ -111,10 +111,10 @@ tasks:
   - task_id: single-expert-intervention-probe
     objective: Prove one routed candidate can be zeroed with exact no-op semantics.
     definition_of_done: One real routed sample has bit-exact no-op logits and changed masked logits.
-    command: [reverse-reap, probe-intervention, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/analysis/candidate-manifest.json, runs/smoke/intervention-probe.json, --split, selection, --limit, "20"]
-    validation_command: [python, scripts/validate_artifact.py, probe, runs/smoke/intervention-probe.json]
-    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/analysis/candidate-manifest.json]
-    outputs: [runs/smoke/intervention-probe.json]
+    command: [reverse-reap, probe-intervention, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json", "runs/smoke/${RUN_ID}/intervention-probe.json", --split, selection, --limit, "20"]
+    validation_command: [python, scripts/validate_artifact.py, probe, "runs/smoke/${RUN_ID}/intervention-probe.json"]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl, "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json"]
+    outputs: ["runs/smoke/${RUN_ID}/intervention-probe.json"]
     dependencies: [candidate-analysis]
     estimated_gpu_hours: 0.25
     estimated_storage_gb: 0.1
@@ -123,10 +123,10 @@ tasks:
   - task_id: selected-ablation-validation
     objective: Evaluate the frozen candidate set with zero contribution and no router renormalization.
     definition_of_done: Selected-set results contain the same requested validation sample identities.
-    command: [reverse-reap, evaluate, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/selected-validation.jsonl, --split, validation, --condition-id, C2, --evaluator-image, "${REVERSE_REAP_EVALUATOR_IMAGE}", --expert-manifest, runs/smoke/analysis/candidate-manifest.json, --limit, "20"]
-    validation_command: [python, scripts/validate_artifact.py, dataset, runs/smoke/selected-validation.jsonl]
-    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl, runs/smoke/analysis/candidate-manifest.json]
-    outputs: [runs/smoke/selected-validation.jsonl]
+    command: [reverse-reap, evaluate, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/smoke-lengthmatched.jsonl, "runs/smoke/${RUN_ID}/selected-validation.jsonl", --split, validation, --condition-id, C2, --evaluator-image, "${REVERSE_REAP_EVALUATOR_IMAGE}", --expert-manifest, "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json", --limit, "20"]
+    validation_command: [python, scripts/validate_artifact.py, dataset, "runs/smoke/${RUN_ID}/selected-validation.jsonl"]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/smoke-lengthmatched.jsonl, "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json"]
+    outputs: ["runs/smoke/${RUN_ID}/selected-validation.jsonl"]
     dependencies: [single-expert-intervention-probe, baseline-validation]
     estimated_gpu_hours: 0.75
     estimated_storage_gb: 1
@@ -135,10 +135,10 @@ tasks:
   - task_id: extract-candidates
     objective: Extract every frozen candidate tensor and independently prove byte equality.
     definition_of_done: All expected tensors and companion provenance artifacts pass byte verification.
-    command: [reverse-reap, extract, configs/pinned-3090-bf16.yaml, /models/qwen, runs/smoke/analysis/candidate-manifest.json, runs/smoke/extraction]
-    validation_command: [python, scripts/validate_artifact.py, extraction, runs/smoke/extraction/extraction-manifest.json]
-    inputs: [configs/pinned-3090-bf16.yaml, runs/smoke/analysis/candidate-manifest.json]
-    outputs: [runs/smoke/extraction/extraction-manifest.json, runs/smoke/extraction/experts.safetensors, runs/smoke/extraction/source-to-extracted-map.json, runs/smoke/extraction/checksums.sha256, runs/smoke/extraction/verification-report.json, runs/smoke/extraction/README.md]
+    command: [reverse-reap, extract, configs/pinned-3090-bf16.yaml, /models/qwen, "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json", "runs/smoke/${RUN_ID}/extraction"]
+    validation_command: [python, scripts/validate_artifact.py, extraction, "runs/smoke/${RUN_ID}/extraction/extraction-manifest.json"]
+    inputs: [configs/pinned-3090-bf16.yaml, "runs/smoke/${RUN_ID}/analysis/candidate-manifest.json"]
+    outputs: ["runs/smoke/${RUN_ID}/extraction/extraction-manifest.json", "runs/smoke/${RUN_ID}/extraction/experts.safetensors", "runs/smoke/${RUN_ID}/extraction/source-to-extracted-map.json", "runs/smoke/${RUN_ID}/extraction/checksums.sha256", "runs/smoke/${RUN_ID}/extraction/verification-report.json", "runs/smoke/${RUN_ID}/extraction/README.md"]
     dependencies: [candidate-analysis]
     estimated_gpu_hours: 0.1
     estimated_storage_gb: 10

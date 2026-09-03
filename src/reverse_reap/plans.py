@@ -51,6 +51,9 @@ def build_full_plan(
     rr = "reverse-reap"
     model = "/models/qwen"
     evaluator = "${REVERSE_REAP_EVALUATOR_IMAGE}"
+    # Run artifacts live in a per-run namespace so governed reruns never
+    # collide with a previous run's outputs; the controller resolves ${RUN_ID}.
+    run_dir = f"{run_dir}/${{RUN_ID}}"
     analysis = f"{run_dir}/analysis"
     gate_c = {
         "path": f"{analysis}/candidate-manifest.json",
