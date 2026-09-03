@@ -96,7 +96,9 @@ def test_builds_predeclared_causal_control_sets():
     controls = build_control_sets(ranking, [(0, 0), (1, 0)], random_sets=20, seed=9)
     assert len(controls["layer_matched_random_sets"]) == 20
     assert all(len(item["experts"]) == 2 for item in controls["layer_matched_random_sets"])
-    assert len(controls["frequency_matched_set"]) == 2
+    assert len(controls["frequency_matched_random_sets"]) == 20
+    assert all(len(item["experts"]) == 2 for item in controls["frequency_matched_random_sets"])
+    assert len(controls["highest_frequency_set"]) == 2
     assert len(controls["lowest_differential_set"]) == 2
 
 

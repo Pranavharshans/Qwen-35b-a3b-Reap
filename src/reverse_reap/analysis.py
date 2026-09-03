@@ -243,31 +243,48 @@ def build_control_sets(
             members.extend({"layer": layer, "expert": int(expert)} for expert in experts)
         layer_matched.append({"control_id": f"layer-random-{index:03d}", "experts": members})
 
-    frequency_matched = []
-    available = set(row_by_key) - selected_set
-    for target in selected:
-        target_frequency = float(row_by_key[target].get("routing_frequency", 0.0))
-        same_layer = [key for key in available if key[0] == target[0]]
-        if not same_layer:
-            raise AnalysisError(f"no frequency control available for {target}")
-        chosen = min(
-            same_layer,
-            key=lambda key: (
-                abs(float(row_by_key[key].get("routing_frequency", 0.0)) - target_frequency),
-                key,
-            ),
+    frequency_matched_sets = []
+    for index in range(random_sets):
+        available = set(row_by_key) - selected_set
+        members = []
+        for target in selected:
+            target_frequency = float(row_by_key[target].get("routing_frequency", 0.0))
+            same_layer = [key for key in available if key[0] == target[0]]
+            if not same_layer:
+                raise AnalysisError(f"no frequency control available for {target}")
+            ordered = sorted(
+                same_layer,
+                key=lambda key: (
+                    abs(float(row_by_key[key].get("routing_frequency", 0.0)) - target_frequency),
+                    key,
+                ),
+            )
+            # Randomize only within the closest deterministic candidate window. This
+            # produces independently frozen sets without sacrificing the matching goal.
+            window = ordered[: min(random_sets, len(ordered))]
+            chosen = window[int(rng.integers(0, len(window)))]
+            available.remove(chosen)
+            members.append({"layer": chosen[0], "expert": chosen[1]})
+        frequency_matched_sets.append(
+            {"control_id": f"frequency-random-{index:03d}", "experts": members}
         )
-        available.remove(chosen)
-        frequency_matched.append({"layer": chosen[0], "expert": chosen[1]})
     lowest = sorted(
         (row for row in ranking if (row["layer"], row["expert"]) not in selected_set),
         key=lambda row: (row["differential"], row["layer"], row["expert"]),
+    )[: len(selected)]
+    highest_frequency = sorted(
+        (row for row in ranking if (row["layer"], row["expert"]) not in selected_set),
+        key=lambda row: (-float(row.get("routing_frequency", 0.0)), row["layer"], row["expert"]),
     )[: len(selected)]
     return {
         "schema_version": 1,
         "seed": seed,
         "layer_matched_random_sets": layer_matched,
-        "frequency_matched_set": frequency_matched,
+        "frequency_matched_random_sets": frequency_matched_sets,
+        # Kept as an explicit negative control, distinct from differential ranking.
+        "highest_frequency_set": [
+            {"layer": row["layer"], "expert": row["expert"]} for row in highest_frequency
+        ],
         "lowest_differential_set": [
             {"layer": row["layer"], "expert": row["expert"]} for row in lowest
         ],

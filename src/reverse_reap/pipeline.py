@@ -94,9 +94,11 @@ def analyze_telemetry(
     controls_dir.mkdir(exist_ok=True)
     for item in controls["layer_matched_random_sets"]:
         _write_json(controls_dir / f"{item['control_id']}.json", item)
+    for item in controls["frequency_matched_random_sets"]:
+        _write_json(controls_dir / f"{item['control_id']}.json", item)
     _write_json(
-        controls_dir / "frequency-matched.json",
-        {"control_id": "frequency-matched", "experts": controls["frequency_matched_set"]},
+        controls_dir / "highest-frequency.json",
+        {"control_id": "highest-frequency", "experts": controls["highest_frequency_set"]},
     )
     _write_json(
         controls_dir / "lowest-differential.json",
