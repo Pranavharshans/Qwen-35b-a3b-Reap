@@ -1,0 +1,1569 @@
+schema_version: 1
+tasks:
+- task_id: gpu-preflight
+  objective: Verify the approved four-RTX-3090 execution environment.
+  definition_of_done: Hardware report passes exact count, model, memory, capability, and disk checks.
+  command:
+  - python
+  - scripts/gpu_preflight.py
+  - --output
+  - runs/v0/${RUN_ID}/preflight.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - preflight
+  - runs/v0/${RUN_ID}/preflight.json
+  inputs: []
+  outputs:
+  - runs/v0/${RUN_ID}/preflight.json
+  dependencies: []
+  estimated_gpu_hours: 0.01
+  estimated_storage_gb: 1.0
+  failure_behavior: terminal
+  run_if: null
+- task_id: dataset-freeze
+  objective: Resolve, normalize, audit, and freeze all coding and control sources.
+  definition_of_done: At least 500 coding and 500 control rows are immutable with source provenance.
+  command:
+  - reverse-reap
+  - fetch-datasets
+  - configs/dataset-sources.yaml
+  - datasets/manifests/full.jsonl
+  validation_command:
+  - python
+  - scripts/validate_dataset.py
+  - datasets/manifests/full.jsonl
+  - --full
+  inputs:
+  - configs/dataset-sources.yaml
+  outputs:
+  - datasets/manifests/full.jsonl
+  - datasets/manifests/full.sources.json
+  dependencies: []
+  estimated_gpu_hours: 0.0
+  estimated_storage_gb: 3.0
+  failure_behavior: terminal
+  run_if: null
+- task_id: dataset-token-length-audit
+  objective: Measure exact Qwen-tokenizer prompt lengths before attribution.
+  definition_of_done: Coding/control median, tail, and truncation balance gates pass.
+  command:
+  - reverse-reap
+  - audit-token-lengths
+  - datasets/manifests/full.jsonl
+  - /models/qwen
+  - runs/v0/${RUN_ID}/dataset-token-lengths.json
+  - --max-input-tokens
+  - '1024'
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset-lengths
+  - runs/v0/${RUN_ID}/dataset-token-lengths.json
+  inputs:
+  - datasets/manifests/full.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/dataset-token-lengths.json
+  dependencies:
+  - dataset-freeze
+  - gpu-preflight
+  estimated_gpu_hours: 0.0
+  estimated_storage_gb: 1.0
+  failure_behavior: terminal
+  run_if: null
+- task_id: instrumentation-probe
+  objective: Prove exact Qwen routing capture and no-op behavioral equivalence.
+  definition_of_done: Exact logits, routed row count, and architecture contract all pass.
+  command:
+  - reverse-reap
+  - probe
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - --output
+  - runs/v0/${RUN_ID}/probe.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - probe
+  - runs/v0/${RUN_ID}/probe.json
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  outputs:
+  - runs/v0/${RUN_ID}/probe.json
+  dependencies:
+  - gpu-preflight
+  estimated_gpu_hours: 0.5
+  estimated_storage_gb: 1.0
+  failure_behavior: terminal
+  run_if: null
+- task_id: telemetry-calibration
+  objective: Capture token-level streaming REAP telemetry for frozen calibration rows.
+  definition_of_done: Every token-layer group has exactly eight unique finite routed expert rows.
+  command:
+  - reverse-reap
+  - capture
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/telemetry-calibration.jsonl
+  - --split
+  - calibration
+  validation_command:
+  - reverse-reap
+  - validate-telemetry
+  - runs/v0/${RUN_ID}/telemetry-calibration.jsonl
+  - --output
+  - runs/v0/${RUN_ID}/telemetry-calibration-validation.json
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/telemetry-calibration.jsonl
+  - runs/v0/${RUN_ID}/telemetry-calibration-validation.json
+  dependencies:
+  - instrumentation-probe
+  - dataset-freeze
+  - dataset-token-length-audit
+  estimated_gpu_hours: 12.0
+  estimated_storage_gb: 30.0
+  failure_behavior: retry
+  run_if: null
+- task_id: telemetry-selection
+  objective: Capture token-level streaming REAP telemetry for frozen selection rows.
+  definition_of_done: Every token-layer group has exactly eight unique finite routed expert rows.
+  command:
+  - reverse-reap
+  - capture
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/telemetry-selection.jsonl
+  - --split
+  - selection
+  validation_command:
+  - reverse-reap
+  - validate-telemetry
+  - runs/v0/${RUN_ID}/telemetry-selection.jsonl
+  - --output
+  - runs/v0/${RUN_ID}/telemetry-selection-validation.json
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/telemetry-selection.jsonl
+  - runs/v0/${RUN_ID}/telemetry-selection-validation.json
+  dependencies:
+  - instrumentation-probe
+  - dataset-freeze
+  - dataset-token-length-audit
+  estimated_gpu_hours: 12.0
+  estimated_storage_gb: 30.0
+  failure_behavior: retry
+  run_if: null
+- task_id: merge-telemetry
+  objective: Merge only calibration and selection routing chunks without duplicate identities.
+  definition_of_done: Merged telemetry validates and contains no validation or replication samples.
+  command:
+  - reverse-reap
+  - merge-telemetry
+  - runs/v0/${RUN_ID}/telemetry.jsonl
+  - runs/v0/${RUN_ID}/telemetry-calibration.jsonl
+  - runs/v0/${RUN_ID}/telemetry-selection.jsonl
+  validation_command:
+  - reverse-reap
+  - validate-telemetry
+  - runs/v0/${RUN_ID}/telemetry.jsonl
+  inputs:
+  - runs/v0/${RUN_ID}/telemetry-calibration.jsonl
+  - runs/v0/${RUN_ID}/telemetry-selection.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/telemetry.jsonl
+  dependencies:
+  - telemetry-calibration
+  - telemetry-selection
+  estimated_gpu_hours: 0.0
+  estimated_storage_gb: 60.0
+  failure_behavior: terminal
+  run_if: null
+- task_id: candidate-analysis
+  objective: Compute differential ranking, uncertainty, permutations, and frozen controls.
+  definition_of_done: Gate C decision and all selected/random/frequency/negative manifests are hashed.
+  command:
+  - reverse-reap
+  - analyze
+  - runs/v0/${RUN_ID}/telemetry.jsonl
+  - runs/v0/${RUN_ID}/analysis
+  - --top-n
+  - '32'
+  - --cardinality-grid
+  - '8'
+  - '16'
+  - '32'
+  - '64'
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - candidate
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  inputs:
+  - runs/v0/${RUN_ID}/telemetry.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  - runs/v0/${RUN_ID}/analysis/bootstrap-stability.json
+  - runs/v0/${RUN_ID}/analysis/label-permutation.json
+  - runs/v0/${RUN_ID}/analysis/control-manifests.json
+  - runs/v0/${RUN_ID}/analysis/cardinality-grid.json
+  dependencies:
+  - merge-telemetry
+  estimated_gpu_hours: 0.0
+  estimated_storage_gb: 2.0
+  failure_behavior: terminal
+  run_if: null
+- task_id: single-expert-intervention-probe
+  objective: Prove one routed candidate can be zeroed with exact no-op semantics.
+  definition_of_done: A routed real-donor sample has bit-exact no-op logits and changed masked logits.
+  command:
+  - reverse-reap
+  - probe-intervention
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  - runs/v0/${RUN_ID}/intervention-probe.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - probe
+  - runs/v0/${RUN_ID}/intervention-probe.json
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  outputs:
+  - runs/v0/${RUN_ID}/intervention-probe.json
+  dependencies:
+  - candidate-analysis
+  estimated_gpu_hours: 0.5
+  estimated_storage_gb: 1.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: baseline-validation-a
+  objective: Run the intact C0 validation baseline for exact repeatability.
+  definition_of_done: All validation rows have explicit scores/errors and the output is immutable.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/baseline-validation-a.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C0
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/baseline-validation-a.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/baseline-validation-a.jsonl
+  dependencies:
+  - instrumentation-probe
+  - dataset-freeze
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if: null
+- task_id: baseline-validation-b
+  objective: Run the intact C0 validation baseline for exact repeatability.
+  definition_of_done: All validation rows have explicit scores/errors and the output is immutable.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/baseline-validation-b.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C0
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/baseline-validation-b.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/baseline-validation-b.jsonl
+  dependencies:
+  - instrumentation-probe
+  - dataset-freeze
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if: null
+- task_id: baseline-determinism
+  objective: Prove Gate B scoreability and exact repeated C0 responses.
+  definition_of_done: At least 95 percent are scoreable and no repeated response/score differs.
+  command:
+  - reverse-reap
+  - compare-evaluations
+  - runs/v0/${RUN_ID}/baseline-validation-a.jsonl
+  - runs/v0/${RUN_ID}/baseline-validation-b.jsonl
+  - --output
+  - runs/v0/${RUN_ID}/baseline-determinism.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - probe
+  - runs/v0/${RUN_ID}/baseline-determinism.json
+  inputs:
+  - runs/v0/${RUN_ID}/baseline-validation-a.jsonl
+  - runs/v0/${RUN_ID}/baseline-validation-b.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/baseline-determinism.json
+  dependencies:
+  - baseline-validation-a
+  - baseline-validation-b
+  estimated_gpu_hours: 0.0
+  estimated_storage_gb: 1.0
+  failure_behavior: terminal
+  run_if: null
+- task_id: selected-validation
+  objective: Measure the frozen selected-set C2 causal intervention on validation data.
+  definition_of_done: Paired selected-set results exist for the unchanged validation membership.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/selected-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C2
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/selected-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  outputs:
+  - runs/v0/${RUN_ID}/selected-validation.jsonl
+  dependencies:
+  - single-expert-intervention-probe
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-000
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-000-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-000.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-000-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-000.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-000-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-001
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-001-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-001.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-001-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-001.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-001-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-002
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-002-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-002.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-002-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-002.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-002-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-003
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-003-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-003.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-003-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-003.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-003-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-004
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-004-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-004.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-004-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-004.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-004-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-005
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-005-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-005.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-005-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-005.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-005-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-006
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-006-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-006.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-006-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-006.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-006-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-007
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-007-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-007.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-007-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-007.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-007-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-008
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-008-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-008.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-008-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-008.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-008-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-009
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-009-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-009.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-009-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-009.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-009-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-010
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-010-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-010.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-010-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-010.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-010-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-011
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-011-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-011.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-011-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-011.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-011-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-012
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-012-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-012.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-012-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-012.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-012-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-013
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-013-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-013.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-013-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-013.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-013-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-014
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-014-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-014.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-014-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-014.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-014-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-015
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-015-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-015.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-015-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-015.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-015-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-016
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-016-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-016.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-016-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-016.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-016-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-017
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-017-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-017.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-017-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-017.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-017-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-018
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-018-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-018.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-018-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-018.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-018-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: layer-random-019
+  objective: Evaluate one pre-frozen equal-cardinality layer-matched random control.
+  definition_of_done: Paired validation results exist without changing the frozen random manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/layer-random-019-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C3
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-019.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/layer-random-019-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/layer-random-019.json
+  outputs:
+  - runs/v0/${RUN_ID}/layer-random-019-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: frequency-matched
+  objective: Evaluate the frozen frequency-matched causal control.
+  definition_of_done: Paired validation results exist for the unchanged control manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/frequency-matched-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C4
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/frequency-matched.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/frequency-matched-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/frequency-matched.json
+  outputs:
+  - runs/v0/${RUN_ID}/frequency-matched-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: lowest-differential
+  objective: Evaluate the frozen lowest-differential causal control.
+  definition_of_done: Paired validation results exist for the unchanged control manifest.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/lowest-differential-validation.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C5
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/controls/lowest-differential.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/lowest-differential-validation.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/controls/lowest-differential.json
+  outputs:
+  - runs/v0/${RUN_ID}/lowest-differential-validation.jsonl
+  dependencies:
+  - candidate-analysis
+  - baseline-determinism
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: baseline-replication
+  objective: Run untouched baseline replication only after validation controls finish.
+  definition_of_done: Every frozen replication member has a score or explicit failure record.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/baseline-replication.jsonl
+  - --split
+  - replication
+  - --condition-id
+  - C0
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/baseline-replication.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/baseline-replication.jsonl
+  dependencies:
+  - selected-validation
+  - layer-random-000
+  - layer-random-001
+  - layer-random-002
+  - layer-random-003
+  - layer-random-004
+  - layer-random-005
+  - layer-random-006
+  - layer-random-007
+  - layer-random-008
+  - layer-random-009
+  - layer-random-010
+  - layer-random-011
+  - layer-random-012
+  - layer-random-013
+  - layer-random-014
+  - layer-random-015
+  - layer-random-016
+  - layer-random-017
+  - layer-random-018
+  - layer-random-019
+  - frequency-matched
+  - lowest-differential
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: selected-replication
+  objective: Run untouched selected replication only after validation controls finish.
+  definition_of_done: Every frozen replication member has a score or explicit failure record.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/selected-replication.jsonl
+  - --split
+  - replication
+  - --condition-id
+  - C2
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/selected-replication.jsonl
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  outputs:
+  - runs/v0/${RUN_ID}/selected-replication.jsonl
+  dependencies:
+  - selected-validation
+  - layer-random-000
+  - layer-random-001
+  - layer-random-002
+  - layer-random-003
+  - layer-random-004
+  - layer-random-005
+  - layer-random-006
+  - layer-random-007
+  - layer-random-008
+  - layer-random-009
+  - layer-random-010
+  - layer-random-011
+  - layer-random-012
+  - layer-random-013
+  - layer-random-014
+  - layer-random-015
+  - layer-random-016
+  - layer-random-017
+  - layer-random-018
+  - layer-random-019
+  - frequency-matched
+  - lowest-differential
+  estimated_gpu_hours: 8.0
+  estimated_storage_gb: 3.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: causal-report
+  objective: Apply Gate D from paired validation, random controls, and untouched replication.
+  definition_of_done: The report computes every Gate D criterion and assigns only an allowed evidence label.
+  command:
+  - reverse-reap
+  - causal-report
+  - runs/v0/${RUN_ID}/baseline-validation-a.jsonl
+  - runs/v0/${RUN_ID}/selected-validation.jsonl
+  - runs/v0/${RUN_ID}/causal-report.json
+  - runs/v0/${RUN_ID}/layer-random-000-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-001-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-002-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-003-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-004-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-005-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-006-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-007-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-008-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-009-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-010-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-011-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-012-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-013-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-014-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-015-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-016-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-017-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-018-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-019-validation.jsonl
+  - --replication-baseline
+  - runs/v0/${RUN_ID}/baseline-replication.jsonl
+  - --replication-selected
+  - runs/v0/${RUN_ID}/selected-replication.jsonl
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - causal
+  - runs/v0/${RUN_ID}/causal-report.json
+  inputs:
+  - runs/v0/${RUN_ID}/baseline-validation-a.jsonl
+  - runs/v0/${RUN_ID}/selected-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-000-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-001-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-002-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-003-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-004-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-005-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-006-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-007-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-008-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-009-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-010-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-011-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-012-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-013-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-014-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-015-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-016-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-017-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-018-validation.jsonl
+  - runs/v0/${RUN_ID}/layer-random-019-validation.jsonl
+  - runs/v0/${RUN_ID}/baseline-replication.jsonl
+  - runs/v0/${RUN_ID}/selected-replication.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/causal-report.json
+  dependencies:
+  - baseline-replication
+  - selected-replication
+  estimated_gpu_hours: 0.0
+  estimated_storage_gb: 1.0
+  failure_behavior: terminal
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: extract-candidates
+  objective: Copy every frozen selected expert tensor and independently verify source bytes.
+  definition_of_done: Complete extraction, source map, checksums, verification, and dependency warning exist.
+  command:
+  - reverse-reap
+  - extract
+  - configs/pinned-3090-bf16.yaml
+  - /models/qwen
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  - runs/v0/${RUN_ID}/extraction
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - extraction
+  - runs/v0/${RUN_ID}/extraction/extraction-manifest.json
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  outputs:
+  - runs/v0/${RUN_ID}/extraction/extraction-manifest.json
+  - runs/v0/${RUN_ID}/extraction/experts.safetensors
+  - runs/v0/${RUN_ID}/extraction/verification-report.json
+  dependencies:
+  - causal-report
+  estimated_gpu_hours: 0.2
+  estimated_storage_gb: 20.0
+  failure_behavior: terminal
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: final-bundle
+  objective: Inventory all evidence, hashes, costs, gates, and limitations for human review.
+  definition_of_done: A conservative terminal or incomplete classification and full artifact inventory exist.
+  command:
+  - reverse-reap
+  - build-bundle
+  - configs/pinned-3090-bf16.yaml
+  - runs/v0/${RUN_ID}
+  - runs/v0/${RUN_ID}/state
+  - runs/v0/${RUN_ID}/manifest.json
+  validation_command:
+  - python
+  - -m
+  - json.tool
+  - runs/v0/${RUN_ID}/manifest.json
+  inputs:
+  - configs/pinned-3090-bf16.yaml
+  - runs/v0/${RUN_ID}/extraction/extraction-manifest.json
+  outputs:
+  - runs/v0/${RUN_ID}/manifest.json
+  dependencies:
+  - extract-candidates
+  - thinking-selected-pilot
+  estimated_gpu_hours: 0.0
+  estimated_storage_gb: 1.0
+  failure_behavior: terminal
+  run_if: null
+- task_id: thinking-baseline-pilot
+  objective: Run a bounded C1 thinking-enabled pilot without pooling C0 evidence.
+  definition_of_done: A separately identified thinking baseline artifact exists.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-thinking-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/thinking-baseline.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C1
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --limit
+  - '20'
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/thinking-baseline.jsonl
+  inputs:
+  - configs/pinned-thinking-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  outputs:
+  - runs/v0/${RUN_ID}/thinking-baseline.jsonl
+  dependencies:
+  - causal-report
+  estimated_gpu_hours: 1.0
+  estimated_storage_gb: 1.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
+- task_id: thinking-selected-pilot
+  objective: Run the same bounded thinking pilot with the frozen C6 selected intervention.
+  definition_of_done: A separately identified thinking selected-set artifact exists.
+  command:
+  - reverse-reap
+  - evaluate
+  - configs/pinned-thinking-3090-bf16.yaml
+  - /models/qwen
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/thinking-selected.jsonl
+  - --split
+  - validation
+  - --condition-id
+  - C6
+  - --evaluator-image
+  - ${REVERSE_REAP_EVALUATOR_IMAGE}
+  - --expert-manifest
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  - --limit
+  - '20'
+  validation_command:
+  - python
+  - scripts/validate_artifact.py
+  - dataset
+  - runs/v0/${RUN_ID}/thinking-selected.jsonl
+  inputs:
+  - configs/pinned-thinking-3090-bf16.yaml
+  - datasets/manifests/full.jsonl
+  - runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+  outputs:
+  - runs/v0/${RUN_ID}/thinking-selected.jsonl
+  dependencies:
+  - thinking-baseline-pilot
+  estimated_gpu_hours: 1.0
+  estimated_storage_gb: 1.0
+  failure_behavior: retry
+  run_if:
+    path: runs/v0/${RUN_ID}/analysis/candidate-manifest.json
+    field: gate_passed
+    equals: true
