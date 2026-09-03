@@ -78,7 +78,8 @@ pinned configuration before resolving a run ID. A configuration change requires 
    ```bash
    docker build -t reverse-reap-evaluator:local evaluator
    export REVERSE_REAP_EVALUATOR_IMAGE=reverse-reap-evaluator:local
-   export REVERSE_REAP_BASE_IMAGE='REPLACE_WITH_APPROVED_IMAGE@sha256:REPLACE'
+   # Optional override; compose.yaml already pins PyTorch 2.7.1/CUDA 12.8 by digest.
+   export REVERSE_REAP_BASE_IMAGE='pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2'
    export REVERSE_REAP_MODEL_DIR=/absolute/path/to/model
    docker compose build reverse-reap
    ```

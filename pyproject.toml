@@ -20,7 +20,7 @@ dependencies = [
 gpu = [
   "accelerate>=1.7,<2",
   "datasets>=3.6,<5",
-  "torch>=2.7,<3",
+  "torch==2.7.1",
   "transformers>=5.5,<6",
 ]
 dev = [
@@ -44,4 +44,3 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-

@@ -3,8 +3,8 @@ services:
     build:
       context: .
       args:
-        # Mandatory digest-pinned CUDA/PyTorch image, e.g. repository@sha256:...
-        BASE_IMAGE: ${REVERSE_REAP_BASE_IMAGE:?set a digest-pinned GPU base image}
+        # Linux/amd64 PyTorch 2.7.1 + CUDA 12.8 manifest, verified 2026-09-03.
+        BASE_IMAGE: ${REVERSE_REAP_BASE_IMAGE:-pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2}
     image: reverse-reap:${REVERSE_REAP_IMAGE_TAG:-local}
     ipc: host
     shm_size: 16gb
