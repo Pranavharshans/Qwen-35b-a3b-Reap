@@ -1,0 +1,18 @@
+# UPDATE XXXX with actual port number before using
+model_deployments:
+  - name: vllm/qwen3-30b-a3b
+    model_name: Qwen/Qwen3-30B-A3B
+    tokenizer_name: Qwen/Qwen3-30B-A3B
+    max_sequence_length: 40960
+    client_spec:
+      class_name: "helm.clients.vllm_client.VLLMChatClient"
+      args:
+        base_url:  http://0.0.0.0:XXXX/v1/
+  - name: vllm/GLM-4.5-Air
+    model_name: zai-org/GLM-4.5-Air
+    tokenizer_name: zai-org/GLM-4.5-Air
+    max_sequence_length: 40960
+    client_spec:
+      class_name: "helm.clients.vllm_client.VLLMChatClient"
+      args:
+        base_url:  http://0.0.0.0:XXXX/v1/
