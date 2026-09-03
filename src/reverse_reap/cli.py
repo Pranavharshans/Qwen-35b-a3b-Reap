@@ -9,6 +9,7 @@ from pathlib import Path
 
 from reverse_reap.config import load_config
 from reverse_reap.controller import run_next
+from reverse_reap.runtime import capture_manifest, probe_instrumentation
 
 
 def git_sha() -> str:
@@ -41,6 +42,19 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("plan", type=Path)
     run.add_argument("state_dir", type=Path)
     run.add_argument("--heartbeat-seconds", type=float, default=30)
+    capture = subparsers.add_parser("capture")
+    capture.add_argument("config", type=Path)
+    capture.add_argument("model_path", type=Path)
+    capture.add_argument("manifest", type=Path)
+    capture.add_argument("destination", type=Path)
+    capture.add_argument("--split", default="calibration")
+    capture.add_argument("--limit", type=int)
+    probe = subparsers.add_parser("probe")
+    probe.add_argument("config", type=Path)
+    probe.add_argument("model_path", type=Path)
+    probe.add_argument(
+        "--prompt", default="Write a Python function that returns the sum of two integers."
+    )
     return parser
 
 
@@ -60,6 +74,21 @@ def main() -> int:
         )
         print(json.dumps(output, indent=2, sort_keys=True))
         return 0 if output["status"] == "COMPLETE" else 2
+    if args.command == "capture":
+        output = capture_manifest(
+            args.model_path,
+            args.manifest,
+            args.destination,
+            load_config(args.config),
+            split=args.split,
+            limit=args.limit,
+        )
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0
+    if args.command == "probe":
+        output = probe_instrumentation(args.model_path, load_config(args.config), args.prompt)
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0 if output["passed"] else 3
     raise AssertionError(f"unhandled command: {args.command}")
 
 

@@ -1,0 +1,275 @@
+"""Pinned Qwen3.5 loading, architecture preflight, and teacher-forced telemetry."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from reverse_reap.config import ExperimentConfig
+from reverse_reap.datasets import NormalizedSample, load_manifest
+from reverse_reap.instrumentation import CaptureState, instrument_qwen35
+from reverse_reap.qwen35 import ArchitectureError, Qwen35Architecture, inspect_qwen35_moe
+
+
+class RuntimeCompatibilityError(RuntimeError):
+    """Raised when the pinned runtime cannot satisfy the donor contract."""
+
+
+def load_donor(model_path: Path, config: ExperimentConfig) -> tuple[Any, Any]:
+    import torch
+    from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoTokenizer
+
+    dtype = torch.bfloat16 if config.model.execution_precision == "bf16" else torch.float16
+    common = {
+        "local_files_only": True,
+        "revision": config.model.revision,
+        "dtype": dtype,
+        "device_map": "balanced",
+        "trust_remote_code": False,
+    }
+    errors = []
+    for loader in (AutoModelForImageTextToText, AutoModelForCausalLM):
+        try:
+            model = loader.from_pretrained(str(model_path), **common)
+            break
+        except (ValueError, OSError) as error:
+            errors.append(f"{loader.__name__}: {error}")
+    else:
+        raise RuntimeCompatibilityError("; ".join(errors))
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(model_path),
+        local_files_only=True,
+        revision=config.model.revision,
+        trust_remote_code=False,
+    )
+    model.eval()
+    return model, tokenizer
+
+
+def validate_donor_contract(model: Any, architecture: Qwen35Architecture) -> dict[str, Any]:
+    model_config = model.config
+    text_config = getattr(model_config, "text_config", model_config)
+    actual = {
+        "model_type": getattr(model_config, "model_type", None),
+        "text_model_type": getattr(text_config, "model_type", None),
+        "num_layers": architecture.num_layers,
+        "hidden_size": architecture.hidden_size,
+        "num_experts": architecture.num_experts,
+        "experts_per_token": architecture.experts_per_token,
+        "expert_intermediate_size": architecture.expert_intermediate_size,
+        "shared_expert_present": all(
+            hasattr(layer.mlp, "shared_expert") for layer in architecture.layers
+        ),
+    }
+    expected = {
+        "num_layers": 40,
+        "hidden_size": 2048,
+        "num_experts": 256,
+        "experts_per_token": 8,
+        "expert_intermediate_size": 512,
+        "shared_expert_present": True,
+    }
+    mismatches = {
+        key: {"expected": value, "actual": actual[key]}
+        for key, value in expected.items()
+        if actual[key] != value
+    }
+    accepted_types = {"qwen3_5_moe", "qwen3_5_moe_text"}
+    if (
+        actual["model_type"] not in accepted_types
+        and actual["text_model_type"] not in accepted_types
+    ):
+        mismatches["model_type"] = {
+            "expected": sorted(accepted_types),
+            "actual": actual["model_type"],
+        }
+    if mismatches:
+        raise RuntimeCompatibilityError(f"donor architecture mismatch: {mismatches}")
+    return {"compatible": True, "actual": actual, "expected": expected}
+
+
+def environment_report() -> dict[str, Any]:
+    import torch
+    import transformers
+
+    return {
+        "hostname": platform.node(),
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "torch": torch.__version__,
+        "transformers": transformers.__version__,
+        "cuda": torch.version.cuda,
+        "cuda_available": torch.cuda.is_available(),
+        "gpu_count": torch.cuda.device_count(),
+        "gpus": [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())],
+    }
+
+
+def _render_ids(tokenizer: Any, sample: NormalizedSample, enable_thinking: bool) -> tuple[Any, Any]:
+    import torch
+
+    messages = [{"role": "user", "content": sample.prompt}]
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+        enable_thinking=enable_thinking,
+    )
+    if sample.reference is None:
+        raise RuntimeCompatibilityError(
+            f"sample {sample.sample_id} has no teacher-forced reference"
+        )
+    full = tokenizer.apply_chat_template(
+        [*messages, {"role": "assistant", "content": sample.reference}],
+        tokenize=True,
+        add_generation_prompt=False,
+        return_tensors="pt",
+        enable_thinking=enable_thinking,
+    )
+    if full.shape[1] < prompt.shape[1]:
+        raise RuntimeCompatibilityError("full teacher-forced sequence is shorter than prompt")
+    if not torch.equal(full[:, : prompt.shape[1]], prompt):
+        raise RuntimeCompatibilityError(
+            "teacher-forced sequence does not preserve the prompt prefix"
+        )
+    return prompt.to(dtype=torch.long), full.to(dtype=torch.long)
+
+
+def _run_capture(model: Any, architecture: Qwen35Architecture, input_ids: Any) -> CaptureState:
+    import torch
+
+    device = model.get_input_embeddings().weight.device
+    input_ids = input_ids.to(device)
+    with torch.inference_mode(), instrument_qwen35(architecture) as capture:
+        model(input_ids=input_ids, attention_mask=torch.ones_like(input_ids), use_cache=False)
+    return capture
+
+
+def _segment_rows(
+    full: CaptureState,
+    prompt: CaptureState,
+    sample: NormalizedSample,
+) -> list[dict[str, Any]]:
+    rows = []
+    fields = ("count", "router_mass", "output_norm_sum", "weighted_norm_sum")
+    for layer in range(full.num_layers):
+        full_acc, prompt_acc = full.accumulators[layer], prompt.accumulators[layer]
+        for segment in ("prompt", "completion", "joint"):
+            arrays = {}
+            for field in fields:
+                if segment == "prompt":
+                    values = getattr(prompt_acc, field)
+                elif segment == "joint":
+                    values = getattr(full_acc, field)
+                else:
+                    values = getattr(full_acc, field) - getattr(prompt_acc, field)
+                if np.any(values < -1e-7):
+                    raise RuntimeCompatibilityError(
+                        f"non-causal telemetry subtraction at layer {layer}, field {field}"
+                    )
+                arrays[field] = np.maximum(values, 0)
+            for expert in np.flatnonzero(arrays["count"]):
+                count = int(arrays["count"][expert])
+                rows.append(
+                    {
+                        "sample_id": sample.sample_id,
+                        "domain": sample.domain,
+                        "stratum": sample.stratum,
+                        "language": sample.language,
+                        "split": sample.split,
+                        "segment": segment,
+                        "layer": layer,
+                        "expert": int(expert),
+                        "routed_count": count,
+                        "router_mass": float(arrays["router_mass"][expert]),
+                        "reap_saliency": float(arrays["weighted_norm_sum"][expert] / count),
+                    }
+                )
+    return rows
+
+
+def capture_manifest(
+    model_path: Path,
+    manifest_path: Path,
+    destination: Path,
+    config: ExperimentConfig,
+    *,
+    split: str,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    model, tokenizer = load_donor(model_path, config)
+    try:
+        architecture = inspect_qwen35_moe(model)
+    except ArchitectureError as error:
+        raise RuntimeCompatibilityError(str(error)) from error
+    architecture_report = validate_donor_contract(model, architecture)
+    samples = [sample for sample in load_manifest(manifest_path) if sample.split == split]
+    if limit is not None:
+        samples = samples[:limit]
+    if not samples:
+        raise RuntimeCompatibilityError(f"manifest has no samples for split {split}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise RuntimeCompatibilityError(f"refusing to overwrite telemetry: {destination}")
+    fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    count = 0
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for sample in samples:
+                prompt_ids, full_ids = _render_ids(
+                    tokenizer, sample, config.runtime.enable_thinking
+                )
+                prompt_capture = _run_capture(model, architecture, prompt_ids)
+                full_capture = _run_capture(model, architecture, full_ids)
+                for row in _segment_rows(full_capture, prompt_capture, sample):
+                    handle.write(json.dumps(row, sort_keys=True) + "\n")
+                    count += 1
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return {
+        "records": count,
+        "samples": len(samples),
+        "telemetry_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+        "architecture": architecture_report,
+        "environment": environment_report(),
+    }
+
+
+def probe_instrumentation(
+    model_path: Path, config: ExperimentConfig, prompt: str
+) -> dict[str, Any]:
+    import torch
+
+    model, tokenizer = load_donor(model_path, config)
+    architecture = inspect_qwen35_moe(model)
+    validate_donor_contract(model, architecture)
+    ids = tokenizer(prompt, return_tensors="pt").input_ids
+    device = model.get_input_embeddings().weight.device
+    ids = ids.to(device)
+    with torch.inference_mode():
+        baseline = model(input_ids=ids, use_cache=False).logits
+        with instrument_qwen35(architecture) as capture:
+            instrumented = model(input_ids=ids, use_cache=False).logits
+    exact = torch.equal(baseline, instrumented)
+    maximum_difference = float((baseline.float() - instrumented.float()).abs().max().item())
+    routed = sum(int(acc.count.sum()) for acc in capture.accumulators)
+    return {
+        "exact_logits": exact,
+        "maximum_logit_difference": maximum_difference,
+        "routed_records": routed,
+        "passed": exact
+        and routed
+        == ids.numel() * architecture.num_layers * architecture.experts_per_token,
+    }
