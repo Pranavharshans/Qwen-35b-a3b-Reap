@@ -163,6 +163,9 @@ def evaluate_condition(
         records.append(
             {
                 "sample_id": sample.sample_id,
+                "source": sample.source,
+                "source_id": sample.source_id,
+                "scorer": sample.scorer,
                 "domain": sample.domain,
                 "stratum": sample.stratum,
                 "split": sample.split,

@@ -110,6 +110,46 @@ The controller writes atomic task state, hashes inputs and outputs, reserves 20%
 declared budget, retries an identical failure at most twice, and records periodic heartbeats.
 No model weights or extracted tensors are committed or uploaded automatically.
 
+## SWE-bench scoring boundary
+
+Repository-repair responses are not treated as scoreable until the official SWE-bench
+Docker harness completes them. The harness is pinned to repository revision
+`02e7a74ffd0b707aab73d203fe87bdc7c76afc8e`.
+
+Export one generated condition:
+
+```bash
+reverse-reap export-swebench runs/v0/baseline-validation-a.jsonl \
+  runs/v0/swebench/c0-a-predictions.jsonl --model-name qwen35a3b-c0-a
+```
+
+Run the official harness in a separate CPU/Docker environment. Generated patches are
+untrusted; do not run them directly on the GPU host filesystem:
+
+```bash
+git clone https://github.com/SWE-bench/SWE-bench.git /opt/SWE-bench
+git -C /opt/SWE-bench checkout 02e7a74ffd0b707aab73d203fe87bdc7c76afc8e
+python -m swebench.harness.run_evaluation \
+  --dataset_name princeton-nlp/SWE-bench_Lite \
+  --split test \
+  --predictions_path runs/v0/swebench/c0-a-predictions.jsonl \
+  --max_workers 4 --cache_level env --run_id qwen35a3b-c0-a
+```
+
+Merge the official report back into the generated condition:
+
+```bash
+reverse-reap merge-swebench \
+  runs/v0/baseline-validation-a.jsonl \
+  qwen35a3b-c0-a.json \
+  runs/v0/baseline-validation-a-scored.jsonl
+```
+
+The merge rejects foreign instance IDs, refuses overwrite, retains incomplete/error items,
+and passes the scoreability gate only at 95% or above. Use the scored files for determinism
+and causal comparison. The official harness requires substantial CPU storage; keep its image
+cache outside the model volume.
+
 ## Evidence outputs
 
 - Routing records: one row per token, layer, and top-k route

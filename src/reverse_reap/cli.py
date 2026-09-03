@@ -30,6 +30,7 @@ from reverse_reap.runtime import (
     probe_single_expert_intervention,
 )
 from reverse_reap.sources import fetch_and_freeze
+from reverse_reap.swebench import export_predictions, merge_report
 from reverse_reap.telemetry import merge_telemetry, validate_telemetry
 
 
@@ -165,6 +166,14 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("first", type=Path)
     compare.add_argument("second", type=Path)
     compare.add_argument("--output", type=Path)
+    swe_export = subparsers.add_parser("export-swebench")
+    swe_export.add_argument("evaluation", type=Path)
+    swe_export.add_argument("destination", type=Path)
+    swe_export.add_argument("--model-name", required=True)
+    swe_merge = subparsers.add_parser("merge-swebench")
+    swe_merge.add_argument("evaluation", type=Path)
+    swe_merge.add_argument("report", type=Path)
+    swe_merge.add_argument("destination", type=Path)
     merge = subparsers.add_parser("merge-telemetry")
     merge.add_argument("destination", type=Path)
     merge.add_argument("inputs", type=Path, nargs="+")
@@ -339,6 +348,17 @@ def main() -> int:
         output = compare_deterministic_evaluations(args.first, args.second)
         emit_json(output, args.output)
         return 0 if output["passed"] else 2
+    if args.command == "export-swebench":
+        emit_json(
+            export_predictions(
+                args.evaluation, args.destination, model_name=args.model_name
+            )
+        )
+        return 0
+    if args.command == "merge-swebench":
+        output = merge_report(args.evaluation, args.report, args.destination)
+        emit_json(output)
+        return 0 if output["passed_gate_b_scoreability"] else 2
     if args.command == "merge-telemetry":
         emit_json(merge_telemetry(args.inputs, args.destination))
         return 0
