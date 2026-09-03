@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,53 @@ from typing import Any
 
 class TelemetryError(ValueError):
     """Raised when routing evidence violates an identity or numeric invariant."""
+
+
+def merge_telemetry(inputs: list[Path], destination: Path) -> dict[str, Any]:
+    if len(inputs) < 2:
+        raise TelemetryError("at least two telemetry inputs are required")
+    if destination.exists():
+        raise TelemetryError(f"refusing to overwrite merged telemetry: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    seen: set[tuple[str, int, int, int]] = set()
+    splits: set[str] = set()
+    count = 0
+    fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            for path in inputs:
+                with path.open(encoding="utf-8") as source:
+                    for line in source:
+                        if not line.strip():
+                            continue
+                        row = json.loads(line)
+                        identity = (
+                            str(row["sample_id"]),
+                            int(row["token_index"]),
+                            int(row["layer_index"]),
+                            int(row["route_rank"]),
+                        )
+                        if identity in seen:
+                            raise TelemetryError(
+                                f"duplicate routing identity while merging: {identity}"
+                            )
+                        seen.add(identity)
+                        splits.add(str(row["split"]))
+                        output.write(json.dumps(row, sort_keys=True) + "\n")
+                        count += 1
+            output.flush()
+            os.fsync(output.fileno())
+        if splits - {"calibration", "selection"}:
+            raise TelemetryError(f"merged candidate telemetry leaks held-out splits: {splits}")
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return {
+        "routing_rows": count,
+        "splits": sorted(splits),
+        "inputs": [str(path) for path in inputs],
+    }
 
 
 def validate_telemetry(

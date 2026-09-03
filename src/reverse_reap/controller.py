@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import json
 import os
 import subprocess
 from contextlib import contextmanager
@@ -23,9 +24,16 @@ class ControllerError(RuntimeError):
     """Raised when an autonomous task cannot be safely dispatched."""
 
 
+class GateCondition(StrictModel):
+    path: Path
+    field: str
+    equals: bool | str | int | float
+
+
 class TaskDefinition(StrictModel):
     task_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]+$")
     objective: str = Field(min_length=1)
+    definition_of_done: str = Field(min_length=1)
     command: list[str] = Field(min_length=1)
     validation_command: list[str] = Field(min_length=1)
     inputs: list[Path] = Field(default_factory=list)
@@ -34,6 +42,7 @@ class TaskDefinition(StrictModel):
     estimated_gpu_hours: float = Field(ge=0)
     estimated_storage_gb: float = Field(ge=0)
     failure_behavior: Literal["retry", "terminal", "wait_for_human"] = "retry"
+    run_if: GateCondition | None = None
 
 
 class ExecutionPlan(StrictModel):
@@ -200,6 +209,8 @@ def run_all(
         if result["status"] == Status.FAILED_RETRYABLE:
             continue
         return {"status": result["status"], "completed_this_run": completed, "last": result}
+
+
 def run_next(
     plan_path: Path,
     config: ExperimentConfig,
@@ -224,6 +235,39 @@ def run_next(
         if eligible is None:
             return {"status": "COMPLETE", "message": "no eligible unfinished tasks"}
         path = _state_path(state_dir, eligible.task_id)
+        if eligible.run_if is not None:
+            condition_path = eligible.run_if.path
+            if not condition_path.exists():
+                raise ControllerError(f"task gate artifact is missing: {condition_path}")
+            condition_payload = json.loads(condition_path.read_text(encoding="utf-8"))
+            actual: Any = condition_payload
+            for part in eligible.run_if.field.split("."):
+                if not isinstance(actual, dict) or part not in actual:
+                    raise ControllerError(
+                        f"task gate field {eligible.run_if.field} is missing from {condition_path}"
+                    )
+                actual = actual[part]
+            if actual != eligible.run_if.equals:
+                if not path.exists():
+                    state = RunState(
+                        run_id=run_id,
+                        task_id=eligible.task_id,
+                        config_sha256=config.fingerprint(),
+                        input_hashes={str(condition_path): file_sha256(condition_path)},
+                        failure_signature=(f"SKIPPED_GATE:{eligible.run_if.field}={actual!r}"),
+                    )
+                    state.transition(Status.PREFLIGHTED)
+                    state.transition(Status.RUNNING)
+                    state.transition(Status.VALIDATING)
+                    state.transition(Status.COMPLETE)
+                    atomic_write_state(path, state)
+                return {
+                    "status": Status.COMPLETE,
+                    "task_id": eligible.task_id,
+                    "skipped": True,
+                    "reason": f"gate {eligible.run_if.field} was {actual!r}",
+                    "outputs": {},
+                }
         if path.exists():
             state = load_state(path)
             if state.status not in {Status.FAILED_RETRYABLE, Status.PREFLIGHTED}:
@@ -259,9 +303,7 @@ def run_next(
             state.transition(Status.RUNNING)
         atomic_write_state(path, state)
         log_path = state_dir / "logs" / f"{eligible.task_id}.log"
-        exit_code = _run_with_heartbeat(
-            eligible.command, state, path, log_path, heartbeat_seconds
-        )
+        exit_code = _run_with_heartbeat(eligible.command, state, path, log_path, heartbeat_seconds)
         if exit_code != 0:
             signature = hashlib.sha256(f"exit:{exit_code}".encode()).hexdigest()[:16]
             try:

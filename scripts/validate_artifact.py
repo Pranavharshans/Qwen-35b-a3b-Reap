@@ -15,7 +15,8 @@ def read_json(path: Path):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "kind", choices=["preflight", "probe", "dataset", "candidate", "extraction"]
+        "kind",
+        choices=["preflight", "probe", "dataset", "candidate", "causal", "extraction"],
     )
     parser.add_argument("path", type=Path)
     parser.add_argument("--require-gate-pass", action="store_true")
@@ -31,6 +32,18 @@ def main() -> int:
         passed = bool(value.get("experts")) and (
             not args.require_gate_pass or value.get("gate_passed")
         )
+    elif args.kind == "causal":
+        passed = value.get("label") in {
+            "coding-critical-v0",
+            "observational-candidates",
+            "unreplicated-candidates",
+        } and set(value.get("criteria", {})) == {
+            "twice_random_median",
+            "at_or_above_random_p95",
+            "coding_specificity_2pp",
+            "replication_direction",
+            "no_broad_output_collapse",
+        }
     elif args.kind == "extraction":
         passed = value.get("label") == "extracted" and all(
             tensor.get("verified") for tensor in value.get("tensors", [])

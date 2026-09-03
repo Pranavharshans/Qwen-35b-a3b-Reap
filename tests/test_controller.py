@@ -55,6 +55,7 @@ def task(task_id, output, dependencies=None):
     return {
         "task_id": task_id,
         "objective": "fixture task",
+        "definition_of_done": "output exists and validation exits zero",
         "command": [sys.executable, "-c", code],
         "validation_command": [sys.executable, "-c", "raise SystemExit(0)"],
         "outputs": [str(output)],
@@ -134,3 +135,19 @@ def test_run_all_completes_the_whole_plan(tmp_path):
     )
     assert result["status"] == "COMPLETE"
     assert result["completed_this_run"] == ["first", "second"]
+
+
+def test_false_scientific_gate_skips_task_without_requiring_outputs(tmp_path):
+    gate = tmp_path / "candidate.json"
+    gate.write_text('{"gate_passed": false}')
+    output = tmp_path / "must-not-exist.txt"
+    item = task("causal", output)
+    item["run_if"] = {"path": str(gate), "field": "gate_passed", "equals": True}
+    plan = write_plan(tmp_path, [item])
+    state_dir = tmp_path / "state"
+    result = run_next(plan, config(), state_dir, run_id="fixture")
+    assert result["skipped"]
+    assert not output.exists()
+    state = load_state(state_dir / "causal.json")
+    assert state.status == Status.COMPLETE
+    assert state.failure_signature.startswith("SKIPPED_GATE")

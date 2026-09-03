@@ -21,10 +21,11 @@ from reverse_reap.extraction import (
 )
 from reverse_reap.model_preflight import download_verified_weights, preflight_model
 from reverse_reap.pipeline import analyze_telemetry
+from reverse_reap.plans import write_full_plan
 from reverse_reap.reporting import build_run_bundle
 from reverse_reap.runtime import capture_manifest, probe_instrumentation
 from reverse_reap.sources import fetch_and_freeze
-from reverse_reap.telemetry import validate_telemetry
+from reverse_reap.telemetry import merge_telemetry, validate_telemetry
 
 
 def git_sha() -> str:
@@ -142,6 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("first", type=Path)
     compare.add_argument("second", type=Path)
     compare.add_argument("--output", type=Path)
+    merge = subparsers.add_parser("merge-telemetry")
+    merge.add_argument("destination", type=Path)
+    merge.add_argument("inputs", type=Path, nargs="+")
+    make_plan = subparsers.add_parser("make-full-plan")
+    make_plan.add_argument("destination", type=Path)
+    make_plan.add_argument("--pinned-config", default="configs/pinned-3090-bf16.yaml")
+    make_plan.add_argument("--thinking-config", default="configs/pinned-thinking-3090-bf16.yaml")
+    make_plan.add_argument("--run-dir", default="runs/v0")
     return parser
 
 
@@ -283,6 +292,18 @@ def main() -> int:
         output = compare_deterministic_evaluations(args.first, args.second)
         emit_json(output, args.output)
         return 0 if output["passed"] else 2
+    if args.command == "merge-telemetry":
+        emit_json(merge_telemetry(args.inputs, args.destination))
+        return 0
+    if args.command == "make-full-plan":
+        plan = write_full_plan(
+            args.destination,
+            pinned_config=args.pinned_config,
+            thinking_config=args.thinking_config,
+            run_dir=args.run_dir,
+        )
+        emit_json({"valid": True, "tasks": len(plan.tasks), "path": str(args.destination)})
+        return 0
     raise AssertionError(f"unhandled command: {args.command}")
 
 
