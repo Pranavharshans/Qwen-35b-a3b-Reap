@@ -5,7 +5,12 @@ import numpy as np
 import pytest
 from safetensors.numpy import load_file, save_file
 
-from reverse_reap.extraction import ExtractionError, extract_experts, verify_extraction
+from reverse_reap.extraction import (
+    ExtractionError,
+    architecture_from_weight_index,
+    extract_experts,
+    verify_extraction,
+)
 from reverse_reap.qwen35 import Qwen35Architecture
 
 
@@ -63,3 +68,17 @@ def test_refuses_to_overwrite_extraction(tmp_path):
             model_id="fixture/qwen",
             model_revision="f" * 40,
         )
+
+
+def test_infers_approved_40_layer_tensor_prefix(tmp_path):
+    prefix = "model.language_model.layers"
+    weight_map = {
+        f"{prefix}.{layer}.mlp.experts.gate_up_proj": "shard.safetensors"
+        for layer in range(40)
+    }
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": weight_map})
+    )
+    architecture = architecture_from_weight_index(tmp_path)
+    assert architecture.num_layers == 40
+    assert architecture.state_prefix == prefix

@@ -9,6 +9,12 @@ from pathlib import Path
 
 from reverse_reap.config import load_config
 from reverse_reap.controller import run_next
+from reverse_reap.extraction import (
+    architecture_from_weight_index,
+    extract_experts,
+    verify_extraction,
+)
+from reverse_reap.pipeline import analyze_telemetry
 from reverse_reap.runtime import capture_manifest, probe_instrumentation
 from reverse_reap.sources import fetch_and_freeze
 
@@ -59,6 +65,21 @@ def build_parser() -> argparse.ArgumentParser:
     fetch = subparsers.add_parser("fetch-datasets")
     fetch.add_argument("catalog", type=Path)
     fetch.add_argument("destination", type=Path)
+    analyze = subparsers.add_parser("analyze")
+    analyze.add_argument("telemetry", type=Path)
+    analyze.add_argument("output_dir", type=Path)
+    analyze.add_argument("--top-n", type=int, default=32)
+    analyze.add_argument("--bootstrap-iterations", type=int, default=1000)
+    analyze.add_argument("--permutation-iterations", type=int, default=1000)
+    analyze.add_argument("--seed", type=int, default=20260903)
+    extract = subparsers.add_parser("extract")
+    extract.add_argument("config", type=Path)
+    extract.add_argument("model_path", type=Path)
+    extract.add_argument("candidate_manifest", type=Path)
+    extract.add_argument("destination", type=Path)
+    verify = subparsers.add_parser("verify-extraction")
+    verify.add_argument("model_path", type=Path)
+    verify.add_argument("destination", type=Path)
     return parser
 
 
@@ -95,6 +116,35 @@ def main() -> int:
         return 0 if output["passed"] else 3
     if args.command == "fetch-datasets":
         output = fetch_and_freeze(args.catalog, args.destination)
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0
+    if args.command == "analyze":
+        output = analyze_telemetry(
+            args.telemetry,
+            args.output_dir,
+            top_n=args.top_n,
+            bootstrap_iterations=args.bootstrap_iterations,
+            permutation_iterations=args.permutation_iterations,
+            seed=args.seed,
+        )
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0
+    if args.command == "extract":
+        config = load_config(args.config)
+        candidates = json.loads(args.candidate_manifest.read_text(encoding="utf-8"))
+        selected = [(int(item["layer"]), int(item["expert"])) for item in candidates["experts"]]
+        output = extract_experts(
+            args.model_path,
+            architecture_from_weight_index(args.model_path),
+            selected,
+            args.destination,
+            model_id=config.model.id,
+            model_revision=config.model.revision,
+        )
+        print(json.dumps(output, indent=2, sort_keys=True))
+        return 0
+    if args.command == "verify-extraction":
+        output = verify_extraction(args.destination, args.model_path)
         print(json.dumps(output, indent=2, sort_keys=True))
         return 0
     raise AssertionError(f"unhandled command: {args.command}")

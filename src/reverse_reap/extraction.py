@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,29 @@ class ExtractedTensor:
     dtype: str
     nbytes: int
     content_sha256: str
+
+
+def architecture_from_weight_index(model_dir: Path) -> Qwen35Architecture:
+    """Infer the exact fused key prefix while enforcing the approved donor dimensions."""
+    weight_map = load_weight_map(model_dir)
+    pattern = re.compile(r"^(.*\.layers)\.(\d+)\.mlp\.experts\.gate_up_proj$")
+    matches = [match for key in weight_map if (match := pattern.match(key))]
+    if not matches:
+        raise ExtractionError("could not locate fused expert tensors in weight index")
+    prefixes = {match.group(1) for match in matches}
+    layers = {int(match.group(2)) for match in matches}
+    if len(prefixes) != 1 or layers != set(range(40)):
+        raise ExtractionError(
+            f"expected one 40-layer fused expert prefix, got prefixes={prefixes}, layers={layers}"
+        )
+    return Qwen35Architecture(
+        layers=tuple(None for _ in range(40)),
+        num_experts=256,
+        experts_per_token=8,
+        hidden_size=2048,
+        expert_intermediate_size=512,
+        state_prefix=prefixes.pop(),
+    )
 
 
 def tensor_bytes(array: Any) -> bytes:
