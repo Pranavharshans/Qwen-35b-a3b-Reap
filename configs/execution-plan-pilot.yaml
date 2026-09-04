@@ -1,0 +1,104 @@
+# Pilot task graph — 122 calibration/selection samples of the frozen 224-sample
+# pilot manifest. Units: every estimated_gpu_hours value is FOUR-GPU HOST
+# WALL-HOURS on the pinned 4x RTX 3090 box (1 host-hour = 4 aggregate GPU-hours).
+# Each command is wrapped in coreutils `timeout` (--kill-after 60s) so a hung
+# task is stopped on wall time and exits nonzero to the retry/terminal policy.
+# Sum of single-pass timeouts: 19,800 s (5.5 h); pathological all-timeout
+# worst case including two capture retries: 36,000 s (10.0 h) < 12 h ceiling.
+schema_version: 1
+tasks:
+  - task_id: gpu-preflight
+    objective: Verify the exact approved four-RTX-3090 runtime before loading weights.
+    definition_of_done: Preflight report passes exact GPU, VRAM, compute capability, and disk gates.
+    command: [timeout, --kill-after=60, "900", python, scripts/gpu_preflight.py, --output, "runs/pilot/${RUN_ID}/preflight.json"]
+    validation_command: [python, scripts/validate_artifact.py, preflight, "runs/pilot/${RUN_ID}/preflight.json"]
+    inputs: []
+    outputs: ["runs/pilot/${RUN_ID}/preflight.json"]
+    dependencies: []
+    estimated_gpu_hours: 0.01
+    estimated_storage_gb: 0.001
+    failure_behavior: terminal
+
+  - task_id: dataset-token-length-audit
+    objective: Measure exact Qwen-tokenizer prompt lengths on the frozen pilot manifest before attribution.
+    definition_of_done: Coding/control median, tail, and truncation balance gates pass on the frozen pilot manifest.
+    command: [timeout, --kill-after=60, "1800", reverse-reap, audit-token-lengths, datasets/manifests/pilot-lengthmatched.jsonl, /models/qwen, "runs/pilot/${RUN_ID}/dataset-token-lengths.json", --max-input-tokens, "1024"]
+    validation_command: [python, scripts/validate_artifact.py, dataset-lengths, "runs/pilot/${RUN_ID}/dataset-token-lengths.json"]
+    inputs: [datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/pilot/${RUN_ID}/dataset-token-lengths.json"]
+    dependencies: [gpu-preflight]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
+
+  - task_id: instrumentation-probe
+    objective: Prove capture leaves logits byte-exact and records top-8 routes across all 40 layers.
+    definition_of_done: Probe reports exact logits and the expected number of routed records.
+    command: [timeout, --kill-after=60, "2700", reverse-reap, probe, configs/pinned-3090-bf16.yaml, /models/qwen, --output, "runs/pilot/${RUN_ID}/probe.json"]
+    validation_command: [python, scripts/validate_artifact.py, probe, "runs/pilot/${RUN_ID}/probe.json"]
+    inputs: [configs/pinned-3090-bf16.yaml]
+    outputs: ["runs/pilot/${RUN_ID}/probe.json"]
+    dependencies: [gpu-preflight]
+    estimated_gpu_hours: 0.25
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
+
+  - task_id: telemetry-calibration
+    objective: Capture prompt and reference REAP statistics for all 69 pilot calibration samples (40 coding, 29 control).
+    definition_of_done: Token-level telemetry passes exact row-count, identity, and numeric invariants.
+    command: [timeout, --kill-after=60, "4500", reverse-reap, capture, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/pilot-lengthmatched.jsonl, "runs/pilot/${RUN_ID}/telemetry-calibration.jsonl", --split, calibration, --limit, "69"]
+    validation_command: [reverse-reap, validate-telemetry, "runs/pilot/${RUN_ID}/telemetry-calibration.jsonl", --output, "runs/pilot/${RUN_ID}/telemetry-calibration-validation.json"]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/pilot/${RUN_ID}/telemetry-calibration.jsonl", "runs/pilot/${RUN_ID}/telemetry-calibration-validation.json"]
+    dependencies: [instrumentation-probe, dataset-token-length-audit]
+    estimated_gpu_hours: 1.0
+    estimated_storage_gb: 5
+    failure_behavior: retry
+
+  - task_id: telemetry-selection
+    objective: Capture prompt and reference REAP statistics for all 53 pilot selection samples (40 coding, 13 control).
+    definition_of_done: Token-level telemetry passes exact row-count, identity, and numeric invariants.
+    command: [timeout, --kill-after=60, "3600", reverse-reap, capture, configs/pinned-3090-bf16.yaml, /models/qwen, datasets/manifests/pilot-lengthmatched.jsonl, "runs/pilot/${RUN_ID}/telemetry-selection.jsonl", --split, selection, --limit, "53"]
+    validation_command: [reverse-reap, validate-telemetry, "runs/pilot/${RUN_ID}/telemetry-selection.jsonl", --output, "runs/pilot/${RUN_ID}/telemetry-selection-validation.json"]
+    inputs: [configs/pinned-3090-bf16.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/pilot/${RUN_ID}/telemetry-selection.jsonl", "runs/pilot/${RUN_ID}/telemetry-selection-validation.json"]
+    dependencies: [instrumentation-probe, dataset-token-length-audit]
+    estimated_gpu_hours: 0.75
+    estimated_storage_gb: 4
+    failure_behavior: retry
+
+  - task_id: merge-telemetry
+    objective: Merge per-split telemetry into one analysis input containing only calibration and selection samples.
+    definition_of_done: Merged telemetry validates and contains no validation or replication samples.
+    command: [timeout, --kill-after=60, "1800", reverse-reap, merge-telemetry, "runs/pilot/${RUN_ID}/telemetry.jsonl", "runs/pilot/${RUN_ID}/telemetry-calibration.jsonl", "runs/pilot/${RUN_ID}/telemetry-selection.jsonl"]
+    validation_command: [reverse-reap, validate-telemetry, "runs/pilot/${RUN_ID}/telemetry.jsonl", --output, "runs/pilot/${RUN_ID}/telemetry-validation.json"]
+    inputs: ["runs/pilot/${RUN_ID}/telemetry-calibration.jsonl", "runs/pilot/${RUN_ID}/telemetry-selection.jsonl"]
+    outputs: ["runs/pilot/${RUN_ID}/telemetry.jsonl", "runs/pilot/${RUN_ID}/telemetry-validation.json"]
+    dependencies: [telemetry-calibration, telemetry-selection]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 10
+    failure_behavior: terminal
+
+  - task_id: candidate-analysis
+    objective: Rank coding differential experts with the merged fast analysis engine, run bootstrap and permutation tests, and freeze candidates and controls.
+    definition_of_done: Candidate, ranking, bootstrap, permutation, and all control manifests are immutable with the Gate C decision recorded.
+    command: [timeout, --kill-after=60, "3600", reverse-reap, analyze, "runs/pilot/${RUN_ID}/telemetry.jsonl", "runs/pilot/${RUN_ID}/analysis", --engine, fast, --top-n, "8", --cardinality-grid, "4", "8", "16", --bootstrap-iterations, "200", --permutation-iterations, "200"]
+    validation_command: [python, scripts/validate_artifact.py, candidate, "runs/pilot/${RUN_ID}/analysis/candidate-manifest.json"]
+    inputs: ["runs/pilot/${RUN_ID}/telemetry.jsonl"]
+    outputs: ["runs/pilot/${RUN_ID}/analysis/candidate-manifest.json", "runs/pilot/${RUN_ID}/analysis/bootstrap-stability.json", "runs/pilot/${RUN_ID}/analysis/label-permutation.json", "runs/pilot/${RUN_ID}/analysis/control-manifests.json", "runs/pilot/${RUN_ID}/analysis/cardinality-grid.json"]
+    dependencies: [merge-telemetry]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 1
+    failure_behavior: terminal
+
+  - task_id: run-bundle
+    objective: Freeze the immutable pilot report with artifact hashes and the terminal classification.
+    definition_of_done: Run bundle records the Gate C classification (positive, null, or feasibility-failure) and hashes every run artifact.
+    command: [timeout, --kill-after=60, "900", reverse-reap, build-bundle, configs/pinned-3090-bf16.yaml, "runs/pilot/${RUN_ID}", runs/pilot/state, "runs/pilot/${RUN_ID}/run-bundle.json"]
+    validation_command: [python, -c, "import json,sys; bundle=json.load(open(sys.argv[1])); assert bundle['files'] and bundle['classification'] in ('positive','null','feasibility-failure','incomplete')", "runs/pilot/${RUN_ID}/run-bundle.json"]
+    inputs: [configs/pinned-3090-bf16.yaml]
+    outputs: ["runs/pilot/${RUN_ID}/run-bundle.json"]
+    dependencies: [candidate-analysis]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
