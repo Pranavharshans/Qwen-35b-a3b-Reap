@@ -1,12 +1,11 @@
 """Score generation-only causal condition records on the CPU host with Docker.
 
-Consumes the generation files produced by scripts/run_causal_conditions.py,
-applies reverse_reap.causal.score_response per record (unit_tests run inside
-the digest-pinned evaluator container), and writes files with the exact
-schema ``causal_gate_report`` and ``compare_deterministic_evaluations`` read.
-
-Resumable: a condition whose scored destination already exists is skipped;
-destinations are never overwritten.
+Applies reverse_reap.causal.score_response per record (unit_tests run inside
+the digest-pinned evaluator container; exact_match/multiple_choice locally)
+and writes ``{condition_id}.preswebench.jsonl``. SWE-bench rows stay
+scoreable=False here — they are resolved ONLY by the pinned official harness
+in scripts/run_swebench_harness.py, which merges completed/resolved verdicts
+into the final ``{condition_id}.jsonl``. They are never silently excluded.
 """
 
 from __future__ import annotations
@@ -40,9 +39,9 @@ def main() -> int:
     for condition in spec["conditions"]:
         condition_id = condition["condition_id"]
         generated = args.generations_dir / f"{condition_id}.jsonl"
-        destination = args.output_dir / f"{condition_id}.jsonl"
+        destination = args.output_dir / f"{condition_id}.preswebench.jsonl"
         if destination.exists():
-            print(f"[skip] {condition_id}: already scored", flush=True)
+            print(f"[skip] {condition_id}: already pre-scored", flush=True)
             continue
         if not generated.exists():
             raise SystemExit(f"generation file missing: {generated}")
@@ -56,10 +55,10 @@ def main() -> int:
             f"[scored] {condition_id}: samples={summary['samples']} "
             f"scoreable={summary['scoreable_fraction']:.3f} "
             f"pass_rate={summary['pass_rate']:.3f} "
-            f"({time.monotonic() - started:.1f}s)",
+            f"({time.monotonic() - started:.1f}s, swebench pending harness)",
             flush=True,
         )
-    print("scoring complete", flush=True)
+    print("pre-scoring complete", flush=True)
     return 0
 
 

@@ -39,12 +39,35 @@ def test_bundle_failed_causal_report_is_null_not_incomplete(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "causal-report.json").write_text(
-        json.dumps({"passed": False, "label": "unreplicated-candidates"})
+        json.dumps({"passed": False, "validation_passed": False,
+                    "label": "observational-candidates"})
     )
     bundle = build_run_bundle(run_dir, tmp_path / "state", config(), run_dir / "bundle.json")
     assert bundle["classification"] == "null"
+    assert bundle["evidence_label"] == "observational-candidates"
+    assert not bundle["gates"]["D_causal"]
+    assert not bundle["gates"]["D_validation"]
+
+
+def test_bundle_validation_stage_gate_d_pass_is_incomplete_not_null(tmp_path):
+    """Validation-stage Gate D (replication untouched, per governing directive).
+
+    All four validation criteria passing is neither positive (AGENTS.md
+    requires a replicated causal report) nor null (the signal WAS
+    demonstrated on validation): the stage freezes incomplete pending the
+    separate replication approval.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "causal-report.json").write_text(
+        json.dumps({"passed": False, "validation_passed": True,
+                    "label": "unreplicated-candidates"})
+    )
+    bundle = build_run_bundle(run_dir, tmp_path / "state", config(), run_dir / "bundle.json")
+    assert bundle["classification"] == "incomplete"
     assert bundle["evidence_label"] == "unreplicated-candidates"
     assert not bundle["gates"]["D_causal"]
+    assert bundle["gates"]["D_validation"]
 
 
 def test_bundle_failed_determinism_is_feasibility_failure_even_with_failed_gate_d(tmp_path):

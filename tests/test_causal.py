@@ -107,6 +107,46 @@ def test_gate_d_applies_all_preregistered_thresholds(tmp_path):
     assert len(report["coding_drop_95ci"]) == 2
 
 
+def test_gate_d_validation_stage_without_replication_is_unreplicated(tmp_path):
+    """Validation-stage Gate D (directive: replication split stays untouched).
+
+    The five criteria keys stay stable so the report schema is identical, but
+    without replication paths ``passed`` is False while ``validation_passed``
+    reflects the four validation criteria; a validation pass labels the
+    candidates unreplicated-candidates, never coding-critical-v0 and never
+    observational-candidates.
+    """
+    baseline = tmp_path / "baseline.jsonl"
+    selected = tmp_path / "selected.jsonl"
+    write_results(baseline, "C0", [True] * 10, [True] * 10)
+    write_results(selected, "C2", [False] * 8 + [True] * 2, [False] + [True] * 9)
+    random_paths = []
+    for index in range(20):
+        path = tmp_path / f"random-{index}.jsonl"
+        write_results(path, "C3", [False] * 2 + [True] * 8, [True] * 10)
+        random_paths.append(path)
+    report = causal_gate_report(baseline, selected, random_paths)
+    assert not report["passed"]  # replication_direction cannot hold without replication
+    assert report["validation_passed"]
+    assert report["label"] == "unreplicated-candidates"
+    assert report["replication"] is None
+    assert set(report["criteria"]) == {
+        "twice_random_median",
+        "at_or_above_random_p95",
+        "coding_specificity_2pp",
+        "replication_direction",
+        "no_broad_output_collapse",
+    }
+    assert report["coding_drop"] == pytest.approx(0.8)
+
+    # A validation-stage failure stays observational-candidates (coding drop
+    # 0.1 fails twice_random_median 0.4 and specificity 0.02).
+    write_results(selected, "C2", [False] + [True] * 9, [False] + [True] * 9)
+    failed = causal_gate_report(baseline, selected, random_paths)
+    assert not failed["validation_passed"]
+    assert failed["label"] == "observational-candidates"
+
+
 def test_expert_manifest_rejects_duplicate_identity(tmp_path):
     path = tmp_path / "experts.json"
     path.write_text(json.dumps({"experts": [{"layer": 1, "expert": 2}] * 2}))
@@ -312,24 +352,63 @@ def test_generation_determinism_pregate(tmp_path):
         compare_generation_determinism(first, second)
 
 
-def test_determinism_scoreable_restriction_keeps_threshold_meaningful(tmp_path):
-    rows = [
-        {
-            "sample_id": f"s-{index}",
-            "domain": "coding" if index < 8 else "control",
-            "response": "same",
-            "passed": True,
-            "scoreable": index < 8,
-        }
-        for index in range(10)
-    ]
-    content = "".join(json.dumps(row) + "\n" for row in rows)
-    first, second = tmp_path / "first.jsonl", tmp_path / "second.jsonl"
-    first.write_text(content)
-    second.write_text(content)
-    unrestricted = compare_deterministic_evaluations(first, second)
-    assert not unrestricted["passed"]  # 8/10 = 0.80 < 0.95
-    restricted = compare_deterministic_evaluations(first, second, restrict_scoreable=True)
-    assert restricted["passed"]
-    assert restricted["scoreable_fraction"] == 1.0
-    assert unrestricted["mismatched_sample_ids"] == []
+def test_instrument_noop_uses_empty_mask_and_records_zero_experts(tmp_path, monkeypatch):
+    """c0-noop-masked: the intervention path with an empty mask is a numeric no-op.
+
+    The instrumentation wrapper must be entered with masked=frozenset() (which
+    instrument_qwen35 treats as a transparent passthrough) and the record must
+    attribute zero masked experts, so the pre-gate can compare it against
+    c0-baseline-a to prove the wrapper itself cannot perturb generation.
+    """
+    pytest.importorskip("torch")
+    import contextlib
+
+    from reverse_reap.causal import generate_condition
+    from reverse_reap.config import load_config
+
+    entered_with = []
+    real_nullcontext = contextlib.nullcontext
+
+    def recording_instrument(architecture, masked=None):
+        entered_with.append(masked)
+        return real_nullcontext()
+
+    monkeypatch.setattr(
+        "reverse_reap.causal.load_donor", lambda *a, **k: (_FakeModel(), _FakeTokenizer())
+    )
+    monkeypatch.setattr("reverse_reap.causal.instrument_qwen35", recording_instrument)
+    config = load_config(Path(__file__).parents[1] / "configs" / "pinned-3090-bf16-gen.yaml")
+    manifest = _validation_manifest(tmp_path)
+
+    summary = generate_condition(
+        _FakeModel(),
+        _FakeTokenizer(),
+        object(),
+        manifest,
+        tmp_path / "noop.jsonl",
+        config,
+        split="validation",
+        condition_id="c0-noop-masked",
+        expert_manifest=None,
+        instrument_noop=True,
+    )
+    assert entered_with == [frozenset()] * 2  # once per sample, always empty mask
+    rows = _read_rows(tmp_path / "noop.jsonl")
+    assert len(rows) == 2
+    assert all(row["masked_experts"] == 0 for row in rows)
+    assert summary["masked_experts"] == 0
+
+    # Without instrument_noop the baseline path must NOT touch the wrapper.
+    entered_with.clear()
+    generate_condition(
+        _FakeModel(),
+        _FakeTokenizer(),
+        object(),
+        manifest,
+        tmp_path / "baseline.jsonl",
+        config,
+        split="validation",
+        condition_id="c0-baseline-a",
+    )
+    assert entered_with == []
+    assert all(row["masked_experts"] == 0 for row in _read_rows(tmp_path / "baseline.jsonl"))

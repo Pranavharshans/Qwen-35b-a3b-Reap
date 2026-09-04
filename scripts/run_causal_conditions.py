@@ -40,7 +40,11 @@ def main() -> int:
     parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--dataset-manifest", type=Path, required=True)
     parser.add_argument("--conditions", type=Path, required=True)
-    parser.add_argument("--phase", required=True, choices=["validation", "random-replication"])
+    parser.add_argument(
+        "--phase",
+        required=True,
+        choices=["validation-baselines", "validation-interventions", "random"],
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--summary-dir", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=None)
@@ -92,6 +96,7 @@ def main() -> int:
                 condition_id=condition_id,
                 expert_manifest=expected_experts[condition_id],
                 limit=args.limit,
+                instrument_noop=bool(condition.get("instrument_noop")),
             )
             summary["resumed"] = False
             completed.append(condition_id)

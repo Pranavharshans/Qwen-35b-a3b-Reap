@@ -1,47 +1,96 @@
-# Separately governed causal-validation pilot — PREPARED, NOT LAUNCHED.
-# Executes ONLY after explicit human approval of the prepared plan.
+# Separately governed causal-validation pilot — VALIDATION STAGE ONLY.
+# PREPARED, NOT LAUNCHED. Executes ONLY after explicit human approval AND the
+# resolution of the SCORING-HOST DECISION below.
 #
-# Scope: causal Gate D evaluation of the frozen top-4 candidate manifest from
-# pilot run 20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc (Gate C PASS,
-# top_n=4 by smallest-passing rule). All 27 conditions, scoring, gates, and
-# the run bundle execute on the pinned 4x RTX 3090 VM — no dependency on any
-# other machine.
+# ============================================================================
+# SCORING-HOST DECISION REQUIRED (measured infeasibility, 2026-09-04 probe)
+# ============================================================================
+# The pinned official SWE-bench harness and the sandboxed unit_tests evaluator
+# both require containers. Measured on the pinned VM (instance 49832402):
+#   - docker.io installs; dockerd runs with --iptables=false --bridge=none
+#     (iptables/nftables chain creation is denied); image PULLS succeed.
+#   - NO container can start: layer extraction fails ("operation not
+#     permitted" mounting overlayfs), and even the mount-free vfs driver
+#     fails at "unshare: operation not permitted".
+#   - Root cause measured: seccomp filter active (Seccomp: 2), mount() and
+#     unshare() return EPERM, and CAP_SYS_ADMIN/CAP_NET_ADMIN are absent from
+#     the capability bounding set (kernel.unprivileged_userns_clone=1 and
+#     user.max_user_namespaces=1030302 are fine — the syscalls themselves are
+#     denied). No container runtime can execute on this instance.
+# Affected scoring coverage on the 50-sample validation split per condition:
+#   24 unit_tests + 8 swebench (32/50 samples, 64%) REQUIRE containers.
+#   8 exact_match + 10 multiple_choice (18/50) are pure CPU.
+# Gate B's frozen denominator (all 50 rows, >=0.95 scoreable) cannot be met
+# without container scoring. Per the governing directive these rows are NOT
+# silently excluded; the run stays gated until a decision:
+#   (A) score unit_tests + official SWE-bench on a container-capable host
+#       (e.g. Docker Desktop on the coordinator Mac — NOT YET MEASURED),
+#   (B) reprovision a container-capable cloud host (resource decision),
+#   (C) amend the frozen dataset/gate (dataset decision — the pilot manifest
+#       is otherwise frozen and unchanged),
+#   (D) stop: report feasibility-failure for the causal pilot.
+# ============================================================================
+#
+# Scope (user-directed revision 2026-09-04): causal Gate D on the frozen top-4
+# candidate manifest from pilot run 20260904T100102Z-qwen35a3b-direct-
+# 503e4ee9-644a80fc (Gate C PASS, top_n=4 by smallest-passing rule), on the
+# validation split ONLY. The replication split (52 samples) is NOT opened,
+# generated, or scheduled here: if Gate D passes, the validation report is
+# frozen and a separate governed plan is required before any replication work.
+# If Gate D fails, the stage terminates NULL.
 #
 # Conditions (configs/causal-pilot-conditions.json, byte-frozen + hash-pinned):
-#   validation split (50 samples: 40 coding / 10 control), 5 conditions x 50 = 250
-#     generations: c0-baseline-a, c0-baseline-b (determinism pair), c2-selected
-#     (frozen top-4), c4-frequency-matched, c5-lowest-differential.
-#   random-replication phase, 22 conditions = 1,104 generations:
-#     c3-layer-random-000..019 (20 frozen layer-matched random controls,
-#     validation split, 20 x 50 = 1,000) plus the replication pair
-#     c0-replication-baseline / c2-replication-selected (replication split,
-#     52 samples: 40 coding / 12 control, 2 x 52 = 104).
-#   Total: 27 conditions, 1,354 generations.
+#   validation phase, 6 conditions x 50 = 300 generations:
+#     c0-baseline-a, c0-baseline-b (determinism pair), c0-noop-masked
+#     (instrumented with an EMPTY mask — proves the intervention path is a
+#     numerical no-op), c2-selected (frozen top-4), c4-frequency-matched,
+#     c5-lowest-differential.
+#   random phase, 20 conditions x 50 = 1,000 generations:
+#     c3-layer-random-000..019 (frozen layer-matched random controls).
+#   Total: 26 conditions, 1,300 generations.
+#
+# KV-cache approval scope (user-directed): use_cache: true is approved ONLY
+# within each condition and ONLY if the deterministic baseline pair
+# (c0-baseline-a vs c0-baseline-b) AND the no-op intervention equivalence
+# (c0-noop-masked vs c0-baseline-a) both pass byte-identical response checks
+# in the pre-gate. HF generate() constructs a fresh attention cache for every
+# call; no KV/prefix cache is ever shared across samples, conditions, or
+# interventions — structurally, per-call caches only.
 #
 # Early stopping rules (all fail-closed, none result-conditional):
 #   1. gpu-preflight terminal: wrong host/VRAM/donor hashes stop before GPU work.
 #   2. verify-frozen-inputs terminal: any byte drift in the 23 frozen expert
 #      manifests vs the spec SHA-256 pins stops before GPU work.
-#   3. response-determinism-pre-gate terminal: any response mismatch between
-#      the two identical baseline conditions stops the run after 250 of 1,354
-#      generations (~19% of GPU spend), before the 20 random controls.
-#   4. causal-gates terminal: official scored Gate B (0.95 scoreable on the
-#      scoreable population + zero response/score mismatches) failing stops
-#      before the bundle; reports are still written for the feasibility report.
+#   3. response-determinism-pre-gate terminal: any response mismatch in the
+#      baseline pair or the no-op equivalence pair stops the run after 150 of
+#      1,300 generations (~12% of GPU spend), before ANY intervention or
+#      control generation.
+#   4. causal-gates terminal: official Gate B (frozen semantics: all 50 rows
+#      per condition as denominator, >=0.95 scoreable, zero response/score
+#      mismatches) failing stops before the bundle; reports are still written.
 #   5. Per-task `timeout --kill-after=60` wrappers; retry tasks are resumable
 #      (finished conditions are skipped, never overwritten).
-#   6. NO early stop based on whether results look positive or null: all 27
+#   6. NO early stop based on whether results look positive or null: all 26
 #      conditions run regardless of interim pass rates. Interim results are
 #      never inspected for decision-making mid-run.
 #
+# Exact gate denominators (validation stage):
+#   Gate B: c0-baseline-a vs c0-baseline-b scored files; denominator = ALL 50
+#     rows per condition (unrestricted, frozen); requires scoreable_fraction
+#     >= 0.95 (i.e. <=2 unscorable rows) AND zero response/score mismatches.
+#     Achievable ONLY with unit_tests + swebench scored via containers (50/50).
+#   Gate D: paired SCOREABLE samples between conditions — coding 40/condition
+#     (24 unit_tests + 8 exact_match + 8 swebench when container-scored),
+#     control 10/condition; 20 random-control coding drops; bootstrap 95% CIs
+#     over paired differences.
+#
 # Units: every estimated_gpu_hours value is FOUR-GPU HOST WALL-HOURS on the
-# pinned 4x RTX 3090 box (1 host-hour = 4 aggregate GPU-hours). Booked
-# estimates sum to 4.76 host-hours; usable budget 6.4 host-hours / $8.00
-# (80% of max_gpu_hours 8 / max_cost_usd 10). Sum of single-pass worst-case
-# timeouts: 32,700 s (9.1 host-hours); that pathological all-timeout path is
-# capped by the timeouts themselves, and mid-task wall stops are the timeout
-# wrappers (the controller has no mid-task kill). Actual cost at the real
-# provider rate ($0.6456/host-h): ~$3 expected, ~$5.9 absolute worst case.
+# pinned 4x RTX 3090 box (1 host-hour = 4 aggregate GPU-hours). Generation
+# booked estimates sum to 3.91 host-hours; usable budget 6.4 host-hours /
+# $8.00 (80% of max_gpu_hours 8 / max_cost_usd 10). Generation cost at the
+# real provider rate ($0.6456/host-h): ~$2.5 expected. Container scoring
+# (unit_tests + official SWE-bench harness) adds ZERO VM host-hours — it
+# cannot run here and belongs to the pending scoring-host decision.
 schema_version: 1
 tasks:
   - task_id: gpu-preflight
@@ -68,86 +117,122 @@ tasks:
     estimated_storage_gb: 0.001
     failure_behavior: terminal
 
+  - task_id: gen-validation-baselines
+    objective: Generate responses for the two identical no-expert baselines and the empty-mask no-op intervention condition (3 x 50 = 150 generations, one model load).
+    definition_of_done: All 3 generation files exist, non-empty, produced under identical config and per-call (non-shared) KV caches.
+    command: [timeout, --kill-after=60, "2400", python, scripts/run_causal_conditions.py, --config, configs/pinned-3090-bf16-gen.yaml, --model-path, /models/qwen, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --phase, validation-baselines, --output-dir, "runs/causal-pilot/${RUN_ID}/generations", --summary-dir, "runs/causal-pilot/${RUN_ID}/summaries"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); phase=sys.argv[2]; d=sys.argv[3]; missing=[c['condition_id'] for c in spec['conditions'] if c['phase']==phase and not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, validation-baselines, "runs/causal-pilot/${RUN_ID}/generations"]
+    inputs: [configs/causal-pilot-conditions.json, configs/pinned-3090-bf16-gen.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-noop-masked.jsonl"]
+    dependencies: [gpu-preflight, verify-frozen-inputs]
+    estimated_gpu_hours: 0.7
+    estimated_storage_gb: 0.05
+    failure_behavior: retry
+
+  - task_id: response-determinism-pre-gate
+    objective: Stop before ANY intervention/control generation unless the baseline pair is byte-deterministic AND the empty-mask instrumentation is a response-identical no-op.
+    definition_of_done: Zero response mismatches in c0-baseline-a vs c0-baseline-b and in c0-noop-masked vs c0-baseline-a across all 50 paired samples each; report written.
+    command: [timeout, --kill-after=60, "600", python, scripts/check_generation_determinism.py, --pair, "baseline_pair=runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl:runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl", --pair, "noop_equivalence=runs/causal-pilot/${RUN_ID}/generations/c0-noop-masked.jsonl:runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", --report, "runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
+    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['passed'] and set(r['checks'])=={'baseline_pair','noop_equivalence'} and all(not c['mismatched_sample_ids'] for c in r['checks'].values())", "runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
+    inputs: ["runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-noop-masked.jsonl"]
+    outputs: ["runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
+    dependencies: [gen-validation-baselines]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.001
+    failure_behavior: terminal
+
+  - task_id: gen-validation-interventions
+    objective: Generate responses for the frozen top-4 selected condition and the two specificity controls (3 x 50 = 150 generations, one model load), only after the pre-gate approved in-condition KV-cache use.
+    definition_of_done: All 3 generation files exist, non-empty.
+    command: [timeout, --kill-after=60, "2400", python, scripts/run_causal_conditions.py, --config, configs/pinned-3090-bf16-gen.yaml, --model-path, /models/qwen, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --phase, validation-interventions, --output-dir, "runs/causal-pilot/${RUN_ID}/generations", --summary-dir, "runs/causal-pilot/${RUN_ID}/summaries"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); phase=sys.argv[2]; d=sys.argv[3]; missing=[c['condition_id'] for c in spec['conditions'] if c['phase']==phase and not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, validation-interventions, "runs/causal-pilot/${RUN_ID}/generations"]
+    inputs: [configs/causal-pilot-conditions.json, configs/pinned-3090-bf16-gen.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/causal-pilot/${RUN_ID}/generations/c2-selected.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c4-frequency-matched.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c5-lowest-differential.jsonl"]
+    dependencies: [response-determinism-pre-gate]
+    estimated_gpu_hours: 0.7
+    estimated_storage_gb: 0.05
+    failure_behavior: retry
+
+  - task_id: gen-random-controls
+    objective: Generate responses for the 20 frozen layer-matched random control conditions (20 x 50 = 1,000 generations, one model load).
+    definition_of_done: All 20 generation files exist and are non-empty.
+    command: [timeout, --kill-after=60, "14400", python, scripts/run_causal_conditions.py, --config, configs/pinned-3090-bf16-gen.yaml, --model-path, /models/qwen, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --phase, random, --output-dir, "runs/causal-pilot/${RUN_ID}/generations", --summary-dir, "runs/causal-pilot/${RUN_ID}/summaries"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); phase=sys.argv[2]; d=sys.argv[3]; missing=[c['condition_id'] for c in spec['conditions'] if c['phase']==phase and not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, random, "runs/causal-pilot/${RUN_ID}/generations"]
+    inputs: [configs/causal-pilot-conditions.json, configs/pinned-3090-bf16-gen.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/causal-pilot/${RUN_ID}/generations"]
+    dependencies: [response-determinism-pre-gate]
+    estimated_gpu_hours: 2.5
+    estimated_storage_gb: 0.2
+    failure_behavior: retry
+
+  - task_id: score-conditions
+    objective: Score all 26 condition generation files — exact_match/multiple_choice locally, unit_tests in the digest-pinned sandboxed evaluator, swebench via the pinned official harness.
+    definition_of_done: All 26 final scored files exist with the exact schema causal_gate_report consumes; SWE-bench rows scored by the official harness or explicitly marked incomplete by it (never silently dropped).
+    command: [timeout, --kill-after=60, "7200", python, scripts/run_causal_scoring.py, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --generations-dir, "runs/causal-pilot/${RUN_ID}/generations", --output-dir, "runs/causal-pilot/${RUN_ID}/scored", --evaluator-image-file, "runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); d=sys.argv[2]; missing=[c['condition_id'] for c in spec['conditions'] if not (os.path.isfile(os.path.join(d,c['condition_id']+'.preswebench.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.preswebench.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, "runs/causal-pilot/${RUN_ID}/scored"]
+    inputs: ["runs/causal-pilot/${RUN_ID}/generations", "runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt"]
+    outputs: ["runs/causal-pilot/${RUN_ID}/scored"]
+    dependencies: [gen-random-controls, docker-evaluator-prep, swebench-harness-prep]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: retry
+
   - task_id: docker-evaluator-prep
-    objective: Install/verify Docker on the VM and build the digest-pinned sandboxed evaluator image (python3 + JDK) for unit_tests scoring.
-    definition_of_done: evaluator-image.txt contains a localhost-registry sha256 pin whose sanity runs (locked-down python3 and javac) pass.
+    objective: Build the digest-pinned sandboxed evaluator image on the CONTAINER-CAPABLE scoring host selected by the pending decision.
+    definition_of_done: evaluator-image.txt contains a registry sha256 pin whose locked-down python3 and javac sanity runs pass.
     command: [timeout, --kill-after=60, "2700", python, scripts/prepare_evaluator_docker.py, --output-dir, "runs/causal-pilot/${RUN_ID}/docker"]
     validation_command: [python, -c, "import json,sys; pin=open(sys.argv[1]).read().strip(); assert '@sha256:' in pin, pin; report=json.load(open(sys.argv[2])); assert report['evaluator_digest']==pin", "runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt", "runs/causal-pilot/${RUN_ID}/docker/docker-report.json"]
     inputs: [evaluator/Dockerfile, deploy/evaluator-base.Dockerfile]
     outputs: ["runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt", "runs/causal-pilot/${RUN_ID}/docker/docker-report.json"]
     dependencies: []
-    estimated_gpu_hours: 0.25
+    estimated_gpu_hours: 0
     estimated_storage_gb: 2
     failure_behavior: terminal
 
-  - task_id: gen-validation-conditions
-    objective: Generate responses for the 5 validation-split conditions (250 generations) with one model load.
-    definition_of_done: All 5 generation files exist, non-empty, with baseline pair produced under identical config.
-    command: [timeout, --kill-after=60, "3600", python, scripts/run_causal_conditions.py, --config, configs/pinned-3090-bf16-gen.yaml, --model-path, /models/qwen, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --phase, validation, --output-dir, "runs/causal-pilot/${RUN_ID}/generations", --summary-dir, "runs/causal-pilot/${RUN_ID}/summaries"]
-    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); phase=sys.argv[2]; d=sys.argv[3]; missing=[c['condition_id'] for c in spec['conditions'] if c['phase']==phase and not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, validation, "runs/causal-pilot/${RUN_ID}/generations"]
-    inputs: [configs/causal-pilot-conditions.json, configs/pinned-3090-bf16-gen.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
-    outputs: ["runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c2-selected.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c4-frequency-matched.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c5-lowest-differential.jsonl"]
-    dependencies: [gpu-preflight, verify-frozen-inputs, docker-evaluator-prep]
-    estimated_gpu_hours: 0.9
-    estimated_storage_gb: 0.1
-    failure_behavior: retry
-
-  - task_id: response-determinism-pre-gate
-    objective: Stop before the 1,104-generation second GPU phase unless the two identical baselines reproduced byte-identical responses.
-    definition_of_done: Zero response mismatches across all 50 paired baseline samples; report written.
-    command: [timeout, --kill-after=60, "600", python, scripts/check_generation_determinism.py, "runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl", --report, "runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
-    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['passed'] and not r['mismatched_sample_ids']", "runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
-    inputs: ["runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl"]
-    outputs: ["runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
-    dependencies: [gen-validation-conditions]
+  - task_id: swebench-harness-prep
+    objective: Install the PINNED official SWE-bench harness (revision 02e7a74) on the container-capable scoring host.
+    definition_of_done: harness-report.json records the pinned revision with a verified import.
+    command: [timeout, --kill-after=60, "2700", python, scripts/install_swebench_harness.py, --install-dir, "runs/causal-pilot/${RUN_ID}/swebench-harness", --output-dir, "runs/causal-pilot/${RUN_ID}/docker"]
+    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['installed'] and r['harness_revision']=='02e7a74ffd0b707aab73d203fe87bdc7c76afc8e'", "runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
+    inputs: []
+    outputs: ["runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
+    dependencies: []
     estimated_gpu_hours: 0
-    estimated_storage_gb: 0.001
+    estimated_storage_gb: 2
     failure_behavior: terminal
 
-  - task_id: gen-random-replication-conditions
-    objective: Generate responses for the 20 layer-matched random controls and the 2 replication-split conditions (1,104 generations) with one model load.
-    definition_of_done: All 22 generation files exist and are non-empty.
-    command: [timeout, --kill-after=60, "14400", python, scripts/run_causal_conditions.py, --config, configs/pinned-3090-bf16-gen.yaml, --model-path, /models/qwen, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --phase, random-replication, --output-dir, "runs/causal-pilot/${RUN_ID}/generations", --summary-dir, "runs/causal-pilot/${RUN_ID}/summaries"]
-    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); phase=sys.argv[2]; d=sys.argv[3]; missing=[c['condition_id'] for c in spec['conditions'] if c['phase']==phase and not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, random-replication, "runs/causal-pilot/${RUN_ID}/generations"]
-    inputs: [configs/causal-pilot-conditions.json, configs/pinned-3090-bf16-gen.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
-    outputs: ["runs/causal-pilot/${RUN_ID}/generations", "runs/causal-pilot/${RUN_ID}/generations/c0-replication-baseline.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c2-replication-selected.jsonl"]
-    dependencies: [response-determinism-pre-gate]
-    estimated_gpu_hours: 2.9
-    estimated_storage_gb: 0.2
-    failure_behavior: retry
-
-  - task_id: score-conditions
-    objective: Score all 27 condition generation files with the digest-pinned sandboxed evaluator (unit_tests in locked-down containers; exact_match/multiple_choice locally).
-    definition_of_done: All 27 scored files exist with the exact schema causal_gate_report consumes.
-    command: [timeout, --kill-after=60, "7200", python, scripts/run_causal_scoring.py, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --generations-dir, "runs/causal-pilot/${RUN_ID}/generations", --output-dir, "runs/causal-pilot/${RUN_ID}/scored", --evaluator-image-file, "runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt"]
-    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); d=sys.argv[2]; missing=[c['condition_id'] for c in spec['conditions'] if not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, "runs/causal-pilot/${RUN_ID}/scored"]
-    inputs: ["runs/causal-pilot/${RUN_ID}/generations", "runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt"]
+  - task_id: swebench-harness-score
+    objective: Evaluate every condition's SWE-bench predictions with the pinned official harness and merge completed/resolved verdicts into the final scored files.
+    definition_of_done: Per-condition merge summaries exist; instances the harness did not complete are marked scoreable=False with an explicit error (Gate B then judges coverage).
+    command: [timeout, --kill-after=60, "21600", python, scripts/run_swebench_harness.py, --conditions, configs/causal-pilot-conditions.json, --prescored-dir, "runs/causal-pilot/${RUN_ID}/scored", --output-dir, "runs/causal-pilot/${RUN_ID}/scored", --harness-repo, "runs/causal-pilot/${RUN_ID}/swebench-harness", --work-dir, "runs/causal-pilot/${RUN_ID}/swebench-work"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); d=sys.argv[2]; missing=[c['condition_id'] for c in spec['conditions'] if not os.path.isfile(os.path.join(d,c['condition_id']+'.summary.json'))]; assert not missing, missing", configs/causal-pilot-conditions.json, "runs/causal-pilot/${RUN_ID}/scored"]
+    inputs: ["runs/causal-pilot/${RUN_ID}/scored", "runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
     outputs: ["runs/causal-pilot/${RUN_ID}/scored"]
-    dependencies: [gen-random-replication-conditions]
-    estimated_gpu_hours: 0.5
-    estimated_storage_gb: 0.2
+    dependencies: [score-conditions]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 10
     failure_behavior: retry
 
   - task_id: causal-gates
-    objective: Compute official Gate B determinism (both populations), Gate D causal report over baseline/selected/20 randoms/replication pair, and the c4/c5 specificity evidence.
-    definition_of_done: determinism-report.json passes; gate-d-report.json contains all five preregistered criteria; reports written without overwriting.
+    objective: Compute official Gate B determinism (frozen unrestricted semantics), Gate D causal report over the validation baseline/selected/20 randoms, and the c4/c5 specificity evidence.
+    definition_of_done: determinism-report.json passes Gate B's frozen 0.95 denominator; gate-d-report.json contains all five preregistered criteria; reports written without overwriting.
     command: [timeout, --kill-after=60, "1800", python, scripts/run_causal_gates.py, --scored-dir, "runs/causal-pilot/${RUN_ID}/scored", --output-dir, "runs/causal-pilot/${RUN_ID}/gates", --causal-report, "runs/causal-pilot/${RUN_ID}/causal-report.json"]
     validation_command: [python, -c, "import json,sys; d=json.load(open(sys.argv[1])); g=json.load(open(sys.argv[2])); assert d['passed']; assert set(g['criteria'])=={'twice_random_median','at_or_above_random_p95','coding_specificity_2pp','replication_direction','no_broad_output_collapse'}", "runs/causal-pilot/${RUN_ID}/gates/determinism-report.json", "runs/causal-pilot/${RUN_ID}/gates/gate-d-report.json"]
     inputs: ["runs/causal-pilot/${RUN_ID}/scored"]
     outputs: ["runs/causal-pilot/${RUN_ID}/gates/determinism-report.json", "runs/causal-pilot/${RUN_ID}/gates/gate-d-report.json", "runs/causal-pilot/${RUN_ID}/gates/supplementary-controls.json", "runs/causal-pilot/${RUN_ID}/causal-report.json"]
-    dependencies: [score-conditions]
-    estimated_gpu_hours: 0.1
+    dependencies: [swebench-harness-score]
+    estimated_gpu_hours: 0
     estimated_storage_gb: 0.01
     failure_behavior: terminal
 
   - task_id: run-bundle
-    objective: Freeze the immutable causal-pilot report with artifact hashes and the terminal classification.
+    objective: Freeze the immutable validation-stage report with artifact hashes and the terminal classification.
     definition_of_done: Run bundle records the Gate D classification (positive, null, or feasibility-failure) and hashes every run artifact.
     command: [timeout, --kill-after=60, "900", reverse-reap, build-bundle, configs/pinned-3090-bf16-gen.yaml, "runs/causal-pilot/${RUN_ID}", runs/causal-pilot/state, "runs/causal-pilot/${RUN_ID}/run-bundle.json"]
     validation_command: [python, -c, "import json,sys; bundle=json.load(open(sys.argv[1])); assert bundle['artifacts'] and bundle['classification'] in ('positive','null','feasibility-failure','incomplete')", "runs/causal-pilot/${RUN_ID}/run-bundle.json"]
     inputs: [configs/pinned-3090-bf16-gen.yaml]
     outputs: ["runs/causal-pilot/${RUN_ID}/run-bundle.json"]
     dependencies: [causal-gates]
-    estimated_gpu_hours: 0.1
+    estimated_gpu_hours: 0
     estimated_storage_gb: 0.1
     failure_behavior: terminal

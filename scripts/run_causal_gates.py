@@ -1,17 +1,18 @@
-"""Compute the causal-pilot gates from scored condition files (CPU only).
+"""Compute the causal-pilot validation gates from scored condition files (CPU only).
 
 Writes three reports into the output directory (never overwriting existing
 report files), then exits:
 
-* determinism-report.json — official Gate B on the scored baseline pair,
-  reported BOTH unrestricted and restricted to scoreable rows. The frozen
-  0.95 scoreable threshold is applied to the scoreable-restricted variant
-  because swebench rows are structurally scoreable=False on every host
-  without the SWEBench harness; the unrestricted variant is recorded for
-  transparency. A failure exits 3 so the plan task can stop the run.
-* gate-d-report.json — causal_gate_report (Gate D) over baseline, selected,
-  the 20 layer-matched random controls, and the replication pair. Gate D's
-  scientific outcome (pass or fail) is never a task failure.
+* determinism-report.json — official Gate B on the scored baseline pair with
+  its FROZEN semantics: all rows of the condition files are the denominator
+  (no scoreable restriction), requiring scoreable_fraction >= 0.95 AND zero
+  response/score mismatches. SWE-bench rows reach full coverage through the
+  pinned official harness in scripts/run_swebench_harness.py, never through
+  exclusion. A failure exits 3 so the plan task stops the run.
+* gate-d-report.json — causal_gate_report (Gate D) over the validation-split
+  baseline, selected, and the 20 layer-matched random controls. Replication
+  is NOT part of this stage (a separate governed plan after Gate D passes).
+  Gate D's scientific outcome (pass or fail) is never a task failure.
 * supplementary-controls.json — coding/control drops for the frequency-matched
   and lowest-differential specificity controls against the same baseline.
 """
@@ -57,24 +58,10 @@ def main() -> int:
     scored = args.scored_dir
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    gate_b_unrestricted = compare_deterministic_evaluations(
+    gate_b = compare_deterministic_evaluations(
         scored / "c0-baseline-a.jsonl", scored / "c0-baseline-b.jsonl"
     )
-    gate_b_scoreable = compare_deterministic_evaluations(
-        scored / "c0-baseline-a.jsonl",
-        scored / "c0-baseline-b.jsonl",
-        restrict_scoreable=True,
-    )
-    determinism_report = {
-        "gate": "B",
-        "unrestricted": gate_b_unrestricted,
-        "scoreable_restricted": gate_b_scoreable,
-        "passed": gate_b_scoreable["passed"],
-        "population_note": (
-            "swebench rows are structurally scoreable=False without the SWEBench "
-            "harness; the frozen 0.95 threshold is evaluated on scoreable rows"
-        ),
-    }
+    determinism_report = {"gate": "B", "passed": gate_b["passed"], **gate_b}
     write_if_absent(args.output_dir / "determinism-report.json", determinism_report)
 
     random_paths = [
@@ -87,8 +74,6 @@ def main() -> int:
         scored / "c0-baseline-a.jsonl",
         scored / "c2-selected.jsonl",
         random_paths,
-        replication_baseline_path=scored / "c0-replication-baseline.jsonl",
-        replication_selected_path=scored / "c2-replication-selected.jsonl",
     )
     write_if_absent(args.output_dir / "gate-d-report.json", gate_d)
     if args.causal_report is not None:

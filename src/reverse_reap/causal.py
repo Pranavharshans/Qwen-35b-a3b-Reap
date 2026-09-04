@@ -145,12 +145,17 @@ def generate_condition(
     condition_id: str,
     expert_manifest: Path | None = None,
     limit: int | None = None,
+    instrument_noop: bool = False,
 ) -> dict[str, Any]:
     """Generate responses for one causal condition and write generation-only records.
 
     Scoring is deliberately excluded so GPU hosts without Docker can still
     produce generations; ``score_condition`` completes the records on a
     CPU host that has the pinned evaluator image.
+
+    ``instrument_noop`` runs the intervention path with an empty mask — a
+    numerically transparent no-op used to prove the instrumentation wrapper
+    itself cannot perturb generation (no-op equivalence gate).
     """
     masked = load_expert_set(expert_manifest) if expert_manifest else frozenset()
     samples = [sample for sample in load_manifest(dataset_manifest) if sample.split == split]
@@ -163,6 +168,9 @@ def generate_condition(
         started = time.monotonic()
         if masked:
             with instrument_qwen35(architecture, masked=masked):
+                response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
+        elif instrument_noop:
+            with instrument_qwen35(architecture, masked=frozenset()):
                 response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
         else:
             response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
@@ -402,7 +410,10 @@ def causal_gate_report(
     )
     if passed:
         label = "coding-critical-v0"
-    elif validation_passed and replication is not None:
+    elif validation_passed:
+        # Validation criteria hold but replication is absent (validation-stage
+        # run) or contradicted the direction. Either way the candidates are
+        # NOT coding-critical-v0 yet; the label records the stronger state.
         label = "unreplicated-candidates"
     else:
         label = "observational-candidates"
@@ -415,6 +426,7 @@ def causal_gate_report(
     return {
         "gate": "D",
         "passed": passed,
+        "validation_passed": validation_passed,
         "label": label,
         "coding_drop": coding_drop,
         "control_drop": control_drop,
@@ -454,20 +466,11 @@ def compare_generation_determinism(first_path: Path, second_path: Path) -> dict[
     }
 
 
-def compare_deterministic_evaluations(
-    first_path: Path, second_path: Path, *, restrict_scoreable: bool = False
-) -> dict[str, Any]:
+def compare_deterministic_evaluations(first_path: Path, second_path: Path) -> dict[str, Any]:
     first_rows = [json.loads(line) for line in first_path.read_text().splitlines() if line]
     second_rows = [json.loads(line) for line in second_path.read_text().splitlines() if line]
     first = {row["sample_id"]: row for row in first_rows}
     second = {row["sample_id"]: row for row in second_rows}
-    if restrict_scoreable:
-        # swebench rows are structurally scoreable=False on every host that
-        # lacks the SWEBench harness, so the unrestricted population can never
-        # reach the 0.95 gate. Restricting to scoreable rows keeps the frozen
-        # threshold meaningful; both variants are always reported.
-        first = {key: row for key, row in first.items() if row.get("scoreable")}
-        second = {key: row for key, row in second.items() if row.get("scoreable")}
     if first.keys() != second.keys():
         raise CausalError("determinism runs contain different sample IDs")
     mismatches = [

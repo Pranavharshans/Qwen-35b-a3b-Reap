@@ -40,6 +40,14 @@ def build_run_bundle(
     elif determinism is not None and not determinism.get("passed"):
         classification = "feasibility-failure"
         evidence_label = "nondeterministic-generation"
+    elif causal and causal.get("validation_passed"):
+        # Validation-stage Gate D: all four validation criteria hold but the
+        # replication split is untouched (separate governed plan required).
+        # Neither positive (AGENTS.md requires a replicated report) nor null
+        # (the causal signal WAS demonstrated on validation) — the stage is
+        # frozen incomplete pending the replication decision.
+        classification = "incomplete"
+        evidence_label = "unreplicated-candidates"
     elif causal:
         classification = "null"
         evidence_label = causal.get("label") or "observational-candidates"
@@ -80,6 +88,7 @@ def build_run_bundle(
             "B_determinism": bool(determinism and determinism.get("passed")),
             "C_candidates": bool(candidate and candidate.get("gate_passed")),
             "D_causal": bool(causal and causal.get("passed")),
+            "D_validation": bool(causal and causal.get("validation_passed")),
             "E_extraction": bool(
                 extraction
                 and extraction.get("tensors")
