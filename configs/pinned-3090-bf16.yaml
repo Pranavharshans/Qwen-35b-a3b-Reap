@@ -16,14 +16,19 @@ runtime:
   use_cache: false
   speculative_decoding: false
 budget:
-  max_gpu_hours: 4
-  max_cost_usd: 5
+  # Units: max_gpu_hours is FOUR-GPU HOST WALL-HOURS (1 host-hour = 4 aggregate
+  # GPU-hours on the pinned 4x RTX 3090 box). Hard ceiling including the 20%
+  # reserve the controller applies. Actual vast.ai rate on instance 49832402 is
+  # $0.6456 per four-GPU host-hour; the booking rate below is deliberately
+  # conservative ($1 >= $0.6456) so booked cost always overstates actual cost.
+  max_gpu_hours: 12
+  max_cost_usd: 25
   provider_rate_usd_per_hour: 1
   storage_limit_gb: 250
   deadline_utc: 2027-01-01T00:00:00Z
 datasets:
-  manifest: datasets/manifests/smoke.jsonl
-  split: smoke
+  manifest: datasets/manifests/pilot-lengthmatched.jsonl
+  split: pilot
 intervention:
   mode: none
   manifest: null
