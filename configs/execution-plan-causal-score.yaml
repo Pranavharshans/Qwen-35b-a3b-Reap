@@ -1,0 +1,131 @@
+# Causal-validation pilot — PHASE 2 OF 2: SCORING (run-ID-scoped plan).
+# Executes on a container-capable Vast KVM scoring VM, NEVER on the GPU host.
+#
+# ============================================================================
+# EXECUTION SPLIT (user directive 2026-09-04). Phase 1
+# (configs/execution-plan-causal-gen.yaml) produced and hash-froze the 26
+# response artifacts on the four-RTX-3090 host and stopped. This plan starts
+# ONLY after those artifacts (generation-bundle.json + generations/*.jsonl)
+# have been copied to the scoring VM under the SAME run ID.
+# ============================================================================
+# Scoring-VM authorization (user directive 2026-09-04):
+#   - offer 49230165 if still compliant, otherwise the cheapest verified VM
+#     under $0.10/hour with native amd64, >=16 effective vCPUs, >=32 GB RAM
+#     and >=120 GB disk (probe-verified template: docker.io/vastai/kvm:ubuntu_terminal,
+#     SSH mode, on-demand, 120 GB);
+#   - capped at 24 hours and $2.50 total; no interruptible bidding;
+#   - the host-local evaluator digest is REBUILT here (localhost:5000 registry
+#     pins are host-local; the phase-1 GPU host cannot build it);
+#   - ALL 26 conditions are scored, including every frozen SWE-bench row:
+#     no exclusions, no denominator changes;
+#   - scored artifacts are hashed and copied back before the scoring VM is
+#     terminated; the VM is never left billing unattended;
+#   - validation Gate B (frozen unrestricted 50-row denominator, >=0.95
+#     scoreable, zero response/score mismatches) and validation Gate D are
+#     evaluated from the COMPLETE 50-item denominator;
+#   - Gate D validation-stage failure -> immutable NULL report, stop;
+#     Gate D validation-stage pass -> label unreplicated-candidates, freeze
+#     the report, stop for approval. NO replication, extraction,
+#     thinking-enabled experiments, GLM work, or v0 work anywhere in this split.
+#
+# The combined plan configs/execution-plan-causal-pilot.yaml is PRESERVED
+# UNCHANGED for provenance and is never launched. This plan carries the same
+# scoring tasks with file-scoped inputs/outputs (the combined plan's
+# directory-scoped paths were never exercised and must not be relied on).
+#
+# Budget: every task books ZERO four-GPU host hours — scoring runs on the
+# separately authorized scoring VM (24 h / $2.50 cap above), never against the
+# GPU-generation budget.
+#
+# Run scoping: launch with the SAME run ID as phase 1 and a run-ID-scoped
+# state dir (the run-bundle task below reads it):
+#   reverse-reap run-all configs/pinned-3090-bf16-gen.yaml \
+#       configs/execution-plan-causal-score.yaml runs/causal-pilot/state/${RUN_ID}
+# Prerequisite on this host before launch: runs/causal-pilot/${RUN_ID}/
+# contains generation-bundle.json and generations/ copied from the GPU host,
+# byte-verified by the verify-generation-inputs task below.
+schema_version: 1
+tasks:
+  - task_id: verify-generation-inputs
+    objective: Re-verify every copied generation artifact against the phase-1 generation bundle SHA-256 pins before any scoring starts.
+    definition_of_done: All 26 response files hash-match the bundle; verification report written with zero mismatches.
+    command: [timeout, --kill-after=60, "600", python, scripts/generation_bundle.py, verify, --bundle, "runs/causal-pilot/${RUN_ID}/generation-bundle.json", --generations-dir, "runs/causal-pilot/${RUN_ID}/generations", --report, "runs/causal-pilot/${RUN_ID}/verify-generation-inputs.json"]
+    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['passed'] and r['verified_files']==26 and r['expected_files']==26 and r['mismatches']==[]", "runs/causal-pilot/${RUN_ID}/verify-generation-inputs.json"]
+    inputs: ["runs/causal-pilot/${RUN_ID}/generation-bundle.json"]
+    outputs: ["runs/causal-pilot/${RUN_ID}/verify-generation-inputs.json"]
+    dependencies: []
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.001
+    failure_behavior: terminal
+
+  - task_id: docker-evaluator-prep
+    objective: Rebuild the digest-pinned sandboxed evaluator image on THIS scoring host and record the host-local registry digest.
+    definition_of_done: evaluator-image.txt contains a registry sha256 pin whose locked-down python3 and javac sanity runs pass.
+    command: [timeout, --kill-after=60, "2700", python, scripts/prepare_evaluator_docker.py, --output-dir, "runs/causal-pilot/${RUN_ID}/docker"]
+    validation_command: [python, -c, "import json,sys; pin=open(sys.argv[1]).read().strip(); assert '@sha256:' in pin, pin; report=json.load(open(sys.argv[2])); assert report['evaluator_digest']==pin", "runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt", "runs/causal-pilot/${RUN_ID}/docker/docker-report.json"]
+    inputs: [evaluator/Dockerfile, deploy/evaluator-base.Dockerfile]
+    outputs: ["runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt", "runs/causal-pilot/${RUN_ID}/docker/docker-report.json"]
+    dependencies: []
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 2
+    failure_behavior: terminal
+
+  - task_id: swebench-harness-prep
+    objective: Install the PINNED official SWE-bench harness (revision 02e7a74) and the PINNED swe-bench-tasks task repo (3d07b464) on this scoring host.
+    definition_of_done: harness-report.json records both pinned revisions with a verified import.
+    command: [timeout, --kill-after=60, "2700", python, scripts/install_swebench_harness.py, --install-dir, "runs/causal-pilot/${RUN_ID}/swebench-harness", --tasks-dir, "runs/causal-pilot/${RUN_ID}/swebench-tasks", --output-dir, "runs/causal-pilot/${RUN_ID}/docker"]
+    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['installed'] and r['harness_revision']=='02e7a74ffd0b707aab73d203fe87bdc7c76afc8e' and r['tasks_revision']=='3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d'", "runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
+    inputs: []
+    outputs: ["runs/causal-pilot/${RUN_ID}/docker/harness-report.json", "runs/causal-pilot/${RUN_ID}/swebench-tasks"]
+    dependencies: []
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 2
+    failure_behavior: terminal
+
+  - task_id: score-conditions
+    objective: Score all 26 condition generation files — exact_match/multiple_choice locally and unit_tests in the digest-pinned sandboxed evaluator; SWE-bench rows are staged for the official harness, never silently dropped.
+    definition_of_done: All 26 pre-scored staging files exist with the exact schema the harness merge consumes.
+    command: [timeout, --kill-after=60, "7200", python, scripts/run_causal_scoring.py, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --generations-dir, "runs/causal-pilot/${RUN_ID}/generations", --output-dir, "runs/causal-pilot/${RUN_ID}/scored", --evaluator-image-file, "runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); d=sys.argv[2]; missing=[c['condition_id'] for c in spec['conditions'] if not (os.path.isfile(os.path.join(d,c['condition_id']+'.preswebench.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.preswebench.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, "runs/causal-pilot/${RUN_ID}/scored"]
+    inputs: ["runs/causal-pilot/${RUN_ID}/generation-bundle.json", "runs/causal-pilot/${RUN_ID}/verify-generation-inputs.json", "runs/causal-pilot/${RUN_ID}/docker/evaluator-image.txt", "runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
+    outputs: ["runs/causal-pilot/${RUN_ID}/scored/c0-baseline-a.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c0-baseline-b.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c0-noop-masked.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c2-selected.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c4-frequency-matched.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c5-lowest-differential.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-000.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-001.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-002.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-003.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-004.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-005.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-006.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-007.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-008.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-009.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-010.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-011.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-012.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-013.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-014.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-015.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-016.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-017.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-018.preswebench.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-019.preswebench.jsonl"]
+    dependencies: [verify-generation-inputs, docker-evaluator-prep, swebench-harness-prep]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: retry
+
+  - task_id: swebench-harness-score
+    objective: Evaluate every condition's SWE-bench predictions with the pinned official harness and merge completed/resolved verdicts into the final scored files for all 26 conditions.
+    definition_of_done: All 26 final scored files exist; instances the harness did not complete are marked scoreable=False with an explicit error (Gate B then judges coverage).
+    command: [timeout, --kill-after=60, "21600", python, scripts/run_swebench_harness.py, --conditions, configs/causal-pilot-conditions.json, --prescored-dir, "runs/causal-pilot/${RUN_ID}/scored", --output-dir, "runs/causal-pilot/${RUN_ID}/scored", --harness-repo, "runs/causal-pilot/${RUN_ID}/swebench-harness", --tasks-repo, "runs/causal-pilot/${RUN_ID}/swebench-tasks", --work-dir, "runs/causal-pilot/${RUN_ID}/swebench-work"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); d=sys.argv[2]; missing=[c['condition_id'] for c in spec['conditions'] if not os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl'))]; assert not missing, missing", configs/causal-pilot-conditions.json, "runs/causal-pilot/${RUN_ID}/scored"]
+    inputs: ["runs/causal-pilot/${RUN_ID}/docker/harness-report.json", "runs/causal-pilot/${RUN_ID}/verify-generation-inputs.json"]
+    outputs: ["runs/causal-pilot/${RUN_ID}/scored/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c0-baseline-b.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c0-noop-masked.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c2-selected.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c4-frequency-matched.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c5-lowest-differential.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-000.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-001.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-002.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-003.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-004.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-005.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-006.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-007.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-008.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-009.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-010.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-011.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-012.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-013.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-014.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-015.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-016.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-017.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-018.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-019.jsonl"]
+    dependencies: [score-conditions]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 10
+    failure_behavior: retry
+
+  - task_id: causal-gates
+    objective: Compute official validation Gate B determinism (frozen unrestricted 50-row denominator), the Gate D causal report over the validation baseline/selected/20 randoms, and the c4/c5 specificity evidence.
+    definition_of_done: determinism-report.json passes Gate B's frozen 0.95 denominator; gate-d-report.json contains all five preregistered criteria with the validation-stage label semantics (unreplicated-candidates / observational-candidates); reports written without overwriting.
+    command: [timeout, --kill-after=60, "1800", python, scripts/run_causal_gates.py, --scored-dir, "runs/causal-pilot/${RUN_ID}/scored", --output-dir, "runs/causal-pilot/${RUN_ID}/gates", --causal-report, "runs/causal-pilot/${RUN_ID}/causal-report.json"]
+    validation_command: [python, -c, "import json,sys; d=json.load(open(sys.argv[1])); g=json.load(open(sys.argv[2])); assert d['passed']; assert set(g['criteria'])=={'twice_random_median','at_or_above_random_p95','coding_specificity_2pp','replication_direction','no_broad_output_collapse'}; assert g['label'] in ('unreplicated-candidates','observational-candidates') and g['passed'] is False", "runs/causal-pilot/${RUN_ID}/gates/determinism-report.json", "runs/causal-pilot/${RUN_ID}/gates/gate-d-report.json"]
+    inputs: ["runs/causal-pilot/${RUN_ID}/scored/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c0-baseline-b.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c0-noop-masked.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c2-selected.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c4-frequency-matched.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c5-lowest-differential.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-000.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-001.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-002.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-003.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-004.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-005.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-006.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-007.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-008.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-009.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-010.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-011.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-012.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-013.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-014.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-015.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-016.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-017.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-018.jsonl", "runs/causal-pilot/${RUN_ID}/scored/c3-layer-random-019.jsonl"]
+    outputs: ["runs/causal-pilot/${RUN_ID}/gates/determinism-report.json", "runs/causal-pilot/${RUN_ID}/gates/gate-d-report.json", "runs/causal-pilot/${RUN_ID}/gates/supplementary-controls.json", "runs/causal-pilot/${RUN_ID}/causal-report.json"]
+    dependencies: [swebench-harness-score]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.01
+    failure_behavior: terminal
+
+  - task_id: run-bundle
+    objective: Freeze the immutable validation-stage report with artifact hashes and the terminal classification, ready to be copied back before the scoring VM is terminated.
+    definition_of_done: Run bundle records the validation-stage Gate D classification (incomplete/unreplicated-candidates, null, or feasibility-failure — never positive without replication) and hashes every run artifact.
+    command: [timeout, --kill-after=60, "900", reverse-reap, build-bundle, configs/pinned-3090-bf16-gen.yaml, "runs/causal-pilot/${RUN_ID}", "runs/causal-pilot/state/${RUN_ID}", "runs/causal-pilot/${RUN_ID}/run-bundle.json"]
+    validation_command: [python, -c, "import json,sys; bundle=json.load(open(sys.argv[1])); assert bundle['artifacts'] and bundle['classification'] in ('null','feasibility-failure','incomplete'), bundle['classification']", "runs/causal-pilot/${RUN_ID}/run-bundle.json"]
+    inputs: [configs/pinned-3090-bf16-gen.yaml]
+    outputs: ["runs/causal-pilot/${RUN_ID}/run-bundle.json"]
+    dependencies: [causal-gates]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal

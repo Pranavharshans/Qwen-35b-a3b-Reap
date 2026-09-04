@@ -1,0 +1,134 @@
+# Causal-validation pilot — PHASE 1 OF 2: GPU GENERATION (run-ID-scoped plan).
+# Executes on the pinned four-RTX-3090 host under configs/pinned-3090-bf16-gen.yaml.
+#
+# ============================================================================
+# EXECUTION SPLIT (user directive 2026-09-04, supersedes the combined plan's
+# single-host shape; the combined plan configs/execution-plan-causal-pilot.yaml
+# is PRESERVED UNCHANGED for provenance and is never launched).
+# ============================================================================
+# This plan runs ONLY:
+#   1. frozen-input verification (23 expert manifests vs SHA-256 pins),
+#   2. GPU/model preflight,
+#   3. baseline A + baseline B + empty-mask no-op generation,
+#   4. the terminal determinism / no-op-equivalence pre-gate,
+#   5. selected top-4, frequency-matched, lowest-differential generation,
+#   6. the 20 frozen layer-matched random-control generations,
+#   7. response artifact validation, hashing and the generation bundle.
+# It then STOPS. Docker, the sandboxed evaluator, and the official SWE-bench
+# harness are REMOVED from the GPU host on purpose: instance 49832402 is
+# measured container-incapable (seccomp denies mount()/unshare(); see the
+# combined plan's scoring-host decision block), so unit_tests + SWE-bench
+# scoring moved to PHASE 2 (configs/execution-plan-causal-score.yaml) on a
+# container-capable Vast KVM scoring VM. The replication split is NOT opened,
+# generated, or scheduled anywhere in this split.
+#
+# Budget: booked generation estimates sum to 3.91 four-GPU host wall-hours
+# (usable 6.4 h / $8.00 under the 80% controller reserve of the gen config's
+# max_gpu_hours 8 / max_cost_usd 10). Scoring work books ZERO GPU-host hours.
+#
+# Run scoping: launch with a fresh run ID and a run-ID-scoped state dir, e.g.
+#   RUN_ID=$(python -c "from reverse_reap.config import load_config; from
+#       reverse_reap.telemetry import git_sha; from pathlib import Path;
+#       print(load_config(Path('configs/pinned-3090-bf16-gen.yaml')).resolve_run_id(git_sha()))")
+#   reverse-reap run-all configs/pinned-3090-bf16-gen.yaml \
+#       configs/execution-plan-causal-gen.yaml runs/causal-pilot/state/${RUN_ID}
+# The controller expands ${RUN_ID} in every path below from the launch
+# environment, so reruns never collide with a previous run's artifacts.
+#
+# Early stopping (fail-closed, none result-conditional):
+#   - verify-frozen-inputs and gpu-preflight are terminal and precede all GPU work;
+#   - response-determinism-pre-gate is terminal: any baseline-pair or no-op
+#     equivalence mismatch stops the run after 150 of 1,300 generations,
+#     before ANY intervention or control generation;
+#   - all 26 conditions run regardless of interim pass rates; interim results
+#     are never inspected for decision-making mid-run.
+#
+# Phase 2 hand-off: generation-bundle.json pins the SHA-256 of all 26 response
+# files. Only hashed manifests and response artifacts are copied to the scoring
+# VM, where the score plan's verify-generation-inputs task re-checks every pin
+# before any scoring starts.
+schema_version: 1
+tasks:
+  - task_id: verify-frozen-inputs
+    objective: Enforce byte-identity of all 23 frozen expert manifests against the SHA-256 pins recorded in the conditions spec.
+    definition_of_done: Every referenced candidate/control manifest hash-matches the frozen pilot analysis artifacts; verification report written.
+    command: [timeout, --kill-after=60, "600", python, scripts/verify_frozen_experts.py, --conditions, configs/causal-pilot-conditions.json, --report, "runs/causal-pilot/${RUN_ID}/verify-frozen-inputs.json"]
+    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['verified_manifests']==23 and r['mismatches']==[]", "runs/causal-pilot/${RUN_ID}/verify-frozen-inputs.json"]
+    inputs: [configs/causal-pilot-conditions.json]
+    outputs: ["runs/causal-pilot/${RUN_ID}/verify-frozen-inputs.json"]
+    dependencies: []
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.001
+    failure_behavior: terminal
+
+  - task_id: gpu-preflight
+    objective: Verify the exact approved four-RTX-3090 runtime before loading weights.
+    definition_of_done: Preflight report passes exact GPU, VRAM, compute capability, and disk gates.
+    command: [timeout, --kill-after=60, "900", python, scripts/gpu_preflight.py, --output, "runs/causal-pilot/${RUN_ID}/preflight.json"]
+    validation_command: [python, scripts/validate_artifact.py, preflight, "runs/causal-pilot/${RUN_ID}/preflight.json"]
+    inputs: []
+    outputs: ["runs/causal-pilot/${RUN_ID}/preflight.json"]
+    dependencies: []
+    estimated_gpu_hours: 0.01
+    estimated_storage_gb: 0.001
+    failure_behavior: terminal
+
+  - task_id: gen-validation-baselines
+    objective: Generate responses for the two identical no-expert baselines and the empty-mask no-op intervention condition (3 x 50 = 150 generations, one model load).
+    definition_of_done: All 3 generation files exist, non-empty, produced under identical config and per-call (non-shared) KV caches.
+    command: [timeout, --kill-after=60, "2400", python, scripts/run_causal_conditions.py, --config, configs/pinned-3090-bf16-gen.yaml, --model-path, /models/qwen, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --phase, validation-baselines, --output-dir, "runs/causal-pilot/${RUN_ID}/generations", --summary-dir, "runs/causal-pilot/${RUN_ID}/summaries"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); phase=sys.argv[2]; d=sys.argv[3]; missing=[c['condition_id'] for c in spec['conditions'] if c['phase']==phase and not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, validation-baselines, "runs/causal-pilot/${RUN_ID}/generations"]
+    inputs: [configs/causal-pilot-conditions.json, configs/pinned-3090-bf16-gen.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-noop-masked.jsonl"]
+    dependencies: [gpu-preflight, verify-frozen-inputs]
+    estimated_gpu_hours: 0.7
+    estimated_storage_gb: 0.05
+    failure_behavior: retry
+
+  - task_id: response-determinism-pre-gate
+    objective: Stop before ANY intervention/control generation unless the baseline pair is byte-deterministic AND the empty-mask instrumentation is a response-identical no-op.
+    definition_of_done: Zero response mismatches in c0-baseline-a vs c0-baseline-b and in c0-noop-masked vs c0-baseline-a across all 50 paired samples each; report written.
+    command: [timeout, --kill-after=60, "600", python, scripts/check_generation_determinism.py, --pair, "baseline_pair=runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl:runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl", --pair, "noop_equivalence=runs/causal-pilot/${RUN_ID}/generations/c0-noop-masked.jsonl:runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", --report, "runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
+    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['passed'] and set(r['checks'])=={'baseline_pair','noop_equivalence'} and all(not c['mismatched_sample_ids'] for c in r['checks'].values())", "runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
+    inputs: ["runs/causal-pilot/${RUN_ID}/generations/c0-baseline-a.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-baseline-b.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c0-noop-masked.jsonl"]
+    outputs: ["runs/causal-pilot/${RUN_ID}/gates/pre-determinism-report.json"]
+    dependencies: [gen-validation-baselines]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.001
+    failure_behavior: terminal
+
+  - task_id: gen-validation-interventions
+    objective: Generate responses for the frozen top-4 selected condition and the two specificity controls (3 x 50 = 150 generations, one model load), only after the pre-gate approved in-condition KV-cache use.
+    definition_of_done: All 3 generation files exist, non-empty.
+    command: [timeout, --kill-after=60, "2400", python, scripts/run_causal_conditions.py, --config, configs/pinned-3090-bf16-gen.yaml, --model-path, /models/qwen, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --phase, validation-interventions, --output-dir, "runs/causal-pilot/${RUN_ID}/generations", --summary-dir, "runs/causal-pilot/${RUN_ID}/summaries"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); phase=sys.argv[2]; d=sys.argv[3]; missing=[c['condition_id'] for c in spec['conditions'] if c['phase']==phase and not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, validation-interventions, "runs/causal-pilot/${RUN_ID}/generations"]
+    inputs: [configs/causal-pilot-conditions.json, configs/pinned-3090-bf16-gen.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/causal-pilot/${RUN_ID}/generations/c2-selected.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c4-frequency-matched.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c5-lowest-differential.jsonl"]
+    dependencies: [response-determinism-pre-gate]
+    estimated_gpu_hours: 0.7
+    estimated_storage_gb: 0.05
+    failure_behavior: retry
+
+  - task_id: gen-random-controls
+    objective: Generate responses for the 20 frozen layer-matched random control conditions (20 x 50 = 1,000 generations, one model load).
+    definition_of_done: All 20 generation files exist and are non-empty.
+    command: [timeout, --kill-after=60, "14400", python, scripts/run_causal_conditions.py, --config, configs/pinned-3090-bf16-gen.yaml, --model-path, /models/qwen, --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --conditions, configs/causal-pilot-conditions.json, --phase, random, --output-dir, "runs/causal-pilot/${RUN_ID}/generations", --summary-dir, "runs/causal-pilot/${RUN_ID}/summaries"]
+    validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); phase=sys.argv[2]; d=sys.argv[3]; missing=[c['condition_id'] for c in spec['conditions'] if c['phase']==phase and not (os.path.isfile(os.path.join(d,c['condition_id']+'.jsonl')) and os.path.getsize(os.path.join(d,c['condition_id']+'.jsonl'))>0)]; assert not missing, missing", configs/causal-pilot-conditions.json, random, "runs/causal-pilot/${RUN_ID}/generations"]
+    inputs: [configs/causal-pilot-conditions.json, configs/pinned-3090-bf16-gen.yaml, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-000.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-001.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-002.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-003.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-004.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-005.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-006.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-007.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-008.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-009.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-010.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-011.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-012.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-013.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-014.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-015.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-016.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-017.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-018.jsonl", "runs/causal-pilot/${RUN_ID}/generations/c3-layer-random-019.jsonl"]
+    dependencies: [response-determinism-pre-gate]
+    estimated_gpu_hours: 2.5
+    estimated_storage_gb: 0.2
+    failure_behavior: retry
+
+  - task_id: generation-bundle
+    objective: Validate all 26 response artifacts (row counts, sample order, non-empty responses, masked-expert agreement with the frozen spec) and freeze their SHA-256 pins into the generation bundle for the scoring-host hand-off.
+    definition_of_done: generation-bundle.json exists with 26 verified file hashes; a verify-mode pass over the same files reports zero mismatches.
+    command: [timeout, --kill-after=60, "900", python, scripts/generation_bundle.py, build, --conditions, configs/causal-pilot-conditions.json, --generations-dir, "runs/causal-pilot/${RUN_ID}/generations", --dataset-manifest, datasets/manifests/pilot-lengthmatched.jsonl, --output, "runs/causal-pilot/${RUN_ID}/generation-bundle.json"]
+    validation_command: [timeout, --kill-after=60, "600", python, scripts/generation_bundle.py, verify, --bundle, "runs/causal-pilot/${RUN_ID}/generation-bundle.json", --generations-dir, "runs/causal-pilot/${RUN_ID}/generations", --report, "runs/causal-pilot/${RUN_ID}/verify-generation-bundle-self.json"]
+    inputs: [configs/causal-pilot-conditions.json, datasets/manifests/pilot-lengthmatched.jsonl]
+    outputs: ["runs/causal-pilot/${RUN_ID}/generation-bundle.json"]
+    dependencies: [gen-validation-interventions, gen-random-controls]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.001
+    failure_behavior: terminal
