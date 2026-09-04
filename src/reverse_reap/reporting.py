@@ -30,10 +30,27 @@ def build_run_bundle(
     probe = _optional_json(run_dir / "probe.json")
     candidate = _optional_json(run_dir / "analysis" / "candidate-manifest.json")
     causal = _optional_json(run_dir / "causal-report.json")
+    determinism = _optional_json(run_dir / "gates" / "determinism-report.json") or _optional_json(
+        run_dir / "determinism-report.json"
+    )
     extraction = _optional_json(run_dir / "extraction" / "extraction-manifest.json")
     if causal and causal.get("passed"):
         classification = "positive"
         evidence_label = "coding-critical-v0"
+    elif determinism is not None and not determinism.get("passed"):
+        classification = "feasibility-failure"
+        evidence_label = "nondeterministic-generation"
+    elif causal and causal.get("validation_passed"):
+        # Validation-stage Gate D: all four validation criteria hold but the
+        # replication split is untouched (separate governed plan required).
+        # Neither positive (AGENTS.md requires a replicated report) nor null
+        # (the causal signal WAS demonstrated on validation) — the stage is
+        # frozen incomplete pending the replication decision.
+        classification = "incomplete"
+        evidence_label = "unreplicated-candidates"
+    elif causal:
+        classification = "null"
+        evidence_label = causal.get("label") or "observational-candidates"
     elif candidate:
         classification = "null" if not candidate.get("gate_passed") else "incomplete"
         evidence_label = "observational-candidates"
@@ -68,8 +85,10 @@ def build_run_bundle(
         "controller": run_status(state_dir),
         "gates": {
             "A_instrumentation": bool(probe and probe.get("passed")),
+            "B_determinism": bool(determinism and determinism.get("passed")),
             "C_candidates": bool(candidate and candidate.get("gate_passed")),
             "D_causal": bool(causal and causal.get("passed")),
+            "D_validation": bool(causal and causal.get("validation_passed")),
             "E_extraction": bool(
                 extraction
                 and extraction.get("tensors")

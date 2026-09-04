@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "description": "Frozen condition set for the separately governed causal-validation pilot, VALIDATION STAGE ONLY (user-directed revision 2026-09-04). Three generation phases: validation-baselines (both deterministic baselines plus the no-op instrumented condition consumed by the pre-gate), validation-interventions (selected, frequency-matched, lowest-differential), and the 20 frozen layer-random controls. Expert manifests are byte-frozen artifacts of pilot run 20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc (Gate C PASS, top_n=4 by smallest-passing rule); each path's SHA-256 was recorded at plan preparation and is enforced by scripts/verify_frozen_experts.py before any GPU spend. The replication split is untouched: it is neither opened nor generated in this stage; if Gate D passes on validation, the validation report is frozen and a separate governed plan is required before any replication work. SWE-bench rows are scored ONLY by the pinned official harness on the container-capable scoring host selected by the pending dataset/gate decision; scoring the 32 container-dependent samples per condition by exclusion is forbidden.",
+  "source_pilot_run_id": "20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc",
+  "source_candidate_manifest_sha256": "4b6386e396f9110c0f26b8cf6fc407968e010e506807809ab4e8f3d692ba7869",
+  "expert_manifest_root": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis",
+  "splits": {
+    "validation": {
+      "samples": 50,
+      "coding": 40,
+      "control": 10
+    }
+  },
+  "swebench_instances": [
+    "django__django-14017",
+    "matplotlib__matplotlib-23563",
+    "matplotlib__matplotlib-25442",
+    "scikit-learn__scikit-learn-14983",
+    "sympy__sympy-14396",
+    "sympy__sympy-16281",
+    "sympy__sympy-16988",
+    "sympy__sympy-20154"
+  ],
+  "conditions": [
+    {
+      "condition_id": "c0-baseline-a",
+      "phase": "validation-baselines",
+      "split": "validation",
+      "expert_manifest": null,
+      "expert_manifest_sha256": null
+    },
+    {
+      "condition_id": "c0-baseline-b",
+      "phase": "validation-baselines",
+      "split": "validation",
+      "expert_manifest": null,
+      "expert_manifest_sha256": null
+    },
+    {
+      "condition_id": "c0-noop-masked",
+      "phase": "validation-baselines",
+      "split": "validation",
+      "expert_manifest": null,
+      "expert_manifest_sha256": null,
+      "instrument_noop": true
+    },
+    {
+      "condition_id": "c2-selected",
+      "phase": "validation-interventions",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/candidate-manifest.json",
+      "expert_manifest_sha256": "4b6386e396f9110c0f26b8cf6fc407968e010e506807809ab4e8f3d692ba7869"
+    },
+    {
+      "condition_id": "c4-frequency-matched",
+      "phase": "validation-interventions",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/frequency-matched.json",
+      "expert_manifest_sha256": "83dccad18ad3e427c0ff5098bc0ab238121d41080bb7282cb7019c4ae9fc2ee0"
+    },
+    {
+      "condition_id": "c5-lowest-differential",
+      "phase": "validation-interventions",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/lowest-differential.json",
+      "expert_manifest_sha256": "359c97bbe8f6bb06395302ca6957c8e30d0cf3946269d3383b9e824408f13fad"
+    },
+    {
+      "condition_id": "c3-layer-random-000",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-000.json",
+      "expert_manifest_sha256": "d416e4de161afbc8a50f1a465c4f8d0853d36f6a4c19a84460b1afa3a44e8014"
+    },
+    {
+      "condition_id": "c3-layer-random-001",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-001.json",
+      "expert_manifest_sha256": "127c0a492d0d42636eeffb879d764d5eb899c614bdaa164747aa8f09d48a29e6"
+    },
+    {
+      "condition_id": "c3-layer-random-002",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-002.json",
+      "expert_manifest_sha256": "a334c73bfc5364110c5f0a6c83d321b56919163ab0fbedae8ce401726c0c6c4b"
+    },
+    {
+      "condition_id": "c3-layer-random-003",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-003.json",
+      "expert_manifest_sha256": "9a8b0df297a4549ca0fec5a88b81b7e53fe076f116daefba470159afa95efee7"
+    },
+    {
+      "condition_id": "c3-layer-random-004",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-004.json",
+      "expert_manifest_sha256": "620433f95f8b9ec1bd2553b265f44471e4943cb25b8593ee3711c257552a3176"
+    },
+    {
+      "condition_id": "c3-layer-random-005",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-005.json",
+      "expert_manifest_sha256": "1f35bfadc4a9059bb60361f02d1357acab745e263de6028d92dc5f4baf8c25b5"
+    },
+    {
+      "condition_id": "c3-layer-random-006",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-006.json",
+      "expert_manifest_sha256": "43edd5f1f2c81b861734c710bfa0e0a70fac645d3122cbeecbd9dac842aefea0"
+    },
+    {
+      "condition_id": "c3-layer-random-007",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-007.json",
+      "expert_manifest_sha256": "6f13d4c668f94b04cda2c3d5740bbc3c678231123888825bcf061b0a64114aeb"
+    },
+    {
+      "condition_id": "c3-layer-random-008",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-008.json",
+      "expert_manifest_sha256": "b9fc66e54e525009ae711513bb120069071323ff39dbdeee36c4337840b3aeb9"
+    },
+    {
+      "condition_id": "c3-layer-random-009",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-009.json",
+      "expert_manifest_sha256": "08fa034f77347709d417e902bc954793b04a0850c7709ee7574d299ec3ad6df3"
+    },
+    {
+      "condition_id": "c3-layer-random-010",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-010.json",
+      "expert_manifest_sha256": "4768c0cf4d4ffe9636e4744df3a90ea6cd42ee7c4184a47e67796f0943f4e3d4"
+    },
+    {
+      "condition_id": "c3-layer-random-011",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-011.json",
+      "expert_manifest_sha256": "42dd9422b1c084aae44931b52df46f67ed6aa3709185d061b47505ad3cfe856d"
+    },
+    {
+      "condition_id": "c3-layer-random-012",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-012.json",
+      "expert_manifest_sha256": "8fa2a26a84fefdc298a69131b54bc8c0c3680d772d5549bca63671a7749cc7ba"
+    },
+    {
+      "condition_id": "c3-layer-random-013",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-013.json",
+      "expert_manifest_sha256": "32577854a58611526055cad9836eb66352532e57c20c0bd87b81c70b7b7cf320"
+    },
+    {
+      "condition_id": "c3-layer-random-014",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-014.json",
+      "expert_manifest_sha256": "4e6f022a0f6b754492a703750c8283bf77b91f854d862cf56c7bc58101bef89e"
+    },
+    {
+      "condition_id": "c3-layer-random-015",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-015.json",
+      "expert_manifest_sha256": "135bd99600771eb5e63875c27bc9da87cd51ae5354568ec58d0d78503c39926e"
+    },
+    {
+      "condition_id": "c3-layer-random-016",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-016.json",
+      "expert_manifest_sha256": "1c9d35304f89625ac061a62e1961439ce38b689da1cafc22314b28a4ed21a498"
+    },
+    {
+      "condition_id": "c3-layer-random-017",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-017.json",
+      "expert_manifest_sha256": "3388fb5434fb6dd9be850ace45eba223e6863eb6c9f93d2b881696e1f78222ac"
+    },
+    {
+      "condition_id": "c3-layer-random-018",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-018.json",
+      "expert_manifest_sha256": "2c17524087185eaccb662963c85e45ff42c3a0da4107e9f7647ae090f0201d9c"
+    },
+    {
+      "condition_id": "c3-layer-random-019",
+      "phase": "random",
+      "split": "validation",
+      "expert_manifest": "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/controls/layer-random-019.json",
+      "expert_manifest_sha256": "08a16324013a395add84a8f3fd636813c871a019378a148c49b6706b0b9c5c11"
+    }
+  ]
+}

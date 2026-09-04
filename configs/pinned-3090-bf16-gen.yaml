@@ -1,0 +1,51 @@
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 1
+  max_input_tokens: 1024
+  max_new_tokens: 1024
+  enable_thinking: false
+  # ONLY difference from configs/pinned-3090-bf16.yaml: greedy generation uses
+  # the KV cache. Mathematically identical greedy decoding; the numeric effect
+  # is common-mode because all 26 conditions share this exact path. APPROVED
+  # SCOPE (user directive 2026-09-04): use_cache is permitted only WITHIN each
+  # condition, and only if the deterministic baseline pair (c0-baseline-a vs
+  # c0-baseline-b) AND the no-op intervention equivalence (c0-noop-masked vs
+  # c0-baseline-a) both pass the pre-gate; if either check fails, the run
+  # terminates and use_cache must be reverted to false for any re-run. HF
+  # generate() builds a fresh cache per call, so no cache ever spans samples
+  # or conditions — KV/prefix cache reuse across intervention conditions is
+  # structurally impossible, not merely disallowed. Without the cache,
+  # teacher-forced-style full recompute makes the 1,300-generation validation
+  # stage an estimated 17-20 host-hours instead of ~4. Prompt templates,
+  # precision, donor revision, thresholds, and datasets are untouched.
+  use_cache: true
+  speculative_decoding: false
+budget:
+  # Units: max_gpu_hours is FOUR-GPU HOST WALL-HOURS (1 host-hour = 4 aggregate
+  # GPU-hours on the pinned 4x RTX 3090 box). Hard ceiling including the 20%
+  # reserve the controller applies. Booking rate $1/host-hour deliberately
+  # overstates the actual vast.ai rate on instance 49832402 ($0.6456/host-h).
+  # Booked task estimates sum to ~3.91 host-hours for the validation stage
+  # (usable: 6.4 h / $8.00); SWE-bench scoring runs on the separately selected
+  # container-capable host and is NOT booked against this budget.
+  max_gpu_hours: 8
+  max_cost_usd: 10
+  provider_rate_usd_per_hour: 1
+  storage_limit_gb: 250
+  deadline_utc: 2026-12-31T00:00:00Z
+datasets:
+  manifest: datasets/manifests/pilot-lengthmatched.jsonl
+  split: pilot
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false

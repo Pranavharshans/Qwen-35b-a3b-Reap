@@ -77,3 +77,166 @@ def test_build_bundle_validation_commands_accept_real_bundle_payload(tmp_path):
                 f"{plan_name}:{task.task_id} validation failed: "
                 f"{completed.stderr.strip()}"
             )
+
+
+def test_causal_pilot_plan_is_valid_and_dependency_complete():
+    root = Path(__file__).parents[1]
+    plan = load_plan(root / "configs" / "execution-plan-causal-pilot.yaml")
+    ids = [task.task_id for task in plan.tasks]
+    assert len(ids) == len(set(ids)) == 12
+    by_id = {task.task_id: task for task in plan.tasks}
+    expected_tasks = {
+        "gpu-preflight",
+        "verify-frozen-inputs",
+        "gen-validation-baselines",
+        "response-determinism-pre-gate",
+        "gen-validation-interventions",
+        "gen-random-controls",
+        "score-conditions",
+        "docker-evaluator-prep",
+        "swebench-harness-prep",
+        "swebench-harness-score",
+        "causal-gates",
+        "run-bundle",
+    }
+    assert set(ids) == expected_tasks
+    # Pre-GPU freeze enforcement is terminal and precedes all GPU generation.
+    assert by_id["verify-frozen-inputs"].failure_behavior == "terminal"
+    assert "gpu-preflight" in by_id["gen-validation-baselines"].dependencies
+    assert "verify-frozen-inputs" in by_id["gen-validation-baselines"].dependencies
+    # The determinism/no-op pre-gate stops the run before ANY intervention or
+    # control generation, after only 150 of 1,300 generations.
+    gate = by_id["response-determinism-pre-gate"]
+    assert gate.failure_behavior == "terminal"
+    assert "gen-validation-baselines" in gate.dependencies
+    assert "response-determinism-pre-gate" in by_id[
+        "gen-validation-interventions"
+    ].dependencies
+    assert "response-determinism-pre-gate" in by_id["gen-random-controls"].dependencies
+    # Scoring chain: conditions -> official swebench harness -> gates -> bundle.
+    assert {"gen-random-controls", "docker-evaluator-prep", "swebench-harness-prep"} == set(
+        by_id["score-conditions"].dependencies
+    )
+    assert "score-conditions" in by_id["swebench-harness-score"].dependencies
+    assert "swebench-harness-score" in by_id["causal-gates"].dependencies
+    assert "causal-gates" in by_id["run-bundle"].dependencies
+    # The pre-gate checks BOTH the baseline pair and the no-op equivalence.
+    pregate_command = " ".join(gate.command)
+    assert pregate_command.count("--pair") == 2
+    assert "c0-baseline-a" in pregate_command and "c0-baseline-b" in pregate_command
+    assert "c0-noop-masked" in pregate_command
+    # Every command is wall-time bounded.
+    for task in plan.tasks:
+        assert task.command[0] == "timeout", task.task_id
+        assert str(task.command[2]).isdigit(), task.task_id
+    total_booked = sum(task.estimated_gpu_hours for task in plan.tasks)
+    assert total_booked <= 6.4  # 80% of max_gpu_hours 8 in the gen config
+    assert abs(total_booked - 3.91) < 1e-6
+    # Only the three GPU generation tasks book host-hours; everything else is
+    # CPU/container work on the scoring host selected by the pending decision.
+    booked = {task.task_id: task.estimated_gpu_hours for task in plan.tasks
+              if task.estimated_gpu_hours > 0}
+    assert booked == {
+        "gpu-preflight": 0.01,
+        "gen-validation-baselines": 0.7,
+        "gen-validation-interventions": 0.7,
+        "gen-random-controls": 2.5,
+    }
+
+
+def test_causal_conditions_spec_is_frozen_and_validation_stage_only():
+    import json
+    import re
+
+    root = Path(__file__).parents[1]
+    spec = json.loads((root / "configs" / "causal-pilot-conditions.json").read_text())
+    conditions = spec["conditions"]
+    assert len(conditions) == 26
+    by_id = {c["condition_id"]: c for c in conditions}
+    assert len(by_id) == 26
+    assert by_id["c0-baseline-a"]["expert_manifest"] is None
+    assert by_id["c0-baseline-b"]["expert_manifest"] is None
+    assert by_id["c0-noop-masked"]["expert_manifest"] is None
+    assert by_id["c0-noop-masked"]["instrument_noop"] is True
+    # Three generation phases: baselines -> (pre-gate) -> interventions and 20
+    # random controls. NO replication conditions exist in this stage.
+    phase_counts = {}
+    for c in conditions:
+        phase_counts[c["phase"]] = phase_counts.get(c["phase"], 0) + 1
+    assert phase_counts == {
+        "validation-baselines": 3,
+        "validation-interventions": 3,
+        "random": 20,
+    }
+    assert all(c["split"] == "validation" for c in conditions)
+    sha_pattern = re.compile(r"^[0-9a-f]{64}$")
+    assert sum(1 for c in conditions if c["expert_manifest"] is None) == 3
+    manifests = [c["expert_manifest_sha256"] for c in conditions
+                 if c["expert_manifest_sha256"] is not None]
+    assert len(manifests) == 23 and len(set(manifests)) == 23
+    for c in conditions:
+        if c["expert_manifest"] is None:
+            assert c["expert_manifest_sha256"] is None
+            continue
+        assert c["expert_manifest"].startswith(
+            "runs/pilot/20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc/analysis/"
+        )
+        assert sha_pattern.match(c["expert_manifest_sha256"])
+    assert by_id["c2-selected"]["expert_manifest_sha256"] == spec[
+        "source_candidate_manifest_sha256"
+    ]
+    # The replication split is NOT opened anywhere in this stage.
+    assert spec["splits"] == {"validation": {"samples": 50, "coding": 40, "control": 10}}
+    assert "replication" not in spec["splits"]
+    assert not any("replication" in c["condition_id"] for c in conditions)
+    assert spec["swebench_instances"] == [
+        "django__django-14017",
+        "matplotlib__matplotlib-23563",
+        "matplotlib__matplotlib-25442",
+        "scikit-learn__scikit-learn-14983",
+        "sympy__sympy-14396",
+        "sympy__sympy-16281",
+        "sympy__sympy-16988",
+        "sympy__sympy-20154",
+    ]
+
+
+def test_verify_frozen_experts_script_enforces_byte_identity(tmp_path):
+    import hashlib
+    import json
+    import subprocess
+    import sys
+
+    manifest = tmp_path / "experts.json"
+    payload = json.dumps({"experts": [{"layer": 3, "expert": 26}]})
+    manifest.write_text(payload)
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    spec = tmp_path / "spec.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "conditions": [
+                    {"condition_id": "a", "phase": "validation", "split": "validation",
+                     "expert_manifest": str(manifest), "expert_manifest_sha256": digest},
+                    {"condition_id": "b", "phase": "validation", "split": "validation",
+                     "expert_manifest": None, "expert_manifest_sha256": None},
+                ],
+            }
+        )
+    )
+    script = Path(__file__).parents[1] / "scripts" / "verify_frozen_experts.py"
+    report = tmp_path / "report.json"
+    ok = subprocess.run(
+        [sys.executable, str(script), "--conditions", str(spec), "--report", str(report)],
+        capture_output=True, text=True,
+    )
+    assert ok.returncode == 0, ok.stderr
+    assert json.loads(report.read_text())["verified_manifests"] == 1
+    manifest.write_text(payload.replace("26", "27"))
+    bad = subprocess.run(
+        [sys.executable, str(script), "--conditions", str(spec),
+         "--report", str(tmp_path / "report2.json")],
+        capture_output=True, text=True,
+    )
+    assert bad.returncode == 1 and "MISMATCH" in bad.stderr
