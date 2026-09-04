@@ -95,7 +95,7 @@ tasks:
     objective: Freeze the immutable pilot report with artifact hashes and the terminal classification.
     definition_of_done: Run bundle records the Gate C classification (positive, null, or feasibility-failure) and hashes every run artifact.
     command: [timeout, --kill-after=60, "900", reverse-reap, build-bundle, configs/pinned-3090-bf16.yaml, "runs/pilot/${RUN_ID}", runs/pilot/state, "runs/pilot/${RUN_ID}/run-bundle.json"]
-    validation_command: [python, -c, "import json,sys; bundle=json.load(open(sys.argv[1])); assert bundle['files'] and bundle['classification'] in ('positive','null','feasibility-failure','incomplete')", "runs/pilot/${RUN_ID}/run-bundle.json"]
+    validation_command: [python, -c, "import json,sys; bundle=json.load(open(sys.argv[1])); assert bundle['artifacts'] and bundle['classification'] in ('positive','null','feasibility-failure','incomplete')", "runs/pilot/${RUN_ID}/run-bundle.json"]
     inputs: [configs/pinned-3090-bf16.yaml]
     outputs: ["runs/pilot/${RUN_ID}/run-bundle.json"]
     dependencies: [candidate-analysis]
