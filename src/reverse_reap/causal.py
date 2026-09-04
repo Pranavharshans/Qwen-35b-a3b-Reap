@@ -133,21 +133,25 @@ def _generate(
     )
 
 
-def evaluate_condition(
-    model_path: Path,
+def generate_condition(
+    model: Any,
+    tokenizer: Any,
+    architecture: Any,
     dataset_manifest: Path,
     destination: Path,
     config: ExperimentConfig,
     *,
     split: str,
     condition_id: str,
-    evaluator_image: str,
     expert_manifest: Path | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    model, tokenizer = load_donor(model_path, config)
-    architecture = inspect_qwen35_moe(model)
-    validate_donor_contract(model, architecture)
+    """Generate responses for one causal condition and write generation-only records.
+
+    Scoring is deliberately excluded so GPU hosts without Docker can still
+    produce generations; ``score_condition`` completes the records on a
+    CPU host that has the pinned evaluator image.
+    """
     masked = load_expert_set(expert_manifest) if expert_manifest else frozenset()
     samples = [sample for sample in load_manifest(dataset_manifest) if sample.split == split]
     samples = balanced_subset(samples, limit)
@@ -163,7 +167,6 @@ def evaluate_condition(
         else:
             response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
         latency_seconds = time.monotonic() - started
-        score = score_response(sample, response, evaluator_image=evaluator_image)
         records.append(
             {
                 "sample_id": sample.sample_id,
@@ -179,9 +182,94 @@ def evaluate_condition(
                 "generated_tokens": generated_tokens,
                 "truncated": truncated,
                 "latency_seconds": latency_seconds,
-                **score,
             }
         )
+    _atomic_write_jsonl(destination, records)
+    return {
+        "condition_id": condition_id,
+        "samples": len(records),
+        "masked_experts": len(masked),
+        "truncation_rate": (
+            float(np.mean([record["truncated"] for record in records])) if records else 0.0
+        ),
+        "mean_latency_seconds": (
+            float(np.mean([record["latency_seconds"] for record in records])) if records else 0.0
+        ),
+    }
+
+
+def score_condition(
+    generated_path: Path,
+    dataset_manifest: Path,
+    destination: Path,
+    *,
+    evaluator_image: str,
+) -> dict[str, Any]:
+    """Score generation-only records from ``generate_condition`` on a CPU host.
+
+    Merges ``score_response`` fields into each record and writes the exact
+    schema ``evaluate_condition`` produces, so ``causal_gate_report`` and
+    ``compare_deterministic_evaluations`` consume scored files unchanged.
+    """
+    if destination.exists():
+        raise CausalError(f"refusing to overwrite evaluation: {destination}")
+    by_id = {sample.sample_id: sample for sample in load_manifest(dataset_manifest)}
+    records = _read_jsonl(generated_path)
+    scored = []
+    for record in records:
+        sample = by_id.get(record["sample_id"])
+        if sample is None:
+            raise CausalError(f"generation record has no manifest sample: {record['sample_id']}")
+        score = score_response(sample, record["response"], evaluator_image=evaluator_image)
+        scored.append({**record, **score})
+    _atomic_write_jsonl(destination, scored)
+    return _summarize_condition(scored)
+
+
+def evaluate_condition(
+    model_path: Path,
+    dataset_manifest: Path,
+    destination: Path,
+    config: ExperimentConfig,
+    *,
+    split: str,
+    condition_id: str,
+    evaluator_image: str,
+    expert_manifest: Path | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    model, tokenizer = load_donor(model_path, config)
+    architecture = inspect_qwen35_moe(model)
+    validate_donor_contract(model, architecture)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise CausalError(f"refusing to overwrite evaluation: {destination}")
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=destination.parent, prefix=f".{destination.name}.", delete=False
+    ) as handle:
+        temporary = Path(handle.name)
+    temporary.unlink()  # reserve a unique name only; generate_condition writes atomically
+    try:
+        generate_condition(
+            model,
+            tokenizer,
+            architecture,
+            dataset_manifest,
+            temporary,
+            config,
+            split=split,
+            condition_id=condition_id,
+            expert_manifest=expert_manifest,
+            limit=limit,
+        )
+        return score_condition(
+            temporary, dataset_manifest, destination, evaluator_image=evaluator_image
+        )
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_write_jsonl(destination: Path, records: list[dict[str, Any]]) -> None:
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=destination.parent, prefix=f".{destination.name}.", delete=False
     ) as handle:
@@ -190,17 +278,22 @@ def evaluate_condition(
             handle.write(json.dumps(record, sort_keys=True) + "\n")
         handle.flush()
     temporary.replace(destination)
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _summarize_condition(records: list[dict[str, Any]]) -> dict[str, Any]:
     scoreable = [record for record in records if record["scoreable"]]
     return {
-        "condition_id": condition_id,
+        "condition_id": records[0]["condition_id"] if records else "",
         "samples": len(records),
         "scoreable_fraction": len(scoreable) / len(records) if records else 0.0,
         "pass_rate": (
             float(np.mean([record["passed"] for record in scoreable])) if scoreable else 0.0
         ),
-        "parse_error_rate": (
-            1 - len(scoreable) / len(records) if records else 1.0
-        ),
+        "parse_error_rate": (1 - len(scoreable) / len(records) if records else 1.0),
         "truncation_rate": (
             float(np.mean([record["truncated"] for record in records])) if records else 0.0
         ),
@@ -338,11 +431,43 @@ def causal_gate_report(
     }
 
 
-def compare_deterministic_evaluations(first_path: Path, second_path: Path) -> dict[str, Any]:
+def compare_generation_determinism(first_path: Path, second_path: Path) -> dict[str, Any]:
+    """Response-only determinism check usable before any scoring has happened.
+
+    Early-stop pre-gate: verifies the GPU generation path reproduced identical
+    responses across two identical baseline conditions. Complements (does not
+    replace) the official scored Gate B check.
+    """
+    first = {row["sample_id"]: row for row in _read_jsonl(first_path)}
+    second = {row["sample_id"]: row for row in _read_jsonl(second_path)}
+    if first.keys() != second.keys():
+        raise CausalError("determinism runs contain different sample IDs")
+    mismatches = [
+        sample_id
+        for sample_id in sorted(first)
+        if first[sample_id].get("response") != second[sample_id].get("response")
+    ]
+    return {
+        "passed": not mismatches,
+        "samples": len(first),
+        "mismatched_sample_ids": mismatches,
+    }
+
+
+def compare_deterministic_evaluations(
+    first_path: Path, second_path: Path, *, restrict_scoreable: bool = False
+) -> dict[str, Any]:
     first_rows = [json.loads(line) for line in first_path.read_text().splitlines() if line]
     second_rows = [json.loads(line) for line in second_path.read_text().splitlines() if line]
     first = {row["sample_id"]: row for row in first_rows}
     second = {row["sample_id"]: row for row in second_rows}
+    if restrict_scoreable:
+        # swebench rows are structurally scoreable=False on every host that
+        # lacks the SWEBench harness, so the unrestricted population can never
+        # reach the 0.95 gate. Restricting to scoreable rows keeps the frozen
+        # threshold meaningful; both variants are always reported.
+        first = {key: row for key, row in first.items() if row.get("scoreable")}
+        second = {key: row for key, row in second.items() if row.get("scoreable")}
     if first.keys() != second.keys():
         raise CausalError("determinism runs contain different sample IDs")
     mismatches = [
