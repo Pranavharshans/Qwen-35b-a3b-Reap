@@ -120,6 +120,15 @@ def test_causal_pilot_plan_is_valid_and_dependency_complete():
     assert "score-conditions" in by_id["swebench-harness-score"].dependencies
     assert "swebench-harness-score" in by_id["causal-gates"].dependencies
     assert "causal-gates" in by_id["run-bundle"].dependencies
+    # The pinned harness revision is driven with the pinned swe-bench-tasks
+    # task repo (measured 2026-09-04: hosted dataset rows lack the image/
+    # eval_script columns; no --report_dir/--log_dir flags exist).
+    assert "--tasks-repo" in by_id["swebench-harness-score"].command
+    assert "--tasks-dir" in by_id["swebench-harness-prep"].command
+    assert any(
+        "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d" in part
+        for part in by_id["swebench-harness-prep"].validation_command
+    )
     # The pre-gate checks BOTH the baseline pair and the no-op equivalence.
     pregate_command = " ".join(gate.command)
     assert pregate_command.count("--pair") == 2

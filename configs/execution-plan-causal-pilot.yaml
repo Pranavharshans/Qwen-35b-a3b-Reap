@@ -190,12 +190,12 @@ tasks:
     failure_behavior: terminal
 
   - task_id: swebench-harness-prep
-    objective: Install the PINNED official SWE-bench harness (revision 02e7a74) on the container-capable scoring host.
-    definition_of_done: harness-report.json records the pinned revision with a verified import.
-    command: [timeout, --kill-after=60, "2700", python, scripts/install_swebench_harness.py, --install-dir, "runs/causal-pilot/${RUN_ID}/swebench-harness", --output-dir, "runs/causal-pilot/${RUN_ID}/docker"]
-    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['installed'] and r['harness_revision']=='02e7a74ffd0b707aab73d203fe87bdc7c76afc8e'", "runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
+    objective: Install the PINNED official SWE-bench harness (revision 02e7a74) and the PINNED swe-bench-tasks task repo (3d07b464) on the container-capable scoring host.
+    definition_of_done: harness-report.json records both pinned revisions with a verified import.
+    command: [timeout, --kill-after=60, "2700", python, scripts/install_swebench_harness.py, --install-dir, "runs/causal-pilot/${RUN_ID}/swebench-harness", --tasks-dir, "runs/causal-pilot/${RUN_ID}/swebench-tasks", --output-dir, "runs/causal-pilot/${RUN_ID}/docker"]
+    validation_command: [python, -c, "import json,sys; r=json.load(open(sys.argv[1])); assert r['installed'] and r['harness_revision']=='02e7a74ffd0b707aab73d203fe87bdc7c76afc8e' and r['tasks_revision']=='3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d'", "runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
     inputs: []
-    outputs: ["runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
+    outputs: ["runs/causal-pilot/${RUN_ID}/docker/harness-report.json", "runs/causal-pilot/${RUN_ID}/swebench-tasks"]
     dependencies: []
     estimated_gpu_hours: 0
     estimated_storage_gb: 2
@@ -204,7 +204,7 @@ tasks:
   - task_id: swebench-harness-score
     objective: Evaluate every condition's SWE-bench predictions with the pinned official harness and merge completed/resolved verdicts into the final scored files.
     definition_of_done: Per-condition merge summaries exist; instances the harness did not complete are marked scoreable=False with an explicit error (Gate B then judges coverage).
-    command: [timeout, --kill-after=60, "21600", python, scripts/run_swebench_harness.py, --conditions, configs/causal-pilot-conditions.json, --prescored-dir, "runs/causal-pilot/${RUN_ID}/scored", --output-dir, "runs/causal-pilot/${RUN_ID}/scored", --harness-repo, "runs/causal-pilot/${RUN_ID}/swebench-harness", --work-dir, "runs/causal-pilot/${RUN_ID}/swebench-work"]
+    command: [timeout, --kill-after=60, "21600", python, scripts/run_swebench_harness.py, --conditions, configs/causal-pilot-conditions.json, --prescored-dir, "runs/causal-pilot/${RUN_ID}/scored", --output-dir, "runs/causal-pilot/${RUN_ID}/scored", --harness-repo, "runs/causal-pilot/${RUN_ID}/swebench-harness", --tasks-repo, "runs/causal-pilot/${RUN_ID}/swebench-tasks", --work-dir, "runs/causal-pilot/${RUN_ID}/swebench-work"]
     validation_command: [python, -c, "import json,os,sys; spec=json.load(open(sys.argv[1])); d=sys.argv[2]; missing=[c['condition_id'] for c in spec['conditions'] if not os.path.isfile(os.path.join(d,c['condition_id']+'.summary.json'))]; assert not missing, missing", configs/causal-pilot-conditions.json, "runs/causal-pilot/${RUN_ID}/scored"]
     inputs: ["runs/causal-pilot/${RUN_ID}/scored", "runs/causal-pilot/${RUN_ID}/docker/harness-report.json"]
     outputs: ["runs/causal-pilot/${RUN_ID}/scored"]
