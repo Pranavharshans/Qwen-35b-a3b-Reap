@@ -109,3 +109,47 @@ def test_resume_rejects_non_scoped_and_missing_dirs(tmp_path):
 
     config = _config(root)
     assert config.run_id is None  # gen config must keep run_id open for derivation
+
+
+def _import_script():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("launch_causal_phase", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_launch_record_never_lands_in_state_dir(tmp_path, monkeypatch):
+    """recover_stale_tasks globs state_dir/*.json as task state — the record
+    must go to the run dir instead, or the next launch fails closed."""
+
+    module = _import_script()
+    captured = {}
+
+    def fake_run_all(plan, config, state_dir, *, run_id):
+        captured["state_dir"] = state_dir
+        captured["run_id"] = run_id
+        return {"status": "COMPLETE"}
+
+    monkeypatch.setattr(module, "run_all", fake_run_all)
+    monkeypatch.setattr(module, "git_sha", lambda: "f1c4e5e2" * 5)
+    monkeypatch.chdir(tmp_path)
+    root = Path(__file__).parents[1]
+    argv = [
+        "launch_causal_phase.py",
+        "--config",
+        str(root / "configs" / "pinned-3090-bf16-gen.yaml"),
+        "--plan",
+        str(root / "configs" / "execution-plan-causal-gen.yaml"),
+        "--state-root",
+        str(tmp_path / "state"),
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert module.main() == 0
+    state_dir = captured["state_dir"]
+    assert not list(Path(state_dir).glob("launch-record.json"))
+    record = json.loads(
+        (tmp_path / "runs/causal-pilot" / captured["run_id"] / "launch-record.json").read_text()
+    )
+    assert record["run_id"] == captured["run_id"]

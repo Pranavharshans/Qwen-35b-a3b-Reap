@@ -18,7 +18,9 @@ that single id:
 
 Fresh launches fail closed if the derived state dir already exists. The
 launch record (run id, state dir, plan, config fingerprint) is written to
-``<state_dir>/launch-record.json`` before any task runs. ``--dry-run``
+``runs/causal-pilot/<run_id>/launch-record.json`` (NEVER into the state
+dir: every ``*.json`` file there is controller task state, and
+``recover_stale_tasks`` fails closed on foreign files). ``--dry-run``
 prints the record and exits without launching anything (used by tests and
 pre-launch checks).
 """
@@ -104,7 +106,9 @@ def main() -> int:
     if args.dry_run:
         return 0
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "launch-record.json").write_text(
+    run_dir = Path("runs/causal-pilot") / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "launch-record.json").write_text(
         json.dumps(record, indent=2) + "\n", encoding="utf-8"
     )
     result = run_all(args.plan, config, state_dir, run_id=run_id)
