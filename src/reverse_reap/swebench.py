@@ -18,6 +18,13 @@ SWE_BENCH_REPOSITORY = "https://github.com/SWE-bench/SWE-bench.git"
 SWE_BENCH_REVISION = "02e7a74ffd0b707aab73d203fe87bdc7c76afc8e"
 SWE_BENCH_DATASET = "princeton-nlp/SWE-bench_Lite"
 SWE_BENCH_SPLIT = "test"
+# At the pinned harness revision the hosted princeton-nlp/SWE-bench_Lite rows
+# lack the image/eval_script columns make_test_spec requires (measured:
+# KeyError 'image'), so the harness MUST be driven with a task repo
+# (per-instance eval.sh/Dockerfile/gold.patch). The task repo is therefore
+# part of the pinned evaluation contract, cloned at this revision.
+SWE_BENCH_TASKS_REPOSITORY = "https://github.com/SWE-bench/swe-bench-tasks.git"
+SWE_BENCH_TASKS_REVISION = "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d"
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:

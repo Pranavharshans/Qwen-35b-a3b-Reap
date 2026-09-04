@@ -4,9 +4,14 @@ For every condition with swebench rows in its pre-scored file:
 
 1. ``export_predictions`` writes the official prediction contract.
 2. The official harness at the pinned revision evaluates the predictions in
-   its own containers (``--dataset_name princeton-nlp/SWE-bench_Lite --split
-   test``). Instance images are pulled once and cached by Docker.
-3. ``merge_report`` merges completed/resolved verdicts into the final scored
+   its own containers (``swebench eval SWE-bench/SWE-bench_Lite --split test``
+   against the pinned swe-bench-tasks task repo — at this revision the task
+   repo is REQUIRED because the hosted dataset rows lack the image/eval_script
+   columns the harness needs, and instance images are built locally from the
+   task repo and reused across conditions via the Docker layer cache).
+3. The harness writes ``<work>/logs/evaluation/<run_id>/results.json``
+   (schema_version 2: completed_ids/resolved_ids/error_ids).
+4. ``merge_report`` merges completed/resolved verdicts into the final scored
    file, marking any instance the harness did not complete as scoreable=False
    with an explicit error — Gate B's frozen 0.95 denominator then judges the
    honest coverage.
@@ -41,6 +46,8 @@ def main() -> int:
     parser.add_argument("--prescored-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--harness-repo", type=Path, required=True)
+    parser.add_argument("--tasks-repo", type=Path, required=True,
+                        help="pinned swe-bench-tasks clone (required by the harness revision)")
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--max-workers", type=int, default=8)
     args = parser.parse_args()
@@ -48,15 +55,28 @@ def main() -> int:
     spec = json.loads(args.conditions.read_text(encoding="utf-8"))
     if spec.get("schema_version") != 1:
         raise SystemExit(f"unsupported conditions spec schema: {spec.get('schema_version')}")
-    harness_python = args.harness_repo / "venv" / "bin" / "python"
+    harness_python = args.harness_repo / "venv" / "bin" / "swebench"
     if not harness_python.exists():
-        raise SystemExit(f"harness venv missing: {harness_python}")
+        raise SystemExit(f"harness CLI missing: {harness_python}")
     revision = subprocess.run(
         ["git", "-C", str(args.harness_repo), "rev-parse", "HEAD"],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     if revision != SWE_BENCH_REVISION:
         raise SystemExit(f"harness revision {revision!r} != pinned {SWE_BENCH_REVISION!r}")
+    tasks_revision = subprocess.run(
+        ["git", "-C", str(args.tasks_repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    report = json.loads(
+        (args.harness_repo.parent / "docker" / "harness-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    if report.get("tasks_revision") and tasks_revision != report["tasks_revision"]:
+        raise SystemExit(
+            f"tasks revision {tasks_revision!r} != pinned {report['tasks_revision']!r}"
+        )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.work_dir.mkdir(parents=True, exist_ok=True)
@@ -81,28 +101,26 @@ def main() -> int:
 
         condition_work = args.work_dir / condition_id
         predictions_dir = condition_work / "predictions"
-        reports_dir = condition_work / "reports"
-        logs_dir = condition_work / "logs"
-        for path in (predictions_dir, reports_dir, logs_dir):
-            path.mkdir(parents=True, exist_ok=True)
+        predictions_dir.mkdir(parents=True, exist_ok=True)
         predictions = predictions_dir / "predictions.jsonl"
         if predictions.exists():
             predictions.unlink()  # derived staging file, regenerated each attempt
         export_predictions(prescored, predictions, model_name=f"reverse-reap/{condition_id}")
 
         started = time.monotonic()
+        # The harness writes CWD-relative logs/evaluation/<run_id>/results.json,
+        # so it runs with cwd=condition_work (measured probe 2026-09-04).
         result = subprocess.run(
             [
-                str(harness_python), "-m", "swebench.harness.run_evaluation",
-                "--predictions_path", str(predictions),
-                "--dataset_name", SWE_BENCH_DATASET,
+                str(harness_python), "eval", SWE_BENCH_DATASET,
                 "--split", SWE_BENCH_SPLIT,
-                "--run_id", condition_id,
-                "--report_dir", str(reports_dir),
-                "--log_dir", str(logs_dir),
-                "--max_workers", str(args.max_workers),
+                "--predictions", str(predictions),
+                "--run-id", condition_id,
+                "--task-repo", str(args.tasks_repo),
+                "--workers", str(args.max_workers),
+                "--timeout", "1800",
             ],
-            capture_output=True, text=True,
+            cwd=condition_work, capture_output=True, text=True,
         )
         elapsed = time.monotonic() - started
         harness_log = condition_work / "harness-stderr.log"
@@ -113,13 +131,16 @@ def main() -> int:
                 f"{elapsed:.0f}s); stderr in {harness_log}"
             )
 
-        reports = [path for path in reports_dir.rglob("*.json") if path.is_file()]
+        reports = list(
+            (condition_work / "logs" / "evaluation" / condition_id).glob("results.json")
+        )
         if len(reports) != 1:
             raise SystemExit(f"expected exactly one harness report for {condition_id}, "
                              f"found {len(reports)}")
         summary = merge_report(prescored, reports[0], final)
         summary["harness_seconds"] = elapsed
         summary["harness_revision"] = revision
+        summary["tasks_revision"] = tasks_revision
         (args.output_dir / f"{condition_id}.summary.json").write_text(
             json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8"
         )

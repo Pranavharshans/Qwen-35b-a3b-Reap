@@ -154,6 +154,20 @@ def test_expert_manifest_rejects_duplicate_identity(tmp_path):
         load_expert_set(path)
 
 
+def test_swebench_pins_task_repo_required_by_pinned_harness():
+    """Measured 2026-09-04 (scoring-host probe): at harness revision 02e7a74
+    the hosted SWE-bench_Lite rows lack the image/eval_script columns, so the
+    task repo is part of the pinned evaluation contract and must stay pinned."""
+    import re
+
+    from reverse_reap import swebench
+
+    assert swebench.SWE_BENCH_REVISION == "02e7a74ffd0b707aab73d203fe87bdc7c76afc8e"
+    assert swebench.SWE_BENCH_TASKS_REPOSITORY.endswith("swe-bench-tasks.git")
+    assert re.fullmatch(r"[0-9a-f]{40}", swebench.SWE_BENCH_TASKS_REVISION)
+    assert swebench.SWE_BENCH_DATASET == "princeton-nlp/SWE-bench_Lite"
+
+
 def test_determinism_comparison_requires_exact_responses_and_95_percent_scoreable(tmp_path):
     first, second = tmp_path / "first.jsonl", tmp_path / "second.jsonl"
     rows = [
