@@ -101,7 +101,7 @@ REF_IDS = [
 ]
 # +7 -> 16 total, covering coding, controls (multiple_choice), exact-match,
 # unit-test and SWE-bench per the 2026-09-06 directive.
-TOP_UP = {"multiple_choice": 2, "exact_match": 1, "unit_tests": 1, "swebench": 2}
+TOP_UP = {"multiple_choice": 2, "exact_match": 1, "unit_tests": 2, "swebench": 2}
 
 B8_EXTRA = [
     "bc5e6501895b5fd99348f4bd",  # unit_tests
@@ -521,11 +521,17 @@ def main() -> int:
             return {}
         sampler.reset()
         prefill = None
-        if instrumented:
-            with instrument_qwen35(architecture, masked=masked or frozenset(), observer=observer):
+        try:
+            if instrumented:
+                with instrument_qwen35(
+                    architecture, masked=masked or frozenset(), observer=observer,
+                ):
+                    prefill = _prefill_probe(tokenizer, stage_samples, config, model)
+            else:
                 prefill = _prefill_probe(tokenizer, stage_samples, config, model)
-        else:
-            prefill = _prefill_probe(tokenizer, stage_samples, config, model)
+        except torch.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            prefill = {"error": "prefill probe OOM — skipped, cleared; chunks unaffected"}
 
         chunk_manifest: list[dict] = []
         rows: dict[str, dict] = {}
@@ -830,6 +836,10 @@ def main() -> int:
                 })
     except BenchStop as stop:
         report["stop_reason"] = str(stop)
+    except torch.OutOfMemoryError:
+        # Last-resort catch so stage records survive and the report is written.
+        torch.cuda.empty_cache()
+        report["stop_reason"] = "OOM escaped a stage (records preserved)"
 
     # ---------- projections ----------
     try:
