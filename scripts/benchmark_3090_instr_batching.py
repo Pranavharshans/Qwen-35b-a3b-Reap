@@ -101,7 +101,7 @@ REF_IDS = [
 ]
 # +7 -> 16 total, covering coding, controls (multiple_choice), exact-match,
 # unit-test and SWE-bench per the 2026-09-06 directive.
-TOP_UP = {"multiple_choice": 2, "exact_match": 1, "unit_tests": 1, "swebench": 2}
+TOP_UP = {"multiple_choice": 2, "exact_match": 1, "unit_tests": 2, "swebench": 2}
 
 B8_EXTRA = [
     "bc5e6501895b5fd99348f4bd",  # unit_tests
