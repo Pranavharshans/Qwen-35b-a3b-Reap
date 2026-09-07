@@ -196,7 +196,7 @@ def _capture_real_modified(
     kw = dict(patched.__func__.__kwdefaults__ or {})
     inner = kw["_original"]
 
-    def recorder(this: Any, hs: Any, ti: Any, tw: Any) -> Any:
+    def recorder(hs: Any, ti: Any, tw: Any) -> Any:
         seen["weights"] = tw.detach().clone()
         return inner(hs, ti, tw)
 
