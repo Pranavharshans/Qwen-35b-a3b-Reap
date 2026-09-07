@@ -13,6 +13,15 @@ import numpy as np
 from reverse_reap.qwen35 import Qwen35Architecture
 from reverse_reap.routing import RouterBatch, StreamingReapAccumulator
 
+# Frozen top-four selected experts from the Gate C pilot
+# (run 20260904T100102Z-qwen35a3b-direct-503e4ee9-644a80fc, smallest-passing
+# rule). Convenience reference for the causal intervention path — the
+# function itself accepts any mask; the frozen manifest on disk remains the
+# governing artifact.
+FROZEN_SELECTED_TOP4: frozenset[tuple[int, int]] = frozenset(
+    {(35, 239), (3, 26), (7, 18), (37, 5)}
+)
+
 
 @dataclass
 class CaptureState:
@@ -122,6 +131,69 @@ def instrument_qwen35(
 
     try:
         yield capture
+    finally:
+        for experts, original in originals:
+            experts.forward = original
+
+
+@contextmanager
+def intervene_qwen35(
+    architecture: Qwen35Architecture,
+    *,
+    masked: frozenset[tuple[int, int]] = frozenset(),
+) -> Iterator[None]:
+    """Zero selected expert contributions via the native fused forward only.
+
+    Optimized intervention-only path for causal generation. Semantics match
+    the slow telemetry/replay path (zero-weighted contribution without router
+    renormalization) but without the telemetry side path:
+
+    - Empty mask: the original fused expert forward is called directly with
+      zero additional tensor work (no clone, no scan).
+    - Selected mask: the router-weight tensor is cloned, only routes whose
+      (layer, expert) identity is in ``masked`` are set to zero, and the
+      original fused forward is called exactly once with the modified
+      weights.
+    - Expert indices are never changed, tokens are never rerouted, surviving
+      weights are never renormalized, routed experts are never recomputed,
+      and no expert norms, CPU copies, observers, or telemetry accumulators
+      are touched.
+
+    The existing :func:`instrument_qwen35` capture implementation is
+    preserved unchanged for telemetry and Gate A.
+    """
+    originals: list[tuple[Any, Any]] = []
+    targets_per_layer: list[frozenset[int]] = [
+        frozenset(expert for (layer, expert) in masked if layer == layer_index)
+        for layer_index in range(architecture.num_layers)
+    ]
+
+    for layer_index, layer in enumerate(architecture.layers):
+        experts = layer.mlp.experts
+        original = experts.forward
+        originals.append((experts, original))
+        targets = targets_per_layer[layer_index]
+
+        def forward(
+            this: Any,
+            hidden_states: Any,
+            top_k_index: Any,
+            top_k_weights: Any,
+            *,
+            _original: Any = original,
+            _targets: frozenset[int] = targets,
+        ) -> Any:
+            if not _targets:
+                return _original(hidden_states, top_k_index, top_k_weights)
+            modified = top_k_weights.clone()
+            for expert in _targets:
+                modified[top_k_index == expert] = 0
+            return _original(hidden_states, top_k_index, modified)
+
+        experts.forward = types.MethodType(forward, experts)
+
+    try:
+        yield None
     finally:
         for experts, original in originals:
             experts.forward = original
