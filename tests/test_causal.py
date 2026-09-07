@@ -231,7 +231,7 @@ def _patch_generation_runtime(monkeypatch):
     monkeypatch.setattr("reverse_reap.causal.inspect_qwen35_moe", lambda model: object())
     monkeypatch.setattr("reverse_reap.causal.validate_donor_contract", lambda model, arch: None)
     monkeypatch.setattr(
-        "reverse_reap.causal.instrument_qwen35",
+        "reverse_reap.causal.intervene_qwen35",
         lambda architecture, masked=None: contextlib.nullcontext(),
     )
 
@@ -369,9 +369,9 @@ def test_generation_determinism_pregate(tmp_path):
 def test_instrument_noop_uses_empty_mask_and_records_zero_experts(tmp_path, monkeypatch):
     """c0-noop-masked: the intervention path with an empty mask is a numeric no-op.
 
-    The instrumentation wrapper must be entered with masked=frozenset() (which
-    instrument_qwen35 treats as a transparent passthrough) and the record must
-    attribute zero masked experts, so the pre-gate can compare it against
+    The optimized intervention wrapper must be entered with masked=frozenset()
+    (which intervene_qwen35 treats as a transparent passthrough) and the record
+    must attribute zero masked experts, so the pre-gate can compare it against
     c0-baseline-a to prove the wrapper itself cannot perturb generation.
     """
     pytest.importorskip("torch")
@@ -390,7 +390,7 @@ def test_instrument_noop_uses_empty_mask_and_records_zero_experts(tmp_path, monk
     monkeypatch.setattr(
         "reverse_reap.causal.load_donor", lambda *a, **k: (_FakeModel(), _FakeTokenizer())
     )
-    monkeypatch.setattr("reverse_reap.causal.instrument_qwen35", recording_instrument)
+    monkeypatch.setattr("reverse_reap.causal.intervene_qwen35", recording_instrument)
     config = load_config(Path(__file__).parents[1] / "configs" / "pinned-3090-bf16-gen.yaml")
     manifest = _validation_manifest(tmp_path)
 

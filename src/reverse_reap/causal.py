@@ -14,7 +14,7 @@ import numpy as np
 from reverse_reap.config import ExperimentConfig
 from reverse_reap.datasets import NormalizedSample, balanced_subset, load_manifest
 from reverse_reap.evaluator import EvaluationResult, evaluate_java, evaluate_python
-from reverse_reap.instrumentation import instrument_qwen35
+from reverse_reap.instrumentation import intervene_qwen35
 from reverse_reap.qwen35 import inspect_qwen35_moe
 from reverse_reap.runtime import load_donor, validate_donor_contract
 
@@ -153,9 +153,12 @@ def generate_condition(
     produce generations; ``score_condition`` completes the records on a
     CPU host that has the pinned evaluator image.
 
-    ``instrument_noop`` runs the intervention path with an empty mask — a
-    numerically transparent no-op used to prove the instrumentation wrapper
-    itself cannot perturb generation (no-op equivalence gate).
+    ``instrument_noop`` runs the optimized intervention-only path with an empty
+    mask — a numerically transparent no-op used to prove the intervention
+    wrapper itself cannot perturb generation (no-op equivalence gate).
+    Causal generation uses :func:`intervene_qwen35` (native fused forward
+    with zeroed router weights, no telemetry side path); the slow
+    telemetry/replay path is preserved for capture and Gate A only.
     """
     masked = load_expert_set(expert_manifest) if expert_manifest else frozenset()
     samples = [sample for sample in load_manifest(dataset_manifest) if sample.split == split]
@@ -167,10 +170,10 @@ def generate_condition(
     for sample in samples:
         started = time.monotonic()
         if masked:
-            with instrument_qwen35(architecture, masked=masked):
+            with intervene_qwen35(architecture, masked=masked):
                 response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
         elif instrument_noop:
-            with instrument_qwen35(architecture, masked=frozenset()):
+            with intervene_qwen35(architecture, masked=frozenset()):
                 response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
         else:
             response, generated_tokens, truncated = _generate(model, tokenizer, sample, config)
