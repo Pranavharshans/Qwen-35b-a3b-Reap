@@ -78,7 +78,7 @@ def predict_batch_safe(
     ratio = n_next / n_prev
     direction = "same-size" if ratio == 1 else ("scale-down" if ratio < 1 else "scale-up")
     needs: dict[int, float] = {}
-    for gpu, total in total_per_gpu.items():
+    for gpu in total_per_gpu:
         static = static_per_gpu.get(gpu, 0)
         prev = prev_peaks.get(gpu, static)
         dynamic = max(prev - static, 0)
