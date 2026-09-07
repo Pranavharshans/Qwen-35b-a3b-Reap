@@ -83,7 +83,7 @@ def test_pro6000_profile_rejects_old_torch_and_wrong_gpu():
     assert any("90 GiB" in error for error in errors)
     assert any("12.0" in error for error in errors)
     assert any("2.11" in error for error in errors)
-    assert any("120 GiB" in error for error in errors)
+    assert any("20 GiB" in error for error in errors)
 
 
 def test_default_profile_preserves_4x3090_contract():

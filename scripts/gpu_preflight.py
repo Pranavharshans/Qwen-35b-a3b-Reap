@@ -70,8 +70,15 @@ def validate(report: dict, profile: str = "4x3090") -> list[str]:
         cuda_runtime = str(report.get("cuda_runtime", ""))
         if "12.8" not in cuda_runtime:
             errors.append(f"torch 2.11+cu128 requires CUDA runtime 12.8, found {cuda_runtime}")
-        if report["disk_free_bytes"] < 120 * 1024**3:
-            errors.append("less than 120 GiB disk is free")
+        # Disk gate is sized for a run with weights PRE-STAGED and verified:
+        # 71.9 GB weights + ~15 GB venv live outside the run's own footprint,
+        # and the run itself (150 baseline/intervention/control generations,
+        # checkpoints, heartbeats, reports) needs <3 GB. 20 GiB free is 6x+
+        # that need. (A 120 GiB gate is unsatisfiable on the approved ~150 GB
+        # allocation once weights are staged, and would only fit a flow that
+        # downloads weights inside the run.)
+        if report["disk_free_bytes"] < 20 * 1024**3:
+            errors.append("less than 20 GiB disk is free")
     elif profile == "4x3090":
         if report["gpu_count"] != 4:
             errors.append(f"expected exactly 4 GPUs, found {report['gpu_count']}")
