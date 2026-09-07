@@ -38,10 +38,23 @@ D-engagement (every ref differs from B, frozen manifest verified), C-vs-D
 agreement reported (informational: grouped_mm-vs-eager numerics may diverge;
 semantic equivalence is proven by unit tests within BF16_TOLERANCE).
 
-VRAM guard: per-GPU predicted peak = static post-load usage + measured
-dynamic x (n_next/n_prev) + 2 GiB, must stay <= 0.92 x per-GPU total on
-EVERY GPU. OOM is caught, cleared safely, recorded; larger batch stages are
-then skipped. A first-chunk NaN/vocab check guards every output.
+VRAM guard (fixed 2026-09-07, pure logic in src/reverse_reap/bench_guard.py):
+pre-attempt prediction is direction-aware (nearest completed batch in EITHER
+direction; ties resolve to the larger n so scaling down overpredicts) and
+predicts only the dynamic component against free memory minus one explicit
+1 GiB margin. The 92% ceiling on MEASURED peaks is UNCHANGED and governs the
+batch-selection verdict below. OOM is caught, cleared safely, recorded; an
+OOM at batch n skips larger batches only (smaller batches may still be
+attempted). A first-chunk NaN/vocab check guards every output.
+
+Batch-selection verdict: among ok sel-int batches (descending), the largest
+with measured peak <= 0.92 x physical on every GPU, conservative (p90-based)
+rate >= ~3.4 spm, no-op equivalence PASS, repeat determinism PASS, and a
+passing --layer-diagnostic report (scripts/validate_layer_local_deltas.py
+output) is SELECTed; otherwise the report records NO BATCH QUALIFIES.
+--no-oracle-probe skips the bounded slow-oracle probe (the full-model oracle
+result and its 0.0625 threshold are preserved as-is; the layer-local
+diagnostic supersedes it as the equivalence evidence).
 
 Hard cap: --deadline-seconds (default 5400) with a teardown reserve.
 """
@@ -64,6 +77,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+from reverse_reap.bench_guard import blocking_oom, predict_batch_safe
 from reverse_reap.causal import load_expert_set
 from reverse_reap.config import load_config
 from reverse_reap.datasets import load_manifest
@@ -381,6 +395,15 @@ def main() -> int:
     parser.add_argument("--expect-gpu-count", type=int, default=4)
     parser.add_argument("--expect-gpu-name", type=str, default="3090")
     parser.add_argument("--min-disk-gib", type=float, default=240.0)
+    parser.add_argument("--oracle-probe", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="run the bounded slow-oracle probe (default on; "
+                             "--no-oracle-probe skips it, preserving the old "
+                             "result and threshold untouched)")
+    parser.add_argument("--layer-diagnostic", type=Path, default=None,
+                        help="layer-delta-probe.json from "
+                             "validate_layer_local_deltas.py; incorporated "
+                             "into the batch-selection verdict when present")
     args = parser.parse_args()
 
     batches = sorted(set(args.batches))
@@ -692,34 +715,23 @@ def main() -> int:
         return rows
 
     def vram_guard(n_next: int, need_remaining: float) -> tuple[bool, str]:
-        """Predict per-GPU peak for n_next from the largest completed smaller n."""
-        if remaining() < need_remaining:
-            return False, f"remaining {remaining():.0f}s < {need_remaining}s needed"
-        ceiling = min(per_gpu_total.values())
-        prior = [(n, peaks) for (st, (n, peaks)) in throughput_peaks.items()
-                 if stage_status.get(st) == "ok" and n < n_next]
-        if not prior:
-            return False, "no completed smaller-batch stage to extrapolate from"
-        n_prev, prev_peaks = max(prior, key=lambda x: x[0])
-        preds = {}
-        for g in range(n_gpus):
-            stat = static_per_gpu.get(g, 0)
-            prev = prev_peaks.get(g, stat)
-            dyn = max(prev - stat, 0)
-            preds[g] = stat + dyn * (n_next / n_prev) + 2048  # 2 GiB guard
-        worst_gpu = max(preds, key=lambda g: preds[g])
-        ok = preds[worst_gpu] <= int(ceiling * 0.92)
-        return ok, (
-            f"predicted GPU{worst_gpu} {preds[worst_gpu]:.0f} MiB vs ceiling "
-            f"{int(ceiling * 0.92)} (static {static_per_gpu.get(worst_gpu)}, "
-            f"prev peak {prev_peaks.get(worst_gpu)} @ n={n_prev}, "
-            f"scale x{n_next / n_prev:.1f})")
+        """Delegate to the direction-aware guard (bench_guard, unit-tested)."""
+        completed = [(n, stage_status.get(st, ""), peaks)
+                     for st, (n, peaks) in throughput_peaks.items()]
+        return predict_batch_safe(
+            n_next, completed=completed, static_per_gpu=static_per_gpu,
+            total_per_gpu=per_gpu_total, remaining_seconds=remaining(),
+            need_remaining_seconds=need_remaining)
 
     def prior_oom(n_next: int) -> str | None:
-        for st, (n, _peaks) in throughput_peaks.items():
-            if stage_status.get(st) == "oom" and n < n_next:
-                return f"OOM already occurred at n={n} ({st})"
-        return None
+        completed = [(n, stage_status.get(st, ""), peaks)
+                     for st, (n, peaks) in throughput_peaks.items()]
+        hit = blocking_oom(n_next, completed=completed)
+        if hit is None:
+            return None
+        stages = sorted(st for st, (n, _p) in throughput_peaks.items()
+                        if stage_status.get(st) == "oom")
+        return f"{hit} ({stages[0] if stages else 'unknown stage'})"
 
     def stage_name(arm: str, n: int) -> str:
         return f"{arm}-B{n}"
@@ -809,23 +821,19 @@ def main() -> int:
     try:
         # ---------- Ladder largest-first: B8 decides; B1 needs 1500 s left -----
         ordered_batches = sorted(batches, reverse=True)
-        for position, n in enumerate(ordered_batches):
+        for n in ordered_batches:
             floor = 1500.0 if n == 1 else 420.0
-            if position > 0:
-                safe, reason = vram_guard(n, floor)
-                oom = prior_oom(n)
-                record(f"B{n}-guard", {"safe": safe and oom is None,
-                                        "reason": reason if oom is None else f"{reason}; {oom}"})
-                if not safe or oom is not None:
-                    for arm in ("native", "noop-int", "sel-int"):
-                        stage_status[stage_name(arm, n)] = "skipped"
-                    continue
-            else:
-                record(f"B{n}-guard", {
-                    "safe": True,
-                    "reason": "first (largest) batch: prefill-probe OOM catch + per-chunk "
-                              "OOM catch substitute for the extrapolating guard",
-                })
+            # The guard itself approves the first batch (nothing to extrapolate
+            # from; the prefill-probe + per-chunk OOM catches apply instead),
+            # so every position goes through the same call.
+            safe, reason = vram_guard(n, floor)
+            oom = prior_oom(n)
+            record(f"B{n}-guard", {"safe": safe and oom is None,
+                                    "reason": reason if oom is None else f"{reason}; {oom}"})
+            if not safe or oom is not None:
+                for arm in ("native", "noop-int", "sel-int"):
+                    stage_status[stage_name(arm, n)] = "skipped"
+                continue
             for arm in ("native", "noop-int", "sel-int"):
                 if arm not in args.arms:
                     continue
@@ -835,7 +843,11 @@ def main() -> int:
         probe_entry: dict = {}
         sel_ok = [n for n in ordered_batches
                   if stage_status.get(stage_name("sel-int", n)) == "ok"]
-        if sel_ok and remaining() > 600:
+        if not args.oracle_probe:
+            report["validations"]["bounded_oracle_agreement"] = (
+                "NOT RUN (skipped via --no-oracle-probe; prior result and "
+                f"{ORACLE_BF16_TOLERANCE} threshold preserved)")
+        elif sel_ok and remaining() > 600:
             probe_entry = run_oracle_probe([refs[0], refs[2]])
             if probe_entry.get("status") == "ok":
                 report["validations"]["bounded_oracle_agreement"] = (
@@ -852,35 +864,39 @@ def main() -> int:
         else:
             report["validations"]["bounded_oracle_agreement"] = "NOT RUN (no ok sel-int stage)"
 
-        # ---------- Best-batch determinism repeat (sel-int, largest ok n) ----------
-        repeat_n = None
-        for n in sorted(batches, reverse=True):
-            if stage_status.get(stage_name("sel-int", n)) == "ok":
-                repeat_n = n
-                break
-        if repeat_n is None:
+        # ---------- Per-batch determinism repeats (sel-int, every ok n) ----------
+        repeat_ns = [n for n in sorted(batches, reverse=True)
+                     if stage_status.get(stage_name("sel-int", n)) == "ok"]
+        repeat_arm = "sel-int"
+        if not repeat_ns:
             for n in sorted(batches, reverse=True):
                 if stage_status.get(stage_name("noop-int", n)) == "ok":
-                    repeat_n = n
+                    repeat_ns = [n]
+                    repeat_arm = "noop-int"
                     break
-        repeat_arm = "sel-int" if any(
-            stage_status.get(stage_name("sel-int", n)) == "ok" for n in batches
-        ) else "noop-int"
-        if repeat_n is not None:
-            base_rows = load_stage_rows(stage_name(repeat_arm, repeat_n),
-                                        samples_for(repeat_n))
-            repeat_rows = run_stage(f"repeat-{repeat_arm}-B{repeat_n}",
-                                    samples_for(repeat_n), repeat_n, repeat_arm,
+        for n in repeat_ns:
+            base_rows = load_stage_rows(stage_name(repeat_arm, n), samples_for(n))
+            repeat_rows = run_stage(f"repeat-{repeat_arm}-B{n}",
+                                    samples_for(n), n, repeat_arm,
                                     min_remaining=420)
-            if repeat_rows and stage_status.get(f"repeat-{repeat_arm}-B{repeat_n}") != "skipped":
+            key = f"determinism_repeat_B{n}"
+            if repeat_rows and stage_status.get(f"repeat-{repeat_arm}-B{n}") != "skipped":
                 ok, bad = _token_identical(
-                    repeat_rows, base_rows, [s.sample_id for s in samples_for(repeat_n)])
-                report["validations"]["internal_determinism_repeat"] = (
+                    repeat_rows, base_rows, [s.sample_id for s in samples_for(n)])
+                report["validations"][key] = (
                     "PASS token-identical" if ok else f"FAIL: {bad[:6]}")
-                _chunk_frozen(stage_name(repeat_arm, repeat_n),
-                              f"repeat-{repeat_arm}-B{repeat_n}", report, output_dir)
+                # Frozen-batching check per repeated n; the largest keeps the
+                # Phase-1 key for report comparability.
+                _chunk_frozen(stage_name(repeat_arm, n),
+                              f"repeat-{repeat_arm}-B{n}", report, output_dir,
+                              key=None if n != repeat_ns[0]
+                              else "batching_frozen",
+                              extra_key=f"batching_frozen_B{n}")
             else:
-                report["validations"]["internal_determinism_repeat"] = "NOT RUN (stage skipped)"
+                report["validations"][key] = "NOT RUN (stage skipped)"
+        if repeat_ns:
+            report["validations"]["internal_determinism_repeat"] = report["validations"][
+                f"determinism_repeat_B{repeat_ns[0]}"]
         else:
             report["validations"]["internal_determinism_repeat"] = "NOT RUN (no ok stage)"
 
@@ -897,11 +913,109 @@ def main() -> int:
             else:
                 report["validations"][key] = "NOT RUN (stage skipped)"
 
+        # ---------- Batch-selection verdict (bounded-check decision rule) ----------
+        layer_diag: dict = {}
+        if args.layer_diagnostic is not None:
+            if args.layer_diagnostic.exists():
+                try:
+                    layer_diag = json.loads(args.layer_diagnostic.read_text())
+                except Exception as exc:
+                    layer_diag = {"load_error": str(exc)[:160]}
+            else:
+                layer_diag = {"load_error": f"missing: {args.layer_diagnostic}"}
+        layer_ok = (layer_diag.get("status") == "pass"
+                    and layer_diag.get("passed") is True)
+        ceiling = min(per_gpu_total.values())
+        vram_cell = int(ceiling * 0.92)
+        selection: dict[str, Any] = {}
+        for n in sorted(batches, reverse=True):
+            stage = stage_name("sel-int", n)
+            entry_path = output_dir / f"stage-{stage}.json"
+            checks: dict[str, bool] = {}
+            detail: dict[str, Any] = {}
+            if stage_status.get(stage) == "ok" and entry_path.exists():
+                entry = json.loads(entry_path.read_text())
+                peaks = {int(k): v for k, v in
+                         (entry.get("peak_vram_mib_per_gpu") or {}).items()}
+                peak_max = max(peaks.values()) if peaks else None
+                p90 = entry.get("p90_latency_seconds")
+                conserv_spm = (60.0 / p90) if p90 else None
+                checks = {
+                    "no_oom_or_error": True,
+                    "vram_peak_within_92pct": peak_max is not None
+                    and peak_max <= vram_cell,
+                    "conservative_spm_at_least_3_4": conserv_spm is not None
+                    and conserv_spm >= 3.4,
+                    "noop_equiv": report["validations"].get(
+                        f"noop_equals_native_B{n}", "").startswith("PASS"),
+                    "determinism": report["validations"].get(
+                        f"determinism_repeat_B{n}", "").startswith("PASS"),
+                    "layer_diagnostic": layer_ok,
+                }
+                detail = {"peak_max_mib": peak_max,
+                          "conservative_spm": round(conserv_spm, 3)
+                          if conserv_spm is not None else None}
+            qualifies = bool(checks) and all(checks.values())
+            selection[f"B{n}"] = {"checks": checks, "detail": detail,
+                                  "qualifies": qualifies}
+        selected = max(
+            (int(name[1:]) for name, info in selection.items() if info["qualifies"]),
+            default=None)
+        if selected is not None:
+            info = selection[f"B{selected}"]
+            report["validations"]["batch_selection"] = (
+                f"SELECT B{selected}: peak {info['detail']['peak_max_mib']} MiB "
+                f"<= {vram_cell}, conserv {info['detail']['conservative_spm']} spm, "
+                "noop-equiv/determinism/layer-diagnostic PASS")
+        else:
+            failed = {name: [c for c, ok in info["checks"].items() if not ok]
+                      for name, info in selection.items() if info["checks"]}
+            report["validations"]["batch_selection"] = (
+                "NO BATCH QUALIFIES"
+                + (f": {failed}" if failed else " (no ok sel-int stage)")
+                + ("; layer-diagnostic NOT incorporated "
+                   f"({layer_diag.get('load_error', 'not provided')})"
+                   if not layer_ok and args.layer_diagnostic is None
+                   else ""))
+        record("batch-selection", {
+            "selected_batch": selected,
+            "ceiling_92pct_mib": vram_cell,
+            "conservative_spm_floor": 3.4,
+            "layer_diagnostic": {
+                "path": str(args.layer_diagnostic)
+                if args.layer_diagnostic is not None else None,
+                "status": layer_diag.get("status"),
+                "passed": layer_diag.get("passed"),
+                "load_error": layer_diag.get("load_error"),
+            },
+            "batches": selection,
+        })
+
+        # ---------- Decision batch: selected, else largest ok (fallback) ----------
+        decision_n = selected
+        if decision_n is None:
+            for n in sorted(batches, reverse=True):
+                if stage_status.get(stage_name("sel-int", n)) == "ok":
+                    decision_n = n
+                    break
+        if decision_n is None:
+            for n in sorted(batches, reverse=True):
+                if stage_status.get(stage_name("noop-int", n)) == "ok":
+                    decision_n = n
+                    break
+        decision_has_sel = (
+            decision_n is not None
+            and stage_status.get(stage_name("sel-int", decision_n)) == "ok")
+
         # ---------- D-engagement: sel-int differs from noop-int ----------
-        if repeat_n is not None:
-            d_rows = load_stage_rows(stage_name("sel-int", repeat_n), samples_for(repeat_n))
-            b_rows = load_stage_rows(stage_name("noop-int", repeat_n), samples_for(repeat_n))
-            ref_ids = [s.sample_id for s in samples_for(repeat_n) if s.sample_id in set(REF_IDS)]
+        if decision_has_sel:
+            assert decision_n is not None
+            d_rows = load_stage_rows(stage_name("sel-int", decision_n),
+                                     samples_for(decision_n))
+            b_rows = load_stage_rows(stage_name("noop-int", decision_n),
+                                     samples_for(decision_n))
+            ref_ids = [s.sample_id for s in samples_for(decision_n)
+                       if s.sample_id in set(REF_IDS)]
             unchanged = [rid for rid in ref_ids
                          if rid in d_rows and rid in b_rows
                          and d_rows[rid]["response"] == b_rows[rid]["response"]]
@@ -915,9 +1029,11 @@ def main() -> int:
             report["validations"]["selected_engagement"] = "NOT RUN (no ok stage)"
 
         # ---------- Partial-final-batch + exact-resume ----------
-        if repeat_n is not None:
-            part_a = run_stage("partial-a", partial5, repeat_n, "noop-int", min_remaining=480)
-            part_b = run_stage("partial-b", partial5, repeat_n, "noop-int", min_remaining=480)
+        if decision_n is not None:
+            part_a = run_stage("partial-a", partial5, decision_n, "noop-int",
+                               min_remaining=480)
+            part_b = run_stage("partial-b", partial5, decision_n, "noop-int",
+                               min_remaining=480)
             if part_a and part_b and stage_status.get("partial-a") != "skipped" \
                     and stage_status.get("partial-b") != "skipped":
                 ok, bad = _token_identical(part_a, part_b, [s.sample_id for s in partial5])
@@ -1015,13 +1131,17 @@ def main() -> int:
     return 0
 
 
-def _chunk_frozen(stage_a: str, stage_b: str, report: dict, output_dir: Path) -> None:
+def _chunk_frozen(stage_a: str, stage_b: str, report: dict, output_dir: Path,
+                  key: str | None = "batching_frozen",
+                  extra_key: str | None = None) -> None:
     """Gate: identical membership/order/padding/attention masks across stages."""
+    target_keys = [k for k in (key, extra_key) if k is not None] or ["batching_frozen"]
     try:
         a = json.loads((output_dir / f"stage-{stage_a}.json").read_text()).get("chunk_manifest", [])
         b = json.loads((output_dir / f"stage-{stage_b}.json").read_text()).get("chunk_manifest", [])
     except Exception as exc:
-        report["validations"]["batching_frozen"] = f"UNKNOWN: {exc}"
+        for target in target_keys:
+            report["validations"][target] = f"UNKNOWN: {exc}"
         return
     problems: list[str] = []
     for ca, cb in zip(a, b, strict=False):
@@ -1039,9 +1159,10 @@ def _chunk_frozen(stage_a: str, stage_b: str, report: dict, output_dir: Path) ->
                 problems.append(f"chunk {ca.get('chunk')}: pad id differs")
             if ca.get("prompt_width") != cb.get("prompt_width"):
                 problems.append(f"chunk {ca.get('chunk')}: prompt width differs")
-    report["validations"]["batching_frozen"] = (
-        "PASS: membership, ordering, padding and attention masks frozen"
-        if not problems else f"FAIL: {problems[:4]}")
+    verdict = ("PASS: membership, ordering, padding and attention masks frozen"
+               if not problems else f"FAIL: {problems[:4]}")
+    for target in target_keys:
+        report["validations"][target] = verdict
 
 
 if __name__ == "__main__":
