@@ -19,3 +19,29 @@ def test_run_id_separates_thinking_condition() -> None:
     assert "-direct-" in direct.resolve_run_id("a" * 40, now)
     assert "-think-" in thinking.resolve_run_id("a" * 40, now)
     assert direct.fingerprint() != thinking.fingerprint()
+
+
+def test_batch_size_allows_only_qualified_sizes() -> None:
+    from pydantic import ValidationError
+
+    from reverse_reap.config import RuntimeConfig
+
+    base = {
+        "seed": 20260903,
+        "deterministic": True,
+        "max_input_tokens": 1024,
+        "max_new_tokens": 1024,
+        "enable_thinking": False,
+        "use_cache": True,
+        "speculative_decoding": False,
+    }
+    assert RuntimeConfig(batch_size=1, **base).batch_size == 1
+    # B8 admitted only via the PRO 6000 benchmark qualification.
+    assert RuntimeConfig(batch_size=8, **base).batch_size == 8
+    for bad in (0, 2, 4, 16):
+        try:
+            RuntimeConfig(batch_size=bad, **base)
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError(f"batch_size={bad} must be rejected")

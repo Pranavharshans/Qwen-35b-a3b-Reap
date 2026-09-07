@@ -36,8 +36,15 @@ class RuntimeConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_low_cost_primary(self) -> RuntimeConfig:
-        if self.batch_size != 1:
-            raise ValueError("v0 requires batch_size=1 until the GPU pilot passes")
+        # B1 is the universal default. B8 is admitted ONLY because the
+        # 2026-09-07 RTX PRO 6000 benchmark (bench-pro6000-b8-20260907)
+        # proved left-padded batched generation token-identical to B1
+        # (noop-equiv PASS, repeat-determinism PASS, batching-frozen PASS)
+        # with peak VRAM inside the 92% ceiling; the production B8 run
+        # re-proves equivalence in its own pre-gate before any
+        # intervention generation. No other batch size is qualified.
+        if self.batch_size not in (1, 8):
+            raise ValueError("v0 requires batch_size=1 (or 8 on the B8-qualified PRO 6000 path)")
         if not self.enable_thinking and self.max_new_tokens > 4096:
             raise ValueError("thinking-disabled v0 runs cap max_new_tokens at 4096")
         return self
