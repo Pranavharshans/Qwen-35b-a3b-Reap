@@ -8,17 +8,24 @@ run, changes nothing frozen. Reuses the EXACT production paths (load_donor,
 validate_donor_contract, the pinned gen config's runtime parameters,
 load_expert_set, _generate's decoding parameters).
 
-Four arms, same samples and batching within each batch size:
+Three arms, same samples and batching within each batch size:
   A. native      — no wrapper (uninstrumented baseline).
   B. noop-int    — ``intervene_qwen35`` with an empty mask (must equal A).
-  C. sel-slow    — ``instrument_qwen35`` with the frozen top-four (old
-                   telemetry/replay implementation, reference only).
   D. sel-int     — ``intervene_qwen35`` with the frozen top-four (new path).
 
-A/B/D run at every requested batch size; C runs only at the largest batch
-size (agreement basis — old-implementation throughput is already on record
-in bench-20260904 / bench-3090-instr-20260906 / pro6000 archives, which are
-PRESERVED as the old-implementation evidence and never overwritten).
+The slow telemetry/replay oracle (``instrument_qwen35``) is restricted to a
+BOUNDED probe — prefill logits on two reference samples plus a 32-token
+short generation on one — reporting max absolute/relative error against the
+optimized path. Full slow generations are never run: old-implementation
+throughput is already on record in the bench-20260904 /
+bench-3090-instr-20260906 / pro6000 archives, which are PRESERVED as the
+old-implementation evidence and never overwritten.
+
+Stage priority (largest batch first — B8 decides, B1 runs only if the window
+remains):
+  1. optimized native/no-op/selected at the largest batch
+  2. bounded oracle probe + repeat determinism + partial-resume checks
+  3. smaller batches in descending order (B1 requires 1500 s remaining)
 
 Phase plan (separate launches, same script):
   Phase 1: 4x RTX 3090, --batches 1 4 8 (decisive).
@@ -46,6 +53,7 @@ import contextlib
 import json
 import os
 import platform
+import shutil
 import statistics
 import subprocess
 import sys
@@ -68,6 +76,12 @@ from reverse_reap.qwen35 import inspect_qwen35_moe
 from reverse_reap.runtime import load_donor, validate_donor_contract
 
 PINNED_REVISION = "59d61f3ce65a6d9863b86d2e96597125219dc754"
+
+# Bound for optimized-vs-slow-oracle prefill-logit agreement. BF16 epsilon is
+# 2**-8 (~0.0039); 0.0625 (16x eps) absorbs fp32 reduction-ordering drift of
+# the grouped_mm-vs-eager accumulation across 40 layers. Same bound as the
+# GPU unit tests (tests/test_intervention.py::BF16_TOLERANCE).
+ORACLE_BF16_TOLERANCE = 0.0625
 
 # Saved 4x3090 benchmark selection, in its recorded manifest order
 # (runs/bench-20260904/stage-sample-selection.json, archive B-final;
@@ -103,7 +117,7 @@ B8_EXTRA = [
 ]
 PARTIAL_EXTRA = "bc5e6501895b5fd99348f4bd"
 
-ARMS = ("native", "noop-int", "sel-int", "sel-slow")
+ARMS = ("native", "noop-int", "sel-int")
 
 
 class BenchStop(RuntimeError):
@@ -364,10 +378,12 @@ def main() -> int:
                         help="all-inclusive host rate used for projections")
     parser.add_argument("--setup-minutes", type=float, default=25.0,
                         help="one-time setup burn already elapsed before this run")
+    parser.add_argument("--expect-gpu-count", type=int, default=4)
+    parser.add_argument("--expect-gpu-name", type=str, default="3090")
+    parser.add_argument("--min-disk-gib", type=float, default=240.0)
     args = parser.parse_args()
 
     batches = sorted(set(args.batches))
-    largest_n = max(batches)
     deadline = time.monotonic() + args.deadline_seconds
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -439,6 +455,27 @@ def main() -> int:
         "transformers_version": __import__("transformers").__version__,
         "python": platform.python_version(),
     }
+    # ---------- host preflight: GPU identity + usable storage (fail closed) ----
+    if n_gpus != args.expect_gpu_count or not all(
+        args.expect_gpu_name in name for name in props["gpu_names"]
+    ):
+        raise BenchStop(
+            f"host is not {args.expect_gpu_count}x{args.expect_gpu_name}: "
+            f"count={n_gpus} names={props['gpu_names']}"
+        )
+    disk = shutil.disk_usage(output_dir)
+    record("host-preflight", {
+        "gpu_count": n_gpus, "gpu_names": props["gpu_names"],
+        "vram_total_mib_per_gpu": per_gpu_total,
+        "disk_total_gib": round(disk.total / 2**30, 1),
+        "disk_free_gib": round(disk.free / 2**30, 1),
+    })
+    if disk.total < args.min_disk_gib * 2**30:
+        raise BenchStop(
+            f"usable storage below {args.min_disk_gib} GiB: "
+            f"{round(disk.total / 2**30, 1)} GiB"
+        )
+
     if not (output_dir / "stage-model-load.json").exists():
         record("model-load", props)
         driver = subprocess.run(
@@ -687,11 +724,95 @@ def main() -> int:
     def stage_name(arm: str, n: int) -> str:
         return f"{arm}-B{n}"
 
+    def run_oracle_probe(probe_samples: list, short_tokens: int = 32) -> dict:
+        """Bounded slow-oracle comparison: prefill logits + short generation.
+
+        One prefill forward per probe sample under each path plus a single
+        short generation — never full 1,024-token slow generations. Reports
+        max absolute/relative prefill-logit error, short-gen token agreement,
+        and masked-expert route hits from the slow path's observer.
+        """
+        import numpy as np
+
+        stage = "oracle-probe"
+        stage_path = output_dir / f"stage-{stage}.json"
+        if stage_path.exists():
+            entry = json.loads(stage_path.read_text())
+            report["stages"].append({"stage": stage, "resumed": True, **entry})
+            return entry
+        check_deadline(stage)
+        hits: dict[tuple[int, int], int] = {}
+
+        def observer(layer: int, batch: Any, _norms: Any) -> None:
+            for expert in np.unique(batch.indices.flatten()).tolist():
+                key = (layer, int(expert))
+                hits[key] = hits.get(key, 0) + int((batch.indices == expert).sum())
+
+        sampler.reset()
+        entry: dict[str, Any] = {"status": "ok"}
+        try:
+            max_abs = 0.0
+            max_rel = 0.0
+            denom_at_max = 0.0
+            with torch.inference_mode():
+                for sample in probe_samples:
+                    encoded = _encode_batch(tokenizer, [sample], config, model)
+                    ids, mask = encoded["input_ids"], encoded["attention_mask"]
+                    with intervene_qwen35(architecture, masked=masked_set):
+                        fast = model(input_ids=ids, attention_mask=mask,
+                                     use_cache=False).logits.float()
+                    with instrument_qwen35(architecture, masked=masked_set,
+                                          observer=observer):
+                        slow = model(input_ids=ids, attention_mask=mask,
+                                     use_cache=False).logits.float()
+                    sample_max = float((fast - slow).abs().amax().item())
+                    denom = float(slow.abs().amax().item())
+                    if sample_max > max_abs:
+                        max_abs = sample_max
+                        denom_at_max = denom
+                    if denom:
+                        max_rel = max(max_rel, sample_max / denom)
+                    del fast, slow
+            torch.cuda.empty_cache()
+            short_config = config.model_copy(update={
+                "runtime": config.runtime.model_copy(update={"max_new_tokens": short_tokens}),
+            })
+            with intervene_qwen35(architecture, masked=masked_set):
+                _, fast_ids, _ = _batch_generate(
+                    tokenizer, probe_samples[:1], short_config, model)
+            with instrument_qwen35(architecture, masked=masked_set):
+                _, slow_ids, _ = _batch_generate(
+                    tokenizer, probe_samples[:1], short_config, model)
+        except torch.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            entry = {"status": "oom", "passed": False,
+                     "error": "CUDA OOM in bounded probe — cleared safely"}
+            record(stage, entry)
+            return entry
+        masked_hits = {f"({layer},{expert})": hits.get((layer, expert), 0)
+                       for layer, expert in sorted(masked_set)}
+        entry.update({
+            "probe_samples": [s.sample_id for s in probe_samples],
+            "short_gen_tokens": short_tokens,
+            "max_abs_logit_diff": max_abs,
+            "denominator_abs_max": denom_at_max,
+            "max_rel_logit_diff": max_rel,
+            "tolerance": ORACLE_BF16_TOLERANCE,
+            "short_gen_token_identical": fast_ids == slow_ids,
+            "masked_expert_route_hits": masked_hits,
+            "passed": bool(max_abs <= ORACLE_BF16_TOLERANCE),
+            **sampler.snapshot(),
+        })
+        record(stage, entry)
+        return entry
+
     try:
-        # ---------- Ladder: native/noop-int/sel-int at every batch size ----------
-        for n in batches:
-            if n > min(batches):
-                safe, reason = vram_guard(n, 420)
+        # ---------- Ladder largest-first: B8 decides; B1 needs 1500 s left -----
+        ordered_batches = sorted(batches, reverse=True)
+        for position, n in enumerate(ordered_batches):
+            floor = 1500.0 if n == 1 else 420.0
+            if position > 0:
+                safe, reason = vram_guard(n, floor)
                 oom = prior_oom(n)
                 record(f"B{n}-guard", {"safe": safe and oom is None,
                                         "reason": reason if oom is None else f"{reason}; {oom}"})
@@ -699,34 +820,37 @@ def main() -> int:
                     for arm in ("native", "noop-int", "sel-int"):
                         stage_status[stage_name(arm, n)] = "skipped"
                     continue
+            else:
+                record(f"B{n}-guard", {
+                    "safe": True,
+                    "reason": "first (largest) batch: prefill-probe OOM catch + per-chunk "
+                              "OOM catch substitute for the extrapolating guard",
+                })
             for arm in ("native", "noop-int", "sel-int"):
                 if arm not in args.arms:
                     continue
-                run_stage(stage_name(arm, n), samples_for(n), n, arm, min_remaining=420)
+                run_stage(stage_name(arm, n), samples_for(n), n, arm, min_remaining=floor)
 
-        # ---------- sel-slow at the largest batch only (agreement basis) ----------
-        slow_rows: dict = {}
-        if "sel-slow" in args.arms and stage_status.get(stage_name("sel-int", largest_n)) == "ok":
-            import numpy as np
-
-            hits: dict[tuple[int, int], int] = {}
-
-            def observer(layer: int, batch: Any, _norms: Any) -> None:
-                experts_in_routes = np.unique(batch.indices.flatten())
-                for expert in experts_in_routes.tolist():
-                    key = (layer, int(expert))
-                    hits[key] = hits.get(key, 0) + int((batch.indices == expert).sum())
-
-            slow_rows = run_stage(
-                stage_name("sel-slow", largest_n), samples_for(largest_n),
-                largest_n, "sel-slow", observer=observer, min_remaining=600,
-            )
-            masked_hits = {f"({layer},{expert})": hits.get((layer, expert), 0)
-                           for layer, expert in sorted(masked_set)}
-            record("selected-route-hits", {
-                "masked_expert_route_hits": masked_hits,
-                "all_hit": all(v > 0 for v in masked_hits.values()),
-            })
+        # ---------- Bounded oracle probe (never full slow generations) ----------
+        probe_entry: dict = {}
+        sel_ok = [n for n in ordered_batches
+                  if stage_status.get(stage_name("sel-int", n)) == "ok"]
+        if sel_ok and remaining() > 600:
+            probe_entry = run_oracle_probe([refs[0], refs[2]])
+            if probe_entry.get("status") == "ok":
+                report["validations"]["bounded_oracle_agreement"] = (
+                    f"PASS: max_abs={probe_entry['max_abs_logit_diff']:.6f} "
+                    f"max_rel={probe_entry['max_rel_logit_diff']:.6f} "
+                    f"(tol {ORACLE_BF16_TOLERANCE}), short-gen identical="
+                    f"{probe_entry['short_gen_token_identical']}"
+                    if probe_entry.get("passed") else
+                    f"FAIL: max_abs={probe_entry['max_abs_logit_diff']:.6f} "
+                    f"exceeds tol {ORACLE_BF16_TOLERANCE}")
+            else:
+                report["validations"]["bounded_oracle_agreement"] = (
+                    f"FAIL: probe status={probe_entry.get('status')}")
+        else:
+            report["validations"]["bounded_oracle_agreement"] = "NOT RUN (no ok sel-int stage)"
 
         # ---------- Best-batch determinism repeat (sel-int, largest ok n) ----------
         repeat_n = None
@@ -789,23 +913,6 @@ def main() -> int:
                 else f"FAIL: unchanged={unchanged} missing={missing}")
         else:
             report["validations"]["selected_engagement"] = "NOT RUN (no ok stage)"
-
-        # ---------- C-vs-D agreement (informational) ----------
-        slow_stage = stage_name("sel-slow", largest_n)
-        fast_stage = stage_name("sel-int", largest_n)
-        if slow_rows and stage_status.get(slow_stage) == "ok" \
-                and stage_status.get(fast_stage) == "ok":
-            fast_rows = load_stage_rows(fast_stage, samples_for(largest_n))
-            agree, bad = _token_identical(
-                slow_rows, fast_rows, [s.sample_id for s in samples_for(largest_n)])
-            total = len(samples_for(largest_n))
-            report["validations"]["slow_vs_fast_agreement"] = (
-                f"REPORT: {total - len(bad)}/{total} token-identical "
-                f"({'identical' if agree else '; '.join(bad[:6])}); divergence, if any, is "
-                "grouped_mm-vs-eager numerics — semantic equivalence is proven by unit "
-                "tests within BF16_TOLERANCE")
-        else:
-            report["validations"]["slow_vs_fast_agreement"] = "NOT RUN (stage skipped)"
 
         # ---------- Partial-final-batch + exact-resume ----------
         if repeat_n is not None:
