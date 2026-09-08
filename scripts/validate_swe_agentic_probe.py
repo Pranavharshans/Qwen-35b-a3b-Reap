@@ -78,8 +78,18 @@ def validate(tasks: list[dict], probe_dir: Path, conditions: list[str]) -> dict:
             artifacts = state.get("artifacts", {})
             patch_info = artifacts.get("patch", {})
             patch_path = probe_dir / condition / sample_id / patch_info.get("path", "")
-            passed, reason = ((False, "no patch artifact") if not patch_path.exists()
-                              else check_patch(by_id[sample_id], patch_path.read_bytes()))
+            if state.get("status") != "COMPLETE" or not patch_path.is_file():
+                checks.append({
+                    "condition": condition, "sample_id": sample_id,
+                    "status": state.get("status"), "turns": state.get("turns"),
+                    "input_tokens": state.get("input_tokens"),
+                    "output_tokens": state.get("output_tokens"),
+                    "passed": False,
+                    "reason": ("no patch artifact: "
+                               + str(state.get("status", "unknown"))),
+                })
+                continue
+            passed, reason = check_patch(by_id[sample_id], patch_path.read_bytes())
             checks.append({
                 "condition": condition, "sample_id": sample_id,
                 "status": state.get("status"), "turns": state.get("turns"),
