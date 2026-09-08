@@ -1,0 +1,35 @@
+# Source-v4 production retrieval, B6 probe. Human-authorized 2026-09-08.
+# B8 failed memory (91.3GB/96%, OOM) on longest 2151-token prompt; preserved unchanged in
+# pinned-pro6000-bf16-gen-swefix-v4.yaml. This B6 variant is a new experimental configuration
+# with a new fingerprint and fresh immutable run ID. Keep 3072 in / 1024 out, BF16, greedy,
+# thinking disabled. Max 3 host-hours, max $4.00 additional spend, rate <=$1.60/hr, 120GB.
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 6
+  max_input_tokens: 3072
+  max_new_tokens: 1024
+  enable_thinking: false
+  use_cache: true
+  speculative_decoding: false
+budget:
+  max_gpu_hours: 3
+  max_cost_usd: 4.0
+  provider_rate_usd_per_hour: 1.6
+  storage_limit_gb: 120
+  deadline_utc: 2026-09-10T00:00:00Z
+datasets:
+  manifest: datasets/manifests/pilot-lengthmatched-swe-v4-probe.jsonl
+  split: pilot
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false

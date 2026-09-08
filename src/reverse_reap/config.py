@@ -42,9 +42,13 @@ class RuntimeConfig(StrictModel):
         # (noop-equiv PASS, repeat-determinism PASS, batching-frozen PASS)
         # with peak VRAM inside the 92% ceiling; the production B8 run
         # re-proves equivalence in its own pre-gate before any
-        # intervention generation. No other batch size is qualified.
-        if self.batch_size not in (1, 8):
-            raise ValueError("v0 requires batch_size=1 (or 8 on the B8-qualified PRO 6000 path)")
+        # intervention generation. B6/B4 are admitted ONLY for the
+        # human-authorized source-v4 3072-token probe after B8 OOMed
+        # (91.3GB/96%) on the longest 2151-token prompt; the probe uses
+        # the first passing batch for all four conditions with identical
+        # padding/ordering/chunks. No other batch size is qualified.
+        if self.batch_size not in (1, 4, 6, 8):
+            raise ValueError("v0 requires batch_size=1 (8/6/4 only on qualified PRO 6000 paths)")
         if not self.enable_thinking and self.max_new_tokens > 4096:
             raise ValueError("thinking-disabled v0 runs cap max_new_tokens at 4096")
         return self
