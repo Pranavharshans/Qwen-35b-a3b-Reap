@@ -143,6 +143,25 @@ def test_run_id_scopes_outputs_and_never_collides_with_previous_runs(tmp_path):
     assert str(tmp_path / "runs" / "fresh-run" / "out.txt") in state.output_hashes
 
 
+def test_directory_outputs_complete_without_file_hash(tmp_path):
+    report = tmp_path / "report.json"
+    cloned = tmp_path / "tasks-dir"
+    code = (
+        "from pathlib import Path\n"
+        f"Path({str(report)!r}).write_text('pinned')\n"
+        f"Path({str(cloned)!r}).mkdir(parents=True, exist_ok=True)\n"
+    )
+    item = task("with-dir", report)
+    item["command"] = [sys.executable, "-c", code]
+    item["outputs"] = [str(report), str(cloned)]
+    plan = write_plan(tmp_path, [item])
+    result = run_next(plan, config(), tmp_path / "state", run_id="fixture")
+    assert result["status"] == Status.COMPLETE
+    state = load_state(tmp_path / "state" / "with-dir.json")
+    assert state.output_hashes[str(report)]
+    assert str(cloned) not in state.output_hashes
+
+
 def test_scoped_paths_fail_closed_on_unresolved_variables(tmp_path):
     definition = task("scoped", tmp_path / "runs" / "${OTHER_VAR}" / "out.txt")
     plan = write_plan(tmp_path, [definition])

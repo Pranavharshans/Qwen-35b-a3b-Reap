@@ -74,6 +74,19 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def hash_output(path: Path) -> str | None:
+    """Content-hash a declared task output.
+
+    Only regular files are hashed. Directory outputs (e.g. the pinned
+    swebench-tasks clone, whose revisions are recorded in the task's own
+    hashed report file) are skipped: they pass the existence gate above
+    but have no single file digest. Returns None for non-files.
+    """
+    if not path.is_file():
+        return None
+    return file_sha256(path)
+
+
 @contextmanager
 def exclusive_run_lock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -386,7 +399,11 @@ def run_next(
             )
             state.transition(Status.FAILED_TERMINAL)
         else:
-            state.output_hashes = {str(item): file_sha256(item) for item in expanded_outputs}
+            state.output_hashes = {
+                str(item): digest
+                for item in expanded_outputs
+                if (digest := hash_output(item)) is not None
+            }
             state.consumed_gpu_hours = eligible.estimated_gpu_hours
             state.consumed_cost_usd = (
                 state.consumed_gpu_hours * config.budget.provider_rate_usd_per_hour
