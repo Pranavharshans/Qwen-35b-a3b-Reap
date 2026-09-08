@@ -97,10 +97,19 @@ def _adapt(
             "scorer": "exact_match",
         }
     if source.adapter == "swebench":
-        prompt = f"Repository: {row['repo']}\nIssue:\n{row['problem_statement']}"
+        prompt = (
+            f"Repository: {row['repo']}\nIssue:\n{row['problem_statement']}\n\n"
+            "Task: Provide a fix for the issue above as an applicable unified Git diff.\n"
+            "Output ONLY the raw unified diff (git diff format with ---/+++ headers "
+            "and @@ hunks) that applies to the repository state with "
+            "`git apply --check`.\n"
+            "Do NOT use Markdown fences, code blocks, or explanatory prose. "
+            "Do NOT include any text before or after the diff."
+        )
         return {
             **common,
             "prompt": prompt,
+            "prompt_template_version": "source-v2",
             "reference": row["patch"],
             "language": source.language or "mixed",
             "scorer": "swebench",

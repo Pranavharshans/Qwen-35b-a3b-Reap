@@ -66,6 +66,27 @@ def test_swebench_adapter_preserves_repository_issue_and_patch():
     assert result["scorer"] == "swebench"
 
 
+def test_swebench_adapter_v2_requires_raw_unified_diff():
+    result = _adapt(
+        source("swebench", stratum="repository-bug-repair", language="mixed"),
+        "b" * 40,
+        {
+            "instance_id": "project__repo-1",
+            "repo": "project/repo",
+            "problem_statement": "Fix the parser.",
+            "patch": "diff --git a/a.py b/a.py",
+        },
+        0,
+    )
+    assert result["prompt_template_version"] == "source-v2"
+    prompt = result["prompt"]
+    assert "unified Git diff" in prompt or "unified diff" in prompt
+    assert "git apply --check" in prompt
+    assert "Do NOT use Markdown fences" in prompt
+    assert "explanatory prose" in prompt
+    assert "```" not in prompt
+
+
 def test_humanevalpack_java_adapter_uses_live_schema_fields():
     result = _adapt(
         source("humanevalpack", language="java"),

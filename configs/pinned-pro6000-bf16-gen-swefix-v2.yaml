@@ -1,0 +1,63 @@
+# Causal-validation SWE-repair generation config — single RTX PRO 6000 96GB (sm_120), B8.
+# Repair scope: ONLY the SWE-bench prompt template (source-v1 -> source-v2, requiring
+# a raw applicable unified Git diff, no Markdown fences or prose) + its 32 manifest
+# prompts (8 validation rows regenerated). All frozen science UNCHANGED from
+# configs/pinned-pro6000-bf16-gen.yaml: same donor revision, BF16 precision,
+# tokenizer path, thinking disabled, decoding (greedy, 1024/1024 limits, use_cache
+# WITHIN each condition, no speculative decoding), seed, determinism, dataset
+# membership/sample splits (same 224 sample_ids, same splits), selected experts,
+# control manifests, intervention semantics, Gate B/D thresholds, scorer.
+# Governed deviations for this repair run (human-authorized 2026-09-08):
+#   - datasets.manifest points to datasets/manifests/pilot-lengthmatched-swe-v2.jsonl
+#     (192 non-SWE rows byte-identical to the original manifest; 32 SWE rows carry
+#     the source-v2 prompt; validation split still 50 samples: 42 reused + 8 regen).
+#   - budget: ONE GPU host, max 3 host-hours / $4.80 at ≤$1.60/h, 120 GB disk,
+#     covering the bounded probe + 208 corrected generations only (1,092 rows reused
+#     via hash-verified reuse manifest, never regenerated).
+#   - runtime.batch_size 8 preserved (B8-qualified path, re-gated by the probe's
+#     no-op/determinism invariants before the 208-row run).
+# Human approvals recorded: torch 2.11.0+cu128 runtime (sm_120 requires it),
+# B8 production generation, 120 GB disk, rate cap $1.60/h, 3 h / $4.80 ceiling.
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 8
+  max_input_tokens: 1024
+  max_new_tokens: 1024
+  enable_thinking: false
+  # ONLY difference from the B1 science path: chunked B8 generation uses the
+  # KV cache WITHIN each forward exactly as the benchmark-qualified path did.
+  # The deterministic baseline pair (c0-baseline-a vs c0-baseline-b) AND the
+  # no-op intervention equivalence (c0-noop-masked vs c0-baseline-a) both gate
+  # the run; if either check fails, the run terminates. HF generate() builds
+  # a fresh cache per call, so no cache ever spans samples, chunks, or
+  # conditions — cross-condition cache reuse is structurally impossible.
+  use_cache: true
+  speculative_decoding: false
+budget:
+  # Units: max_gpu_hours is SINGLE-GPU HOST WALL-HOURS on the RTX PRO 6000
+  # box. Hard ceiling for the repair run: probe + 208 corrected generations
+  # only (usable: 2.4 h / $3.84 under the 80% controller reserve of
+  # max_gpu_hours 3 / max_cost_usd 4.80 at $1.60/h). The 1,092 reused rows book
+  # zero GPU-host hours. SWE-bench scoring runs on the separately governed
+  # container-capable scoring host and is NOT booked against this budget.
+  max_gpu_hours: 3
+  max_cost_usd: 4.8
+  provider_rate_usd_per_hour: 1.6
+  storage_limit_gb: 120
+  deadline_utc: 2026-12-31T00:00:00Z
+datasets:
+  manifest: datasets/manifests/pilot-lengthmatched-swe-v2.jsonl
+  split: pilot
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false
