@@ -1,0 +1,33 @@
+# Source-v4 production retrieval: 3072 input / 1024 output. Human-authorized 2026-09-08.
+# New experimental configuration: new prompt-template version source-v4-production-retrieval,
+# new fingerprint, new immutable run ID required before launch. Preserves v2 failure unchanged.
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 8
+  max_input_tokens: 3072
+  max_new_tokens: 1024
+  enable_thinking: false
+  use_cache: true
+  speculative_decoding: false
+budget:
+  max_gpu_hours: 3
+  max_cost_usd: 4.8
+  provider_rate_usd_per_hour: 1.6
+  storage_limit_gb: 120
+  deadline_utc: 2026-09-10T00:00:00Z
+datasets:
+  manifest: datasets/manifests/pilot-lengthmatched-swe-v4-probe.jsonl
+  split: pilot
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false

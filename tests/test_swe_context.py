@@ -12,6 +12,7 @@ from reverse_reap.swe_context import (
     ContextError,
     build_context,
     digest,
+    extract_identifiers,
     render_prompt,
     safe_path,
     validate_prompt_contract,
@@ -113,3 +114,65 @@ def test_patch_checks_base_not_postfix_checkout(task):
     assert not check(task, patch.replace("return 1", "return 99"))[0]
     assert not check(task, "```diff\n" + patch + "```")[0]
     assert "POST_FIX_SECRET" in (Path(task["repo_dir"]) / "engine.py").read_text()
+
+
+def _fixture_repo(tmp_path, files):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(repo), *args]).decode().strip()
+    git("init", "-q")
+    git("config", "user.email", "fixture@example.invalid")
+    git("config", "user.name", "Fixture")
+    for rel, content in files.items():
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    git("add", ".")
+    git("commit", "-qm", "base")
+    return repo, git("rev-parse", "HEAD")
+
+
+def test_extract_identifiers_only_from_issue():
+    ids = extract_identifiers(
+        "Fix `Q` in django/db/models/query_utils.py: Q() & Exists raises TypeError")
+    assert "django/db/models/query_utils.py" in ids["explicit_paths"]
+    assert "query_utils.py" in ids["explicit_filenames"]
+    assert "TypeError" in ids["exceptions"]
+    assert "Q" in ids["backticked"] or "Q" in ids["symbols"]
+    assert "patch" not in ids and "FAIL_TO_PASS" not in ids
+
+
+def test_production_source_preferred_over_examples(tmp_path):
+    files = {
+        "pkg/core.py": "def widget():\n    return 1\n",
+        "examples/demo.py": "def widget():\n    return 1\n",
+        "docs/guide.py": "def widget():\n    return 1\n",
+    }
+    repo, base = _fixture_repo(tmp_path, files)
+    task = {"sample_id": "s", "source_id": "o__r-1", "repo": "owner/repo",
+            "base_commit": base, "problem_statement": "widget returns incorrect value",
+            "repo_dir": str(repo)}
+    ctx = build_context(task)
+    paths = [c["path"] for c in ctx["chunks"]]
+    assert paths == ["pkg/core.py"]
+    assert ctx["retrieval"]["rejected"].get("excluded_examples_galleries", 0) >= 1
+    assert all(c["score"] > 0 for c in ctx["chunks"])
+
+
+def test_exact_path_and_symbol_priority_deterministic(tmp_path):
+    files = {
+        "pkg/aaa.py": "def widget():\n    return 1\n",
+        "pkg/query_utils.py": "class Q:\n    pass\n",
+    }
+    repo, base = _fixture_repo(tmp_path, files)
+    task = {"sample_id": "s", "source_id": "o__r-1", "repo": "owner/repo",
+            "base_commit": base,
+            "problem_statement": "Fix Q in pkg/query_utils.py: Q() broken",
+            "repo_dir": str(repo)}
+    first = build_context(task)
+    second = build_context(task)
+    assert first == second
+    assert first["chunks"][0]["path"] == "pkg/query_utils.py"
+    assert first["chunks"][0]["tier"] in ("exact_path", "filename", "exact_symbol")
+    assert first["retrieval"]["candidates_considered"] >= 1
