@@ -32,7 +32,7 @@ class NormalizedSample(StrictModel):
     language: str | None = None
     prompt: str = Field(min_length=1)
     reference: str | None = None
-    scorer: Literal["exact_match", "unit_tests", "multiple_choice", "swebench"]
+    scorer: Literal["exact_match", "unit_tests", "multiple_choice", "swebench", "bugsinpy"]
     tests: str | None = None
     entry_point: str | None = None
     timeout_seconds: int = Field(default=10, ge=1, le=120)

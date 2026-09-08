@@ -90,11 +90,11 @@ def score_response(
             "program_sha256": result.program_sha256,
             "stderr_tail": result.stderr[-1000:],
         }
-    if sample.scorer == "swebench":
+    if sample.scorer in {"swebench", "bugsinpy"}:
         return {
             "scoreable": False,
             "passed": False,
-            "error": "requires the pinned SWE-bench repository harness stage",
+            "error": f"requires the pinned {sample.scorer} repository harness stage",
         }
     raise CausalError(f"unsupported scorer: {sample.scorer}")
 
@@ -377,7 +377,9 @@ def generate_condition_batched(
                 "completed_chunks": chunk_index,
                 "total_chunks": len(chunks),
                 "elapsed_seconds": round(elapsed, 1),
-                "samples_per_minute": round(done / (elapsed / 60), 3) if elapsed > 0 and done else 0.0,
+                "samples_per_minute": (
+                    round(done / (elapsed / 60), 3) if elapsed > 0 and done else 0.0
+                ),
                 "gpu_peak_mib": _gpu_peak_mib(),
                 "masked_experts": len(masked),
             },
