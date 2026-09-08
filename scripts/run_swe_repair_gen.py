@@ -18,7 +18,8 @@ Examples:
   probe (2 samples x 3 conditions):
     python scripts/run_swe_repair_gen.py --config ... --model-path /models/qwen \\
       --dataset-manifest datasets/manifests/pilot-lengthmatched-swe-v2.jsonl \\
-      --conditions configs/causal-pilot-conditions.json --condition-ids c0-baseline-a c0-noop-masked c2-selected \\
+      --conditions configs/causal-pilot-conditions.json \\
+      --condition-ids c0-baseline-a c0-noop-masked c2-selected \\
       --sample-ids-file /tmp/probe-ids.txt --output-dir .../probe --mode probe ...
   full 208 (8 samples x 26 conditions):
     python scripts/run_swe_repair_gen.py --config ... --model-path /models/qwen \\
@@ -36,6 +37,7 @@ import os
 import sys
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from reverse_reap.causal import _batched_generate
@@ -44,6 +46,7 @@ from reverse_reap.datasets import load_manifest
 from reverse_reap.instrumentation import intervene_qwen35
 from reverse_reap.qwen35 import inspect_qwen35_moe
 from reverse_reap.runtime import load_donor, validate_donor_contract
+from reverse_reap.swe_context import VERSION, digest, validate_prompt_contract
 
 
 def _atomic_write_jsonl(destination: Path, records: list[dict]) -> None:
@@ -71,11 +74,13 @@ def main() -> int:
     parser.add_argument("--fingerprint-path", type=Path, required=True)
     parser.add_argument("--run-id", default=os.environ.get("RUN_ID", "unscoped"))
     parser.add_argument("--mode", choices=["probe", "fix"], required=True)
+    parser.add_argument("--context-provenance", type=Path)
     args = parser.parse_args()
 
     config = load_config(args.config)
     spec = json.loads(args.conditions.read_text(encoding="utf-8"))
-    wanted_ids = [l.strip() for l in args.sample_ids_file.read_text().splitlines() if l.strip()]
+    wanted_ids = [line.strip() for line in args.sample_ids_file.read_text().splitlines()
+                  if line.strip()]
     if not wanted_ids:
         print("empty sample-ids file", file=sys.stderr)
         return 2
@@ -107,6 +112,34 @@ def main() -> int:
             return 2
 
     suffix = "sweprobe.jsonl" if args.mode == "probe" else "swefix.jsonl"
+    if any(s.prompt_template_version == VERSION for s in samples):
+        if config.budget.deadline_utc <= datetime.now(UTC):
+            raise ValueError("v3 template/run deadline expired; resolve approved config and new ID")
+        if (args.context_provenance is None or args.run_id == "unscoped"
+                or config.fingerprint()[:8] not in args.run_id
+                or Path(config.datasets.manifest) != args.dataset_manifest):
+            raise ValueError("v3 requires provenance, matching config manifest and fresh run ID")
+        from transformers import AutoTokenizer
+        audit_tokenizer = AutoTokenizer.from_pretrained(args.model_path, local_files_only=True)
+        validate_prompt_contract(
+            samples, json.loads(args.context_provenance.read_text()), args.dataset_manifest,
+            audit_tokenizer, config.runtime.max_input_tokens,
+        )
+        contract = {"run_id": args.run_id, "config": config.fingerprint(),
+                    "manifest": digest(args.dataset_manifest.read_bytes()),
+                    "conditions": digest(args.conditions.read_bytes()),
+                    "context": digest(args.context_provenance.read_bytes()),
+                    "sample_ids": [s.sample_id for s in samples],
+                    "condition_ids": [c["condition_id"] for c in conditions]}
+        args.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        contract_path = args.checkpoint_dir / "context-contract.json"
+        if contract_path.exists():
+            if json.loads(contract_path.read_text()) != contract:
+                raise ValueError("v3 checkpoint contract drift; use a fresh run")
+        else:
+            if any(args.checkpoint_dir.iterdir()) or args.output_dir.exists():
+                raise ValueError("v3 refuses unbound previous outputs/checkpoints")
+            contract_path.write_text(json.dumps(contract, sort_keys=True) + "\n")
     print(f"loading donor once for {len(conditions)} conditions x {len(samples)} samples...",
           flush=True)
     model, tokenizer = load_donor(args.model_path, config)
@@ -116,7 +149,9 @@ def main() -> int:
 
     # Fingerprint (same fields as production path; never blocks generation).
     try:
-        import torch, transformers, platform as _plat, shutil as _sh, subprocess as _sp, hashlib as _hl
+
+        import torch
+        import transformers
         fp = {
             "run_id": args.run_id, "mode": args.mode,
             "torch": torch.__version__, "cuda_runtime": torch.version.cuda,
@@ -155,7 +190,8 @@ def main() -> int:
         for idx, chunk in enumerate(chunks):
             ckpt = args.checkpoint_dir / f"{cid}.{args.mode}.chunk-{idx:04d}.json"
             if ckpt.is_file():
-                cached = [json.loads(l) for l in ckpt.read_text().splitlines() if l.strip()]
+                cached = [json.loads(line) for line in ckpt.read_text().splitlines()
+                          if line.strip()]
                 if [r.get("sample_id") for r in cached] != [s.sample_id for s in chunk]:
                     print(f"checkpoint drift: {ckpt}", file=sys.stderr)
                     return 2
