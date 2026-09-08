@@ -1,0 +1,33 @@
+# NON-LAUNCHABLE TEMPLATE: deadline deliberately expired. Paid execution requires
+# fresh approval, a new deadline, config fingerprint, and immutable run ID.
+# Same 1024/1024 limits as v2; oversized repository prompts fail before model load.
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 8
+  max_input_tokens: 1024
+  max_new_tokens: 1024
+  enable_thinking: false
+  use_cache: true
+  speculative_decoding: false
+budget:
+  max_gpu_hours: 3
+  max_cost_usd: 4.8
+  provider_rate_usd_per_hour: 1.6
+  storage_limit_gb: 120
+  deadline_utc: 2026-09-08T00:00:00Z
+datasets:
+  manifest: datasets/manifests/pilot-lengthmatched-swe-v3-probe.jsonl
+  split: pilot
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false
