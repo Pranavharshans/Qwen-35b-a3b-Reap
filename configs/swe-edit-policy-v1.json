@@ -1,0 +1,17 @@
+{
+  "max_turns": 8,
+  "max_tool_calls": 16,
+  "max_input_tokens": 24000,
+  "max_output_tokens": 8192,
+  "max_session_seconds": 900,
+  "max_tree_files": 100000,
+  "max_materialized_bytes": 100000000,
+  "max_file_bytes": 1000000,
+  "max_list_entries": 200,
+  "max_search_results": 50,
+  "max_search_bytes": 30000000,
+  "max_read_lines": 240,
+  "max_read_bytes": 32000,
+  "max_edit_bytes": 128000,
+  "max_patch_bytes": 2000000
+}
