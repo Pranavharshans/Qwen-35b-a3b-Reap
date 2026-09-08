@@ -97,17 +97,29 @@ def validate(tasks: list[dict], probe_dir: Path, conditions: list[str]) -> dict:
                 "output_tokens": state.get("output_tokens"),
                 "passed": passed, "reason": reason,
             })
-    identity_pairs = [(conditions[0], other) for other in conditions[1:]]
+    # Identity gates cover baseline-repeat and no-op only, in the canonical
+    # condition order (baseline-a, baseline-b, no-op-masked, selected...).
+    # The selected arm is an intervention and is allowed to diverge.
+    identity_pairs = [(conditions[0], other) for other in conditions[1:3]]
     identities = []
     for first, second in identity_pairs:
-        equal = all(
-            sessions[first][sid].get("artifacts", {}).get("patch", {}).get("sha256")
-            == sessions[second][sid].get("artifacts", {}).get("patch", {}).get("sha256")
-            and sessions[first][sid].get("artifacts", {}).get("transcript", {}).get("sha256")
-            == sessions[second][sid].get("artifacts", {}).get("transcript", {}).get("sha256")
-            for sid in expected_order
-        )
-        identities.append({"pair": [first, second], "identical": equal})
+        sides = []
+        for sid in expected_order:
+            left, right = sessions[first][sid], sessions[second][sid]
+            sides.append(
+                left.get("status") == right.get("status")
+                and left.get("turns") == right.get("turns")
+                and left.get("input_tokens") == right.get("input_tokens")
+                and left.get("output_tokens") == right.get("output_tokens")
+                and left.get("artifacts", {}).get("patch", {}).get("sha256")
+                == right.get("artifacts", {}).get("patch", {}).get("sha256")
+                and left.get("artifacts", {}).get("transcript", {}).get("sha256")
+                == right.get("artifacts", {}).get("transcript", {}).get("sha256")
+            )
+        identities.append({"pair": [first, second], "identical": all(sides),
+                           "per_sample": [
+                               {"sample_id": sid, "identical": same}
+                               for sid, same in zip(expected_order, sides)]})
     return {
         "passed": all(c["passed"] for c in checks) and all(
             i["identical"] for i in identities),
