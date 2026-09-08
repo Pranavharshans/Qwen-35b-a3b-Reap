@@ -38,7 +38,11 @@ def test_batch_size_allows_only_qualified_sizes() -> None:
     assert RuntimeConfig(batch_size=1, **base).batch_size == 1
     # B8 admitted only via the PRO 6000 benchmark qualification.
     assert RuntimeConfig(batch_size=8, **base).batch_size == 8
-    for bad in (0, 2, 4, 16):
+    # B6/B4 admitted only for the human-authorized source-v4 3072-token probe
+    # after B8 OOMed on the longest prompt.
+    assert RuntimeConfig(batch_size=6, **base).batch_size == 6
+    assert RuntimeConfig(batch_size=4, **base).batch_size == 4
+    for bad in (0, 2, 5, 16):
         try:
             RuntimeConfig(batch_size=bad, **base)
         except ValidationError:
