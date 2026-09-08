@@ -323,3 +323,20 @@ def summaries_equal(first: SessionSummary, second: SessionSummary) -> bool:
         and first.patch_sha256 == second.patch_sha256
         and first.transcript_sha256 == second.transcript_sha256
     )
+
+
+def plan_sessions(
+    tasks: list[dict[str, Any]], condition_ids: list[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Frozen B1 execution order: conditions outer, task-file order inner.
+
+    Identical for every run of the same inputs; every condition sees every
+    task exactly once, so batching and ordering cannot leak across arms.
+    """
+    if not tasks or not condition_ids:
+        raise AgenticError("probe needs a non-empty task list and condition list")
+    if len({task["sample_id"] for task in tasks}) != len(tasks):
+        raise AgenticError("duplicate task identities")
+    if len(set(condition_ids)) != len(condition_ids):
+        raise AgenticError("duplicate condition identities")
+    return [(condition_id, task) for condition_id in condition_ids for task in tasks]

@@ -1,0 +1,34 @@
+# NON-LAUNCHABLE TEMPLATE until a fresh human-approved run ID is resolved.
+# Agentic 12-session probe: B1 sequential, 24576 input / 1024 output per turn,
+# BF16 greedy thinking-disabled. B1 selected by the committed Phase C preflight
+# (B1 77.44 / B2 84.87 fit; B4/B6 exceed 88.32 GiB at 22,155 worst-case tokens).
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 1
+  max_input_tokens: 24576
+  max_new_tokens: 1024
+  enable_thinking: false
+  use_cache: true
+  speculative_decoding: false
+budget:
+  max_gpu_hours: 3
+  max_cost_usd: 5.0
+  provider_rate_usd_per_hour: 1.6
+  storage_limit_gb: 120
+  deadline_utc: 2026-09-10T00:00:00Z
+datasets:
+  manifest: datasets/manifests/pilot-lengthmatched-swe-v4-probe.jsonl
+  split: pilot
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false
