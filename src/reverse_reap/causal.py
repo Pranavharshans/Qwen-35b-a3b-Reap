@@ -209,6 +209,276 @@ def generate_condition(
     }
 
 
+def _encode_left_padded_batch(
+    tokenizer: Any, samples: list[NormalizedSample], config: ExperimentConfig, model: Any
+) -> dict:
+    """Left-padded batch encoding shared by the benchmark and production B8 path.
+
+    Identical convention to the B8-qualified benchmark
+    (scripts/benchmark_intervention_paths.py::_encode_batch): left padding,
+    eos as the pad token when none is set, the pinned chat template with the
+    configured thinking flag. Prompt order is the input order.
+    """
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    texts = [
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": sample.prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=config.runtime.enable_thinking,
+        )
+        for sample in samples
+    ]
+    encoded = tokenizer(texts, return_tensors="pt", padding=True)
+    return {k: v.to(model.get_input_embeddings().weight.device) for k, v in encoded.items()}
+
+
+def _batched_generate(
+    model: Any, tokenizer: Any, samples: list[NormalizedSample], config: ExperimentConfig
+) -> tuple[list[str], list[list[int]], float]:
+    """Greedy left-padded batch generation with the production decoding parameters.
+
+    Same ``model.generate`` arguments as :func:`_generate`
+    (``do_sample=False``, pinned ``max_new_tokens``/``use_cache``,
+    ``pad_token_id=eos``); only the input shape differs. Returns
+    (responses, generated-id lists with pad ids stripped, chunk wall seconds).
+    """
+    import torch
+
+    encoded = _encode_left_padded_batch(tokenizer, samples, config, model)
+    prompt_width = encoded["input_ids"].shape[1]
+    pad_id_used = tokenizer.eos_token_id
+    started = time.monotonic()
+    with torch.inference_mode():
+        output = model.generate(
+            **encoded,
+            do_sample=False,
+            max_new_tokens=config.runtime.max_new_tokens,
+            use_cache=config.runtime.use_cache,
+            pad_token_id=pad_id_used,
+        )
+    wall_seconds = time.monotonic() - started
+    generated = output[:, prompt_width:]
+    responses, gen_ids = [], []
+    for row in range(generated.shape[0]):
+        ids = generated[row]
+        keep = ids != pad_id_used
+        kept = ids[keep].tolist()
+        gen_ids.append(kept)
+        responses.append(tokenizer.decode(ids, skip_special_tokens=True))
+    return responses, gen_ids, wall_seconds
+
+
+def _write_heartbeat(path: Path | None, payload: dict[str, Any]) -> None:
+    if path is None:
+        return
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+    ) as handle:
+        temporary = Path(handle.name)
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.flush()
+    temporary.replace(path)
+
+
+def _gpu_peak_mib() -> int | None:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return int(torch.cuda.max_memory_allocated() / 2**20)
+    except Exception:
+        pass
+    return None
+
+
+def generate_condition_batched(
+    model: Any,
+    tokenizer: Any,
+    architecture: Any,
+    dataset_manifest: Path,
+    destination: Path,
+    config: ExperimentConfig,
+    *,
+    split: str,
+    condition_id: str,
+    expert_manifest: Path | None = None,
+    limit: int | None = None,
+    instrument_noop: bool = False,
+    checkpoint_dir: Path | None = None,
+    heartbeat_path: Path | None = None,
+    run_id: str = "unscoped",
+) -> dict[str, Any]:
+    """Batched production generation for one causal condition (B8-qualified path).
+
+    Consumes the same frozen inputs and emits the exact record schema as
+    :func:`generate_condition` (so ``generation_bundle.py`` and the scorer
+    consume its output unchanged), but generates in deterministic manifest-order
+    chunks of ``config.runtime.batch_size`` under a single arm context per
+    chunk (null / empty-mask no-op / frozen-mask intervention — the optimized
+    ``intervene_qwen35`` path qualified by the PRO 6000 B8 benchmark).
+
+    Checkpointing: each completed chunk is written atomically to
+    ``checkpoint_dir/<condition_id>.chunk-<index:04d>.json`` the moment it is
+    validated; a re-entry loads and re-validates those files and only
+    generates missing chunks (fail-closed: the final destination is never
+    overwritten, and a chunk file whose sample ids disagree with the expected
+    slice is a terminal error, not a silent reuse).
+
+    Heartbeats: ``heartbeat_path`` is rewritten atomically after every chunk
+    (chunks run ~1 min at B8 throughput, satisfying the 15-minute heartbeat
+    rule trivially) with stage/progress/throughput/elapsed/GPU-peak fields.
+
+    Every output row is validated (sample order, non-empty response,
+    in-vocab ids); the first invalid row raises :class:`CausalError`.
+    """
+    import contextlib
+
+    batch_size = config.runtime.batch_size
+    if batch_size < 1:
+        raise CausalError(f"invalid batch_size: {batch_size}")
+    masked = load_expert_set(expert_manifest) if expert_manifest else frozenset()
+    samples = [sample for sample in load_manifest(dataset_manifest) if sample.split == split]
+    samples = balanced_subset(samples, limit)
+    if not samples:
+        raise CausalError(f"no samples for split {split!r}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise CausalError(f"refusing to overwrite evaluation: {destination}")
+    checkpoint_dir = checkpoint_dir or destination.parent / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        vocab_size = len(tokenizer)
+    except Exception:
+        vocab_size = None
+
+    total = len(samples)
+    chunks = [samples[i : i + batch_size] for i in range(0, total, batch_size)]
+    started_all = time.monotonic()
+    latencies: list[float] = []
+    completed_chunks = 0
+
+    def heartbeat(chunk_index: int, status: str) -> None:
+        elapsed = time.monotonic() - started_all
+        done = sum(len(c) for c in chunks[:chunk_index])
+        _write_heartbeat(
+            heartbeat_path,
+            {
+                "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "run_id": run_id,
+                "condition_id": condition_id,
+                "stage": f"generate-{condition_id}",
+                "status": status,
+                "completed_items": done,
+                "total_items": total,
+                "batch_size": batch_size,
+                "completed_chunks": chunk_index,
+                "total_chunks": len(chunks),
+                "elapsed_seconds": round(elapsed, 1),
+                "samples_per_minute": round(done / (elapsed / 60), 3) if elapsed > 0 and done else 0.0,
+                "gpu_peak_mib": _gpu_peak_mib(),
+                "masked_experts": len(masked),
+            },
+        )
+
+    def arm_context() -> Any:
+        if masked or instrument_noop:
+            targets = masked if masked else frozenset()
+            return intervene_qwen35(architecture, masked=targets)
+        return contextlib.nullcontext()
+
+    def chunk_path(index: int) -> Path:
+        return checkpoint_dir / f"{condition_id}.chunk-{index:04d}.json"
+
+    def load_validated_chunk(index: int, expected: list[NormalizedSample]) -> list[dict] | None:
+        path = chunk_path(index)
+        if not path.is_file():
+            return None
+        rows = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if [row.get("sample_id") for row in rows] != [s.sample_id for s in expected]:
+            raise CausalError(
+                f"checkpoint {path} sample ids disagree with the manifest slice "
+                "(refusing to reuse a stale or reordered chunk)"
+            )
+        return rows
+
+    heartbeat(0, "started")
+    all_rows: list[dict] = []
+    for index, chunk in enumerate(chunks):
+        cached = load_validated_chunk(index, chunk)
+        if cached is not None:
+            all_rows.extend(cached)
+            completed_chunks += 1
+            latencies.extend(row["latency_seconds"] for row in cached)
+            heartbeat(index + 1, "resumed-chunk" if completed_chunks else "running")
+            continue
+        chunk_started = time.monotonic()
+        with arm_context():
+            responses, gen_ids, _wall = _batched_generate(model, tokenizer, chunk, config)
+        chunk_wall = time.monotonic() - chunk_started
+        per_sample_latency = chunk_wall / len(chunk)
+        rows: list[dict] = []
+        for sample, response, ids in zip(chunk, responses, gen_ids, strict=True):
+            if not isinstance(response, str) or not response.strip():
+                raise CausalError(f"{condition_id}/{sample.sample_id}: empty response")
+            if vocab_size is not None and not all(0 <= i < vocab_size for i in ids):
+                raise CausalError(f"{condition_id}/{sample.sample_id}: out-of-vocab id")
+            rows.append(
+                {
+                    "sample_id": sample.sample_id,
+                    "source": sample.source,
+                    "source_id": sample.source_id,
+                    "scorer": sample.scorer,
+                    "domain": sample.domain,
+                    "stratum": sample.stratum,
+                    "split": sample.split,
+                    "condition_id": condition_id,
+                    "masked_experts": len(masked),
+                    "response": response,
+                    "generated_tokens": len(ids),
+                    "truncated": len(ids) >= config.runtime.max_new_tokens,
+                    "latency_seconds": per_sample_latency,
+                    "chunk": index,
+                    "batch_size": batch_size,
+                }
+            )
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=checkpoint_dir,
+            prefix=f".{chunk_path(index).name}.", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            for row in rows:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+            handle.flush()
+        temporary.replace(chunk_path(index))
+        all_rows.extend(rows)
+        completed_chunks += 1
+        latencies.extend([per_sample_latency] * len(rows))
+        heartbeat(index + 1, "running")
+
+    if [row["sample_id"] for row in all_rows] != [s.sample_id for s in samples]:
+        raise CausalError(f"{condition_id}: assembled rows drifted from manifest order")
+    _atomic_write_jsonl(destination, all_rows)
+    heartbeat(len(chunks), "complete")
+    return {
+        "condition_id": condition_id,
+        "samples": len(all_rows),
+        "masked_experts": len(masked),
+        "batch_size": batch_size,
+        "chunks": len(chunks),
+        "truncation_rate": (
+            float(np.mean([row["truncated"] for row in all_rows])) if all_rows else 0.0
+        ),
+        "mean_latency_seconds": float(np.mean(latencies)) if latencies else 0.0,
+    }
+
+
 def score_condition(
     generated_path: Path,
     dataset_manifest: Path,

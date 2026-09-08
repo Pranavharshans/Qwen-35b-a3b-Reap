@@ -1,0 +1,61 @@
+# Causal-validation generation config — single RTX PRO 6000 96GB (sm_120), B8.
+# Same frozen science as configs/pinned-3090-bf16-gen.yaml (donor revision,
+# BF16 precision, tokenizer path, prompts via the dataset manifest, decoding:
+# greedy, thinking disabled, 1024/1024 limits, use_cache WITHIN each
+# condition under the same pre-gate rule, no speculative decoding, seed,
+# determinism) with ONLY these governed deviations for the PRO 6000 platform:
+#   - runtime.batch_size 8: admitted by the config validator ONLY on the
+#     B8-qualified path; the 2026-09-07 PRO 6000 benchmark proved left-padded
+#     batched generation token-identical to B1 (noop-equiv, determinism,
+#     batching-frozen all PASS), and this run re-proves it in its own
+#     response-determinism-pre-gate before any intervention generation.
+#   - budget: host-hour ceilings for ONE GPU host (1 host-hour = 1 aggregate
+#     GPU-hour here) at the rented all-inclusive rate; scoring runs on the
+#     separately governed KVM scoring VM and books zero GPU-host hours.
+# Human approvals recorded in the launch record: torch 2.11.0+cu128 runtime
+# (sm_120 requires it; 2.7.1+cu126 cannot execute on sm_120), B8 production
+# generation, 150 GB disk, rate cap $1.60/h.
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 8
+  max_input_tokens: 1024
+  max_new_tokens: 1024
+  enable_thinking: false
+  # ONLY difference from the B1 science path: chunked B8 generation uses the
+  # KV cache WITHIN each forward exactly as the benchmark-qualified path did.
+  # The deterministic baseline pair (c0-baseline-a vs c0-baseline-b) AND the
+  # no-op intervention equivalence (c0-noop-masked vs c0-baseline-a) both gate
+  # the run; if either check fails, the run terminates. HF generate() builds
+  # a fresh cache per call, so no cache ever spans samples, chunks, or
+  # conditions — cross-condition cache reuse is structurally impossible.
+  use_cache: true
+  speculative_decoding: false
+budget:
+  # Units: max_gpu_hours is SINGLE-GPU HOST WALL-HOURS on the RTX PRO 6000
+  # box. Hard ceiling including the 20% reserve the controller applies
+  # (usable: 6.4 h / $8.00). Booked task estimates sum to ~3.61 host-hours
+  # for the validation stage (1300 gens at the benchmark-conservative
+  # 7.881 spm = 2.75 h + 0.61 h baselines/interventions + preflight).
+  # SWE-bench scoring runs on the separately governed container-capable
+  # scoring host and is NOT booked against this budget.
+  max_gpu_hours: 8
+  max_cost_usd: 10
+  provider_rate_usd_per_hour: 1.0817
+  storage_limit_gb: 150
+  deadline_utc: 2026-12-31T00:00:00Z
+datasets:
+  manifest: datasets/manifests/pilot-lengthmatched.jsonl
+  split: pilot
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false

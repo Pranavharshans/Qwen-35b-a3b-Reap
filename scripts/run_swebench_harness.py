@@ -52,6 +52,12 @@ def main() -> int:
     parser.add_argument("--max-workers", type=int, default=8)
     args = parser.parse_args()
 
+    # The harness child runs with cwd=condition_work, so every path handed to
+    # it (CLI binary, task repo, predictions file) must be absolute: relative
+    # paths would resolve against the work dir and vanish (FileNotFoundError).
+    args.harness_repo = args.harness_repo.resolve()
+    args.tasks_repo = args.tasks_repo.resolve()
+    args.work_dir = args.work_dir.resolve()
     spec = json.loads(args.conditions.read_text(encoding="utf-8"))
     if spec.get("schema_version") != 1:
         raise SystemExit(f"unsupported conditions spec schema: {spec.get('schema_version')}")
