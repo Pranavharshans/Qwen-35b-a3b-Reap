@@ -7,12 +7,15 @@ from reverse_reap.bridge_capture import (
     AtomicTargetShardWriter,
     BridgeCaptureError,
     CoverageTracker,
+    build_target_handoff,
     freeze_bridge_manifest,
     load_bridge_manifest,
     load_target_capture_state,
     target_event_id,
+    validate_target_handoff,
     validate_target_shard,
     write_target_capture_state,
+    _tokenizer_ids,
 )
 from reverse_reap.datasets import freeze_manifest, normalize_sample
 
@@ -112,6 +115,202 @@ def test_coverage_reports_hard_ceiling_when_domain_coverage_is_incomplete():
     assert tracker.should_stop is True
     assert tracker.stop_reason == "hard-token-ceiling"
     assert tracker.report()["minimum_coverage_reached"] is False
+
+
+def test_tokenizer_ids_accepts_mapping_batch_encoding_and_sequences():
+    """transformers>=5 slow tokenizers return BatchEncoding (UserDict, not dict)."""
+    from collections import UserDict
+
+    class _FakeTokenizer:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def apply_chat_template(self, messages, **kwargs):
+            assert kwargs.get("enable_thinking") is False
+            return self._payload
+
+    expected = [1, 2, 3]
+    assert (
+        _tokenizer_ids(_FakeTokenizer({"input_ids": expected}), [], enable_thinking=False)
+        == expected
+    )
+    assert (
+        _tokenizer_ids(
+            _FakeTokenizer(UserDict({"input_ids": expected})), [], enable_thinking=False
+        )
+        == expected
+    )
+    assert _tokenizer_ids(_FakeTokenizer([[7, 8]]), [], enable_thinking=False) == [7, 8]
+    assert _tokenizer_ids(_FakeTokenizer([9]), [], enable_thinking=False) == [9]
+
+
+def test_ceiling_batch_decision_covers_all_branches():
+    from reverse_reap.bridge_capture import ceiling_batch_decision as decide
+
+    assert (
+        decide(analyzed_tokens=0, batch_tokens=0, sample_tokens=10, hard_token_ceiling=100)
+        == "append"
+    )
+    # Exact fit appends rather than sealing.
+    assert (
+        decide(analyzed_tokens=90, batch_tokens=0, sample_tokens=10, hard_token_ceiling=100)
+        == "append"
+    )
+    assert (
+        decide(analyzed_tokens=90, batch_tokens=5, sample_tokens=10, hard_token_ceiling=100)
+        == "seal_batch"
+    )
+    assert (
+        decide(analyzed_tokens=90, batch_tokens=0, sample_tokens=20, hard_token_ceiling=100)
+        == "stop_cleanly"
+    )
+    assert (
+        decide(analyzed_tokens=0, batch_tokens=0, sample_tokens=101, hard_token_ceiling=100)
+        == "raise_infeasible"
+    )
+    # Regression: blocked run 20260909T104028Z (349266 + 903 > 350000 with
+    # progress) must stop cleanly, never raise.
+    assert (
+        decide(
+            analyzed_tokens=349266,
+            batch_tokens=0,
+            sample_tokens=903,
+            hard_token_ceiling=350000,
+        )
+        == "stop_cleanly"
+    )
+
+
+def _incomplete_handoff_fixture(tmp_path):
+    torch = pytest.importorskip("torch")
+
+    source = tmp_path / "source.jsonl"
+    freeze_manifest([_sample("a", "coding"), _sample("b", "control")], source)
+    candidate = tmp_path / "candidate.json"
+    candidate.write_text(
+        json.dumps({"gate_passed": True, "experts": [{"layer": 3, "expert": 26}]})
+    )
+    manifest_path = tmp_path / "bridge.json"
+    freeze_bridge_manifest(
+        source,
+        _Tokenizer(),
+        manifest_path,
+        model_revision="a" * 40,
+        tokenizer_fingerprint_value="tokenizer-fixture",
+        config_sha256="c" * 64,
+        candidate_manifest=candidate,
+        run_id="run-1",
+        target_tokens=1,
+        hard_token_ceiling=20,
+        max_input_tokens=100,
+        experts=[(3, 26)],
+        allowed_splits=("calibration", "selection", "validation", "replication"),
+    )
+    manifest = load_bridge_manifest(manifest_path)
+    first = manifest.samples[0]
+    capture_root = tmp_path / "targets"
+    writer = AtomicTargetShardWriter(
+        capture_root,
+        run_id="run-1",
+        shard_id="000000",
+        source_manifest_hash=manifest.source_manifest_sha256,
+        model_revision="a" * 40,
+        tokenizer_fingerprint_value="tokenizer-fixture",
+        config_sha256="c" * 64,
+        candidate_manifest_sha256=manifest.candidate_manifest_sha256,
+        target_experts=frozenset({(3, 26)}),
+        hidden_size=2048,
+        max_records=8,
+    )
+    vector = torch.arange(2048, dtype=torch.bfloat16)
+    record = {
+        "schema_version": 1,
+        "run_id": "run-1",
+        "row_index": 0,
+        "event_id": target_event_id(first.sample.sample_id, 0, 3, 26, 0),
+        "sample_ordinal": 0,
+        "sample_id": first.sample.sample_id,
+        "sample_content_sha256": first.sample.content_sha256,
+        "domain": first.sample.domain,
+        "split": first.sample.split,
+        "token_position": 0,
+        "token_id": 11,
+        "donor_layer": 3,
+        "expert_id": 26,
+        "route_rank": 0,
+        "router_weight": 0.5,
+        "source_manifest_hash": manifest.source_manifest_sha256,
+        "model_revision": "a" * 40,
+        "tokenizer_fingerprint": "tokenizer-fixture",
+        "config_sha256": "c" * 64,
+        "candidate_manifest_sha256": manifest.candidate_manifest_sha256,
+        "condition_id": "C0",
+        "chunk_id": "batch-000000",
+    }
+    writer.append(record, vector, vector + 1, vector + 2)
+    writer.finalize()
+    return manifest_path, capture_root
+
+
+def test_handoff_rejects_incomplete_capture_by_default(tmp_path):
+    manifest_path, capture_root = _incomplete_handoff_fixture(tmp_path)
+    tracker = CoverageTracker(
+        frozenset({(3, 26)}),
+        min_coding_events=50,
+        min_control_events=50,
+        target_tokens=1,
+        hard_token_ceiling=20,
+    )
+    tracker.add_tokens(2)
+    write_target_capture_state(
+        capture_root / "capture-state.json",
+        {
+            "run_id": "run-1",
+            "capture_manifest_sha256": load_bridge_manifest(manifest_path).manifest_sha256,
+            "next_sample_index": 1,
+            "next_batch_number": 1,
+            "completed_shards": ["shard-000000"],
+            "coverage": tracker.report(),
+            "complete": False,
+        },
+    )
+    with pytest.raises(BridgeCaptureError, match="checkpoint is incomplete"):
+        build_target_handoff(
+            capture_root, manifest_path, tmp_path / "handoff.json"
+        )
+
+
+def test_handoff_bundles_incomplete_capture_with_explicit_classification(tmp_path):
+    manifest_path, capture_root = _incomplete_handoff_fixture(tmp_path)
+    tracker = CoverageTracker(
+        frozenset({(3, 26)}),
+        min_coding_events=50,
+        min_control_events=50,
+        target_tokens=1,
+        hard_token_ceiling=20,
+    )
+    tracker.add_tokens(2)
+    write_target_capture_state(
+        capture_root / "capture-state.json",
+        {
+            "run_id": "run-1",
+            "capture_manifest_sha256": load_bridge_manifest(manifest_path).manifest_sha256,
+            "next_sample_index": 1,
+            "next_batch_number": 1,
+            "completed_shards": ["shard-000000"],
+            "coverage": tracker.report(),
+            "complete": False,
+        },
+    )
+    destination = tmp_path / "handoff.json"
+    bundle = build_target_handoff(
+        capture_root, manifest_path, destination, allow_incomplete=True
+    )
+    assert bundle["capture_outcome"] == "coverage-incomplete"
+    assert bundle["coverage"]["minimum_coverage_reached"] is False
+    assert bundle["coverage"]["capture_success"] is False
+    assert bundle["record_count"] == 1
+    assert validate_target_handoff(destination)["valid"] is True
 
 
 def test_capture_checkpoint_is_hash_bound_and_resumable(tmp_path):

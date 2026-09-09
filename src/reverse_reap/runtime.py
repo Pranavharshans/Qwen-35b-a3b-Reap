@@ -16,6 +16,7 @@ from reverse_reap.bridge_capture import (
     AtomicTargetShardWriter,
     BridgeCaptureError,
     CoverageTracker,
+    ceiling_batch_decision,
     load_bridge_manifest,
     load_target_capture_state,
     target_event_id,
@@ -498,17 +499,20 @@ def capture_targeted_manifest(
         while sample_offset < len(rendered) and len(batch_samples) < selected_batch_size:
             candidate = rendered[sample_offset]
             candidate_tokens = len(candidate[1])
-            if (
-                token_total
-                and coverage.analyzed_tokens + token_total + candidate_tokens
-                > coverage.hard_token_ceiling
-            ):
+            decision = ceiling_batch_decision(
+                analyzed_tokens=coverage.analyzed_tokens,
+                batch_tokens=token_total,
+                sample_tokens=candidate_tokens,
+                hard_token_ceiling=coverage.hard_token_ceiling,
+            )
+            if decision == "seal_batch":
                 break
-            if (
-                not token_total
-                and coverage.analyzed_tokens + candidate_tokens
-                > coverage.hard_token_ceiling
-            ):
+            if decision == "stop_cleanly":
+                # Checkpoint and stop cleanly with coverage-incomplete: the next
+                # complete sample cannot fit under the hard ceiling. The sample
+                # is never partially processed or truncated.
+                break
+            if decision == "raise_infeasible":
                 raise RuntimeCompatibilityError(
                     f"sample {candidate[0].sample_id} would exceed hard token ceiling"
                 )
