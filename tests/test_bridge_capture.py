@@ -274,7 +274,7 @@ def test_handoff_rejects_incomplete_capture_by_default(tmp_path):
             "complete": False,
         },
     )
-    with pytest.raises(BridgeCaptureError, match="does not prove coverage success"):
+    with pytest.raises(BridgeCaptureError, match="checkpoint is incomplete"):
         build_target_handoff(
             capture_root, manifest_path, tmp_path / "handoff.json"
         )
