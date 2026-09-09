@@ -55,10 +55,24 @@
       "title": "Capture Manifest Sha256",
       "type": "string"
     },
+    "capture_outcome": {
+      "default": "coverage-complete",
+      "enum": [
+        "coverage-complete",
+        "coverage-incomplete"
+      ],
+      "title": "Capture Outcome",
+      "type": "string"
+    },
     "config_sha256": {
       "pattern": "^[0-9a-f]{64}$",
       "title": "Config Sha256",
       "type": "string"
+    },
+    "coverage": {
+      "additionalProperties": true,
+      "title": "Coverage",
+      "type": "object"
     },
     "extraction_artifact": {
       "anyOf": [
