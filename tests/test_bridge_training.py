@@ -310,7 +310,7 @@ def test_checkpoint_hash_drift_and_corruption_fail_closed(tmp_path: Path):
         config_sha256="a" * 64,
         training_manifest_sha256="b" * 64,
     )
-    with pytest.raises(BridgeTrainingError, match="config differs"):
+    with pytest.raises(BridgeTrainingError, match="config hash differs"):
         load_bridge_checkpoint(
             checkpoint_path,
             model,
