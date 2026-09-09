@@ -12,6 +12,7 @@ from reverse_reap.runtime import (
     _chat_ids,
     _render_ids,
     _segment_rows,
+    pad_token_batch,
     validate_donor_contract,
 )
 
@@ -115,3 +116,23 @@ def test_chat_ids_accepts_batch_encoding_return():
     rendered_prompt, rendered_full = _render_ids(tokenizer, _sample(), False)
     assert torch.equal(rendered_prompt, prompt)
     assert torch.equal(rendered_full, full)
+
+
+def test_pad_token_batch_returns_right_padded_valid_token_mapping():
+    torch = pytest.importorskip("torch")
+    batch, mask, mapping = pad_token_batch(
+        [torch.tensor([10, 11, 12]), torch.tensor([20])], pad_token_id=0
+    )
+    assert batch.tolist() == [[10, 11, 12], [20, 0, 0]]
+    assert mask.tolist() == [[1, 1, 1], [1, 0, 0]]
+    assert mapping == [(0, 0), (0, 1), (0, 2), (1, 0), None, None]
+
+
+def test_pad_token_batch_returns_left_padded_valid_token_mapping():
+    torch = pytest.importorskip("torch")
+    batch, mask, mapping = pad_token_batch(
+        [torch.tensor([10, 11, 12]), torch.tensor([20])], pad_token_id=0, left=True
+    )
+    assert batch.tolist() == [[10, 11, 12], [0, 0, 20]]
+    assert mask.tolist() == [[1, 1, 1], [0, 0, 1]]
+    assert mapping == [(0, 0), (0, 1), (0, 2), None, None, (1, 0)]

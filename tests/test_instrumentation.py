@@ -4,7 +4,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from reverse_reap.instrumentation import instrument_qwen35  # noqa: E402
+from reverse_reap.instrumentation import (  # noqa: E402
+    TargetedRouteObservation,
+    instrument_qwen35,
+    instrument_qwen35_targeted,
+)
 from reverse_reap.qwen35 import Qwen35Architecture  # noqa: E402
 
 
@@ -106,3 +110,31 @@ def test_observer_receives_exact_route_level_norm_matrix():
     assert batch.indices.shape == (2, 2)
     assert norms.shape == (2, 2)
     assert (norms > 0).all()
+
+
+def test_targeted_observer_returns_only_selected_bf16_vectors_and_preserves_output():
+    torch.manual_seed(31)
+    experts = TinyExperts().to(torch.bfloat16)
+    hidden = torch.randn(3, 4, dtype=torch.bfloat16)
+    indices = torch.tensor([[0, 1], [2, 1], [0, 2]])
+    weights = torch.tensor(
+        [[0.7, 0.3], [0.4, 0.6], [0.2, 0.8]], dtype=torch.bfloat16
+    )
+    observations: list[TargetedRouteObservation] = []
+    expected = experts(hidden, indices, weights)
+    with torch.inference_mode(), instrument_qwen35_targeted(
+        architecture(experts), frozenset({(0, 1)}), observer=observations.append
+    ):
+        actual = experts(hidden, indices, weights)
+    assert torch.equal(actual, expected)
+    assert len(observations) == 1
+    observed = observations[0]
+    assert (observed.layer_index, observed.expert_index) == (0, 1)
+    assert observed.token_indices.tolist() == [0, 1]
+    assert observed.route_ranks.tolist() == [1, 1]
+    assert observed.expert_inputs.dtype == torch.bfloat16
+    assert observed.replayed_expert_output.shape == (2, 4)
+    assert torch.equal(
+        observed.weighted_replayed_expert_output,
+        observed.replayed_expert_output * weights[[0, 1], 1, None],
+    )

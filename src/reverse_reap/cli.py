@@ -7,6 +7,13 @@ import json
 import subprocess
 from pathlib import Path
 
+from reverse_reap.bridge_capture import (
+    build_target_handoff,
+    freeze_bridge_manifest,
+    tokenizer_fingerprint,
+    validate_target_handoff,
+    validate_target_shard,
+)
 from reverse_reap.causal import (
     causal_gate_report,
     compare_deterministic_evaluations,
@@ -26,6 +33,7 @@ from reverse_reap.plans import write_full_plan
 from reverse_reap.reporting import build_run_bundle
 from reverse_reap.runtime import (
     capture_manifest,
+    capture_targeted_manifest,
     probe_instrumentation,
     probe_single_expert_intervention,
 )
@@ -87,6 +95,40 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("destination", type=Path)
     capture.add_argument("--split", default="calibration")
     capture.add_argument("--limit", type=int)
+    capture.add_argument("--report", type=Path)
+    bridge_freeze = subparsers.add_parser("freeze-bridge-manifest")
+    bridge_freeze.add_argument("full_manifest", type=Path)
+    bridge_freeze.add_argument("tokenizer_path", type=Path)
+    bridge_freeze.add_argument("destination", type=Path)
+    bridge_freeze.add_argument("--config", type=Path, required=True)
+    bridge_freeze.add_argument("--candidate-manifest", type=Path, required=True)
+    bridge_freeze.add_argument("--model-revision", required=True)
+    bridge_freeze.add_argument("--run-id", required=True)
+    bridge_freeze.add_argument("--target-tokens", type=int, default=200_000)
+    bridge_freeze.add_argument("--hard-token-ceiling", type=int, default=500_000)
+    bridge_freeze.add_argument("--max-input-tokens", type=int, default=1024)
+    bridge_freeze.add_argument("--seed", type=int, default=20260903)
+    bridge_freeze.add_argument("--report", type=Path)
+    bridge_capture = subparsers.add_parser("capture-targets")
+    bridge_capture.add_argument("config", type=Path)
+    bridge_capture.add_argument("model_path", type=Path)
+    bridge_capture.add_argument("capture_manifest", type=Path)
+    bridge_capture.add_argument("destination", type=Path)
+    bridge_capture.add_argument("--batch-size", type=int, choices=(1, 2, 4, 8))
+    bridge_capture.add_argument("--left-padding", action="store_true")
+    bridge_capture.add_argument("--shard-max-records", type=int, default=4096)
+    bridge_capture.add_argument("--run-id")
+    bridge_capture.add_argument("--report", type=Path)
+    bridge_validate = subparsers.add_parser("validate-target-shard")
+    bridge_validate.add_argument("shard", type=Path)
+    bridge_validate.add_argument("--hidden-size", type=int, default=2048)
+    bridge_bundle = subparsers.add_parser("build-target-handoff")
+    bridge_bundle.add_argument("capture_root", type=Path)
+    bridge_bundle.add_argument("capture_manifest", type=Path)
+    bridge_bundle.add_argument("destination", type=Path)
+    bridge_bundle.add_argument("--extraction-dir", type=Path)
+    bridge_bundle_validate = subparsers.add_parser("validate-target-handoff")
+    bridge_bundle_validate.add_argument("handoff", type=Path)
     probe = subparsers.add_parser("probe")
     probe.add_argument("config", type=Path)
     probe.add_argument("model_path", type=Path)
@@ -242,7 +284,59 @@ def main() -> int:
             split=args.split,
             limit=args.limit,
         )
-        emit_json(output)
+        emit_json(output, args.report)
+        return 0
+    if args.command == "freeze-bridge-manifest":
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(args.tokenizer_path), local_files_only=True, trust_remote_code=False
+        )
+        output = freeze_bridge_manifest(
+            args.full_manifest,
+            tokenizer,
+            args.destination,
+            model_revision=args.model_revision,
+            tokenizer_fingerprint_value=tokenizer_fingerprint(args.tokenizer_path),
+            config_sha256=load_config(args.config).fingerprint(),
+            candidate_manifest=args.candidate_manifest,
+            run_id=args.run_id,
+            target_tokens=args.target_tokens,
+            hard_token_ceiling=args.hard_token_ceiling,
+            max_input_tokens=args.max_input_tokens,
+            seed=args.seed,
+        )
+        emit_json(output, args.report)
+        return 0
+    if args.command == "capture-targets":
+        config = load_config(args.config)
+        output = capture_targeted_manifest(
+            args.model_path,
+            args.capture_manifest,
+            args.destination,
+            config,
+            batch_size=args.batch_size,
+            left_padding=args.left_padding,
+            shard_max_records=args.shard_max_records,
+            run_id=args.run_id,
+        )
+        emit_json(output, args.report)
+        return 0
+    if args.command == "validate-target-shard":
+        emit_json(validate_target_shard(args.shard, hidden_size=args.hidden_size))
+        return 0
+    if args.command == "build-target-handoff":
+        emit_json(
+            build_target_handoff(
+                args.capture_root,
+                args.capture_manifest,
+                args.destination,
+                extraction_dir=args.extraction_dir,
+            )
+        )
+        return 0
+    if args.command == "validate-target-handoff":
+        emit_json(validate_target_handoff(args.handoff))
         return 0
     if args.command == "probe":
         output = probe_instrumentation(args.model_path, load_config(args.config), args.prompt)
@@ -316,11 +410,10 @@ def main() -> int:
             model_id=config.model.id,
             model_revision=config.model.revision,
             run_id=config.run_id or config.resolve_run_id(git_sha()),
-            selection_status=(
-                "domain-differential candidate"
-                if candidates.get("gate_passed")
-                else "observational-candidates"
-            ),
+            # Gate C only supplies observational evidence.  Causal validation
+            # and replication are separate gates, so extraction from the
+            # existing candidate artifact must never upgrade its label.
+            selection_status="observational-candidates",
             selection_metrics={
                 "method": candidates.get("selection_method"),
                 "thresholds": candidates.get("thresholds"),

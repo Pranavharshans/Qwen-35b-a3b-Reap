@@ -1,0 +1,390 @@
+{
+  "$defs": {
+    "BridgeCaptureExpert": {
+      "additionalProperties": false,
+      "description": "Stable donor layer/expert identity.",
+      "properties": {
+        "expert": {
+          "minimum": 0,
+          "title": "Expert",
+          "type": "integer"
+        },
+        "layer": {
+          "minimum": 0,
+          "title": "Layer",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer",
+        "expert"
+      ],
+      "title": "BridgeCaptureExpert",
+      "type": "object"
+    },
+    "BridgeCaptureSample": {
+      "additionalProperties": false,
+      "description": "A self-contained, length-audited sample selected for donor capture.",
+      "properties": {
+        "prompt_token_count": {
+          "exclusiveMinimum": 0,
+          "title": "Prompt Token Count",
+          "type": "integer"
+        },
+        "sample": {
+          "$ref": "#/$defs/NormalizedSample"
+        },
+        "sample_ordinal": {
+          "minimum": 0,
+          "title": "Sample Ordinal",
+          "type": "integer"
+        },
+        "token_count": {
+          "exclusiveMinimum": 0,
+          "title": "Token Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_ordinal",
+        "sample",
+        "prompt_token_count",
+        "token_count"
+      ],
+      "title": "BridgeCaptureSample",
+      "type": "object"
+    },
+    "NormalizedSample": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "domain": {
+          "enum": [
+            "coding",
+            "control"
+          ],
+          "title": "Domain",
+          "type": "string"
+        },
+        "entry_point": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry Point"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "prompt": {
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "prompt_template_version": {
+          "minLength": 1,
+          "title": "Prompt Template Version",
+          "type": "string"
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference"
+        },
+        "sample_id": {
+          "minLength": 1,
+          "title": "Sample Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "scorer": {
+          "enum": [
+            "exact_match",
+            "unit_tests",
+            "multiple_choice",
+            "swebench",
+            "bugsinpy"
+          ],
+          "title": "Scorer",
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "source_id": {
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_revision": {
+          "minLength": 1,
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "split": {
+          "enum": [
+            "calibration",
+            "selection",
+            "validation",
+            "replication"
+          ],
+          "title": "Split",
+          "type": "string"
+        },
+        "stratum": {
+          "minLength": 1,
+          "title": "Stratum",
+          "type": "string"
+        },
+        "tests": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tests"
+        },
+        "timeout_seconds": {
+          "default": 10,
+          "maximum": 120,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_id",
+        "source",
+        "source_revision",
+        "source_id",
+        "domain",
+        "stratum",
+        "prompt",
+        "scorer",
+        "split",
+        "prompt_template_version",
+        "content_sha256"
+      ],
+      "title": "NormalizedSample",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Immutable input contract for a targeted donor-target capture.",
+  "properties": {
+    "allowed_splits": {
+      "items": {
+        "enum": [
+          "calibration",
+          "selection",
+          "validation",
+          "replication"
+        ],
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Allowed Splits",
+      "type": "array"
+    },
+    "analyzed_tokens": {
+      "exclusiveMinimum": 0,
+      "title": "Analyzed Tokens",
+      "type": "integer"
+    },
+    "candidate_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Candidate Manifest Sha256",
+      "type": "string"
+    },
+    "coding_tokens": {
+      "exclusiveMinimum": 0,
+      "title": "Coding Tokens",
+      "type": "integer"
+    },
+    "condition_id": {
+      "const": "C0",
+      "title": "Condition Id",
+      "type": "string"
+    },
+    "config_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Config Sha256",
+      "type": "string"
+    },
+    "control_tokens": {
+      "exclusiveMinimum": 0,
+      "title": "Control Tokens",
+      "type": "integer"
+    },
+    "eligible_analyzed_tokens": {
+      "exclusiveMinimum": 0,
+      "title": "Eligible Analyzed Tokens",
+      "type": "integer"
+    },
+    "enable_thinking": {
+      "const": false,
+      "default": false,
+      "title": "Enable Thinking",
+      "type": "boolean"
+    },
+    "exclusions": {
+      "items": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "title": "Exclusions",
+      "type": "array"
+    },
+    "experts": {
+      "items": {
+        "$ref": "#/$defs/BridgeCaptureExpert"
+      },
+      "minItems": 1,
+      "title": "Experts",
+      "type": "array"
+    },
+    "hard_token_ceiling": {
+      "exclusiveMinimum": 0,
+      "title": "Hard Token Ceiling",
+      "type": "integer"
+    },
+    "kind": {
+      "const": "bridge-target-capture",
+      "title": "Kind",
+      "type": "string"
+    },
+    "manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Manifest Sha256",
+      "type": "string"
+    },
+    "max_input_tokens": {
+      "minimum": 64,
+      "title": "Max Input Tokens",
+      "type": "integer"
+    },
+    "min_coding_events_per_expert": {
+      "exclusiveMinimum": 0,
+      "title": "Min Coding Events Per Expert",
+      "type": "integer"
+    },
+    "min_control_events_per_expert": {
+      "exclusiveMinimum": 0,
+      "title": "Min Control Events Per Expert",
+      "type": "integer"
+    },
+    "model_id": {
+      "const": "Qwen/Qwen3.5-35B-A3B",
+      "title": "Model Id",
+      "type": "string"
+    },
+    "model_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Model Revision",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "samples": {
+      "items": {
+        "$ref": "#/$defs/BridgeCaptureSample"
+      },
+      "minItems": 1,
+      "title": "Samples",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Manifest Sha256",
+      "type": "string"
+    },
+    "target_analyzed_tokens": {
+      "exclusiveMinimum": 0,
+      "title": "Target Analyzed Tokens",
+      "type": "integer"
+    },
+    "target_reached": {
+      "title": "Target Reached",
+      "type": "boolean"
+    },
+    "tokenizer_fingerprint": {
+      "minLength": 1,
+      "title": "Tokenizer Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "run_id",
+    "source_manifest_sha256",
+    "model_id",
+    "model_revision",
+    "tokenizer_fingerprint",
+    "config_sha256",
+    "candidate_manifest_sha256",
+    "condition_id",
+    "max_input_tokens",
+    "target_analyzed_tokens",
+    "hard_token_ceiling",
+    "eligible_analyzed_tokens",
+    "min_coding_events_per_expert",
+    "min_control_events_per_expert",
+    "experts",
+    "allowed_splits",
+    "samples",
+    "analyzed_tokens",
+    "coding_tokens",
+    "control_tokens",
+    "target_reached",
+    "manifest_sha256"
+  ],
+  "title": "BridgeCaptureManifest",
+  "type": "object"
+}
