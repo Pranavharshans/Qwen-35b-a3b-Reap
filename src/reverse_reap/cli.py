@@ -127,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_bundle.add_argument("capture_manifest", type=Path)
     bridge_bundle.add_argument("destination", type=Path)
     bridge_bundle.add_argument("--extraction-dir", type=Path)
+    bridge_bundle.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="bundle a hash-valid but coverage-incomplete capture with an "
+        "explicit coverage-incomplete classification instead of failing",
+    )
     bridge_bundle_validate = subparsers.add_parser("validate-target-handoff")
     bridge_bundle_validate.add_argument("handoff", type=Path)
     probe = subparsers.add_parser("probe")
@@ -332,6 +338,7 @@ def main() -> int:
                 args.capture_manifest,
                 args.destination,
                 extraction_dir=args.extraction_dir,
+                allow_incomplete=args.allow_incomplete,
             )
         )
         return 0

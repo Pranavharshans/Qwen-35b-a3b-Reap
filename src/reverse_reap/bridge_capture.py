@@ -220,6 +220,10 @@ class BridgeTargetBundle(StrictModel):
     artifacts: list[dict[str, Any]] = Field(min_length=1)
     record_count: int = Field(ge=0)
     analyzed_tokens: int = Field(ge=0)
+    capture_outcome: Literal["coverage-complete", "coverage-incomplete"] = (
+        "coverage-complete"
+    )
+    coverage: dict[str, Any] = Field(default_factory=dict)
     extraction_artifact: str | None = None
     bundle_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -1076,8 +1080,17 @@ def build_target_handoff(
     destination: Path,
     *,
     extraction_dir: Path | None = None,
+    allow_incomplete: bool = False,
 ) -> dict[str, Any]:
-    """Build a hash-only handoff manifest after all capture shards validate."""
+    """Build a hash-only handoff manifest after all capture shards validate.
+
+    With ``allow_incomplete=True`` a hash-valid but coverage-incomplete
+    checkpoint is bundled with an explicit ``coverage-incomplete``
+    classification instead of raising; every integrity gate (checkpoint hash,
+    manifest binding, shard inventory agreement, record membership,
+    contiguity, uniqueness) still applies. The default preserves the
+    success-only behavior.
+    """
     capture_manifest = load_bridge_manifest(capture_manifest_path)
     shard_dirs = sorted(path for path in capture_root.glob("shard-*") if path.is_dir())
     if not shard_dirs:
@@ -1107,14 +1120,21 @@ def build_target_handoff(
             {key: value for key, value in state_payload.items() if key != "state_sha256"}
         )
     ).hexdigest()
-    if expected_state_hash != state.state_sha256 or not state.complete:
-        raise BridgeCaptureError("target capture checkpoint is incomplete or tampered")
+    if expected_state_hash != state.state_sha256:
+        raise BridgeCaptureError("target capture checkpoint is tampered")
+    if not state.complete and not allow_incomplete:
+        raise BridgeCaptureError("target capture checkpoint is incomplete")
     if state.run_id != capture_manifest.run_id:
         raise BridgeCaptureError("capture checkpoint run_id differs from capture manifest")
     if state.capture_manifest_sha256 != capture_manifest.manifest_sha256:
         raise BridgeCaptureError("capture checkpoint manifest hash differs from capture manifest")
     coverage = state.coverage
-    if not isinstance(coverage, dict) or not coverage.get("capture_success"):
+    if not isinstance(coverage, dict):
+        raise BridgeCaptureError("target capture checkpoint has no coverage report")
+    outcome = (
+        "coverage-complete" if coverage.get("capture_success") else "coverage-incomplete"
+    )
+    if outcome == "coverage-incomplete" and not allow_incomplete:
         raise BridgeCaptureError("target capture checkpoint does not prove coverage success")
     if int(coverage.get("analyzed_tokens", -1)) < capture_manifest.target_analyzed_tokens:
         raise BridgeCaptureError("target capture checkpoint is below the target token count")
@@ -1228,6 +1248,8 @@ def build_target_handoff(
         # of the selected experts, so their unique-token count is not the
         # experiment's analysed-token denominator.
         "analyzed_tokens": int(coverage["analyzed_tokens"]),
+        "capture_outcome": outcome,
+        "coverage": coverage,
         "extraction_artifact": extraction_artifact,
     }
     base["bundle_sha256"] = hashlib.sha256(canonical_json(base)).hexdigest()
