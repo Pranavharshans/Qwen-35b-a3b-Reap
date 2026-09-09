@@ -594,7 +594,6 @@ def load_bridge_manifest(path: Path) -> BridgeCaptureManifest:
     return manifest
 
 
-@dataclass
 def ceiling_batch_decision(
     *,
     analyzed_tokens: int,
@@ -623,6 +622,7 @@ def ceiling_batch_decision(
     return "append"
 
 
+@dataclass
 class CoverageTracker:
     """Explicit adaptive stopping state for selected-expert capture."""
 
