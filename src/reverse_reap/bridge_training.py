@@ -630,7 +630,6 @@ def capture_host_hidden_states(
         torch_dtype=torch.bfloat16,
         trust_remote_code=False,
         local_files_only=True,
-        use_cache=False,
     )
     assert_frozen_module(model)
     host_layers = _resolve_host_layers(model)
