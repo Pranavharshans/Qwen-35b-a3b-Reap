@@ -1158,15 +1158,20 @@ def repair_bridge_manifest(
 def _source_manifest_hash_from_handoff(handoff_path: Path, bundle: Mapping[str, Any]) -> str:
     """Read the capture manifest hash without trusting an unbound path."""
     root = handoff_path.parent
-    capture_hash = str(bundle["capture_manifest_sha256"])
-    candidates = [
-        root / str(item["path"])
-        for item in bundle["artifacts"]
-        if str(item["path"]).endswith("capture-manifest.json")
-    ]
-    for candidate in candidates:
-        if candidate.is_file() and _sha256_file(candidate) == capture_hash:
-            return str(load_bridge_manifest(candidate).source_manifest_sha256)
+    for item in bundle["artifacts"]:
+        if not str(item["path"]).endswith("capture-manifest.json"):
+            continue
+        candidate = root / str(item["path"])
+        # Artifact entries record file bytes; the manifest's internal hash is
+        # validated separately on load. Comparing the two different digests
+        # directly can never match.
+        if candidate.is_file() and _sha256_file(candidate) == str(item["sha256"]):
+            manifest = load_bridge_manifest(candidate)
+            if manifest.manifest_sha256 != str(bundle["capture_manifest_sha256"]):
+                raise BridgeTrainingError(
+                    "handoff capture manifest does not match the handoff bundle"
+                )
+            return str(manifest.source_manifest_sha256)
     raise BridgeTrainingError("handoff does not contain a verified capture manifest")
 
 
