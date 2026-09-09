@@ -38,6 +38,22 @@ def test_every_full_plan_task_has_mandatory_execution_contract():
 
 
 SMOKE_PLAN = Path(__file__).resolve().parents[1] / "configs" / "execution-plan-smoke.yaml"
+BRIDGE_CAPTURE_PLAN = (
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "execution-plan-bridge-capture.yaml"
+)
+
+
+def test_checked_in_bridge_capture_plan_is_bounded_and_non_training():
+    plan = load_plan(BRIDGE_CAPTURE_PLAN)
+    assert len(plan.tasks) == 7
+    assert sum(task.estimated_gpu_hours for task in plan.tasks) <= 6.4
+    commands = " ".join(" ".join(task.command) for task in plan.tasks)
+    assert "capture-targets" in commands
+    assert " extract " in f" {commands} "
+    assert all(term not in commands for term in ("train", "fine-tune", "merge-model"))
+    assert all("${RUN_ID}" in str(output) for task in plan.tasks for output in task.outputs)
 
 
 @pytest.mark.parametrize(

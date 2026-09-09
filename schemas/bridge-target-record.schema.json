@@ -1,0 +1,150 @@
+{
+  "additionalProperties": false,
+  "description": "Metadata row pointing to one row in stacked BF16 safetensors tensors.",
+  "properties": {
+    "candidate_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Candidate Manifest Sha256",
+      "type": "string"
+    },
+    "chunk_id": {
+      "minLength": 1,
+      "title": "Chunk Id",
+      "type": "string"
+    },
+    "condition_id": {
+      "const": "C0",
+      "title": "Condition Id",
+      "type": "string"
+    },
+    "config_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Config Sha256",
+      "type": "string"
+    },
+    "domain": {
+      "enum": [
+        "coding",
+        "control"
+      ],
+      "title": "Domain",
+      "type": "string"
+    },
+    "donor_layer": {
+      "minimum": 0,
+      "title": "Donor Layer",
+      "type": "integer"
+    },
+    "event_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "expert_id": {
+      "minimum": 0,
+      "title": "Expert Id",
+      "type": "integer"
+    },
+    "model_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Model Revision",
+      "type": "string"
+    },
+    "route_rank": {
+      "minimum": 0,
+      "title": "Route Rank",
+      "type": "integer"
+    },
+    "router_weight": {
+      "minimum": 0,
+      "title": "Router Weight",
+      "type": "number"
+    },
+    "row_index": {
+      "minimum": 0,
+      "title": "Row Index",
+      "type": "integer"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "sample_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sample Content Sha256",
+      "type": "string"
+    },
+    "sample_id": {
+      "minLength": 1,
+      "title": "Sample Id",
+      "type": "string"
+    },
+    "sample_ordinal": {
+      "minimum": 0,
+      "title": "Sample Ordinal",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_manifest_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Manifest Hash",
+      "type": "string"
+    },
+    "split": {
+      "enum": [
+        "calibration",
+        "selection",
+        "validation",
+        "replication"
+      ],
+      "title": "Split",
+      "type": "string"
+    },
+    "token_id": {
+      "minimum": 0,
+      "title": "Token Id",
+      "type": "integer"
+    },
+    "token_position": {
+      "minimum": 0,
+      "title": "Token Position",
+      "type": "integer"
+    },
+    "tokenizer_fingerprint": {
+      "minLength": 1,
+      "title": "Tokenizer Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "row_index",
+    "event_id",
+    "sample_ordinal",
+    "sample_id",
+    "sample_content_sha256",
+    "domain",
+    "split",
+    "token_position",
+    "token_id",
+    "donor_layer",
+    "expert_id",
+    "route_rank",
+    "router_weight",
+    "source_manifest_hash",
+    "model_revision",
+    "tokenizer_fingerprint",
+    "config_sha256",
+    "candidate_manifest_sha256",
+    "condition_id",
+    "chunk_id"
+  ],
+  "title": "BridgeTargetRecord",
+  "type": "object"
+}

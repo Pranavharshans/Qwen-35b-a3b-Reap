@@ -1,0 +1,70 @@
+{
+  "additionalProperties": false,
+  "description": "Atomic progress checkpoint used to resume a targeted capture safely.",
+  "properties": {
+    "capture_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Capture Manifest Sha256",
+      "type": "string"
+    },
+    "complete": {
+      "default": false,
+      "title": "Complete",
+      "type": "boolean"
+    },
+    "completed_shards": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Completed Shards",
+      "type": "array"
+    },
+    "coverage": {
+      "additionalProperties": true,
+      "title": "Coverage",
+      "type": "object"
+    },
+    "kind": {
+      "const": "bridge-target-capture-state",
+      "title": "Kind",
+      "type": "string"
+    },
+    "next_batch_number": {
+      "minimum": 0,
+      "title": "Next Batch Number",
+      "type": "integer"
+    },
+    "next_sample_index": {
+      "minimum": 0,
+      "title": "Next Sample Index",
+      "type": "integer"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "state_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "State Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "run_id",
+    "capture_manifest_sha256",
+    "next_sample_index",
+    "next_batch_number",
+    "coverage",
+    "state_sha256"
+  ],
+  "title": "BridgeTargetCaptureState",
+  "type": "object"
+}

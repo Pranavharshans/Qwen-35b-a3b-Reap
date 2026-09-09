@@ -35,15 +35,116 @@ class CaptureState:
         ]
 
 
+@dataclass(frozen=True)
+class TargetedRouteObservation:
+    """Route-level vectors for one selected expert.
+
+    ``token_indices`` refer to the flattened token dimension passed to the
+    native expert module.  The runtime converts those indices back to
+    ``sample_id``/position after the forward pass; keeping that mapping outside
+    the hook lets the hook remain independent of padding conventions.
+    """
+
+    layer_index: int
+    expert_index: int
+    token_indices: Any
+    route_ranks: Any
+    router_weights: Any
+    expert_inputs: Any
+    replayed_expert_output: Any
+    weighted_replayed_expert_output: Any
+
+
+@contextmanager
+def instrument_qwen35_targeted(
+    architecture: Qwen35Architecture,
+    targets: frozenset[tuple[int, int]],
+    *,
+    observer: Any | None = None,
+) -> Iterator[None]:
+    """Observe only selected expert vectors while preserving native outputs.
+
+    The original fused expert forward executes first and its result is always
+    returned.  The selected expert is replayed only on a detached side path so
+    capture cannot perturb logits, routing, or the native grouped-matmul
+    accumulation.  This context manager is deliberately separate from
+    :func:`instrument_qwen35`, whose norm-only behavior is part of the v0
+    telemetry contract.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    if not targets:
+        raise ValueError("targeted instrumentation requires at least one target")
+    by_layer: list[frozenset[int]] = [
+        frozenset(expert for layer, expert in targets if layer == layer_index)
+        for layer_index in range(architecture.num_layers)
+    ]
+    originals: list[tuple[Any, Any]] = []
+    for layer_index, layer in enumerate(architecture.layers):
+        experts = layer.mlp.experts
+        original = experts.forward
+        originals.append((experts, original))
+        layer_targets = by_layer[layer_index]
+
+        def forward(
+            this: Any,
+            hidden_states: Any,
+            top_k_index: Any,
+            top_k_weights: Any,
+            *,
+            _layer: int = layer_index,
+            _original: Any = original,
+            _targets: frozenset[int] = layer_targets,
+        ) -> Any:
+            final = _original(hidden_states, top_k_index, top_k_weights)
+            if observer is None or not _targets:
+                return final
+            with torch.no_grad():
+                for expert in sorted(_targets):
+                    route_mask = top_k_index == expert
+                    route_tokens, route_ranks = torch.where(route_mask)
+                    if not route_tokens.numel():
+                        continue
+                    expert_input = hidden_states[route_tokens].detach()
+                    gate_up = F.linear(expert_input, this.gate_up_proj[expert])
+                    gate, up = gate_up.chunk(2, dim=-1)
+                    expert_output = F.linear(this.act_fn(gate) * up, this.down_proj[expert])
+                    weights = top_k_weights[route_tokens, route_ranks].detach()
+                    observer(
+                        TargetedRouteObservation(
+                            layer_index=_layer,
+                            expert_index=expert,
+                            token_indices=route_tokens.detach(),
+                            route_ranks=route_ranks.detach(),
+                            router_weights=weights,
+                            expert_inputs=expert_input,
+                            replayed_expert_output=expert_output.detach(),
+                            weighted_replayed_expert_output=(
+                                expert_output * weights[:, None]
+                            ).detach(),
+                        )
+                    )
+            return final
+
+        experts.forward = types.MethodType(forward, experts)
+
+    try:
+        yield None
+    finally:
+        for experts, original in originals:
+            experts.forward = original
+
+
 def _selected_output_norms(
-    expert_outputs: Any, token_indices: Any, expert_indices: Any, tokens: int, top_k: int
+    route_outputs: Any, token_indices: Any, expert_indices: Any, tokens: int, top_k: int
 ) -> Any:
     """Scatter per-route norms back to [tokens, top_k] order."""
     import torch
 
-    result = torch.zeros((tokens, top_k), dtype=torch.float64, device=expert_outputs.device)
+    result = torch.zeros((tokens, top_k), dtype=torch.float64, device=route_outputs.device)
     result[token_indices, expert_indices] = torch.linalg.vector_norm(
-        expert_outputs.float(), dim=-1
+        route_outputs.float(), dim=-1
     ).double()
     return result
 

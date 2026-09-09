@@ -1,0 +1,164 @@
+{
+  "$defs": {
+    "BridgeCaptureExpert": {
+      "additionalProperties": false,
+      "description": "Stable donor layer/expert identity.",
+      "properties": {
+        "expert": {
+          "minimum": 0,
+          "title": "Expert",
+          "type": "integer"
+        },
+        "layer": {
+          "minimum": 0,
+          "title": "Layer",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer",
+        "expert"
+      ],
+      "title": "BridgeCaptureExpert",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Completion marker and checksums for one atomic target shard.",
+  "properties": {
+    "analyzed_tokens": {
+      "exclusiveMinimum": 0,
+      "title": "Analyzed Tokens",
+      "type": "integer"
+    },
+    "candidate_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Candidate Manifest Sha256",
+      "type": "string"
+    },
+    "checksums": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Checksums",
+      "type": "object"
+    },
+    "checksums_file": {
+      "minLength": 1,
+      "title": "Checksums File",
+      "type": "string"
+    },
+    "config_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Config Sha256",
+      "type": "string"
+    },
+    "event_counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Event Counts",
+      "type": "object"
+    },
+    "kind": {
+      "const": "bridge-target-shard",
+      "title": "Kind",
+      "type": "string"
+    },
+    "model_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Model Revision",
+      "type": "string"
+    },
+    "record_count": {
+      "exclusiveMinimum": 0,
+      "title": "Record Count",
+      "type": "integer"
+    },
+    "records_file": {
+      "minLength": 1,
+      "title": "Records File",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "shard_id": {
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "title": "Shard Id",
+      "type": "string"
+    },
+    "shard_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Shard Sha256",
+      "type": "string"
+    },
+    "source_manifest_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Manifest Hash",
+      "type": "string"
+    },
+    "target_experts": {
+      "items": {
+        "$ref": "#/$defs/BridgeCaptureExpert"
+      },
+      "minItems": 1,
+      "title": "Target Experts",
+      "type": "array"
+    },
+    "tensor_keys": {
+      "items": {
+        "enum": [
+          "expert_input",
+          "replayed_expert_output",
+          "weighted_replayed_expert_output"
+        ],
+        "type": "string"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "title": "Tensor Keys",
+      "type": "array"
+    },
+    "tensors_file": {
+      "minLength": 1,
+      "title": "Tensors File",
+      "type": "string"
+    },
+    "tokenizer_fingerprint": {
+      "minLength": 1,
+      "title": "Tokenizer Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "run_id",
+    "shard_id",
+    "source_manifest_hash",
+    "config_sha256",
+    "candidate_manifest_sha256",
+    "model_revision",
+    "tokenizer_fingerprint",
+    "record_count",
+    "analyzed_tokens",
+    "event_counts",
+    "records_file",
+    "tensors_file",
+    "checksums_file",
+    "checksums",
+    "tensor_keys",
+    "target_experts",
+    "shard_sha256"
+  ],
+  "title": "BridgeTargetShard",
+  "type": "object"
+}

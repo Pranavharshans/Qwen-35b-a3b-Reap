@@ -12,9 +12,24 @@ from typing import Any
 
 import numpy as np
 
+from reverse_reap.bridge_capture import (
+    AtomicTargetShardWriter,
+    BridgeCaptureError,
+    CoverageTracker,
+    load_bridge_manifest,
+    load_target_capture_state,
+    target_event_id,
+    validate_target_shard,
+    write_target_capture_state,
+)
 from reverse_reap.config import ExperimentConfig
 from reverse_reap.datasets import NormalizedSample, balanced_subset, load_manifest
-from reverse_reap.instrumentation import CaptureState, instrument_qwen35
+from reverse_reap.instrumentation import (
+    CaptureState,
+    TargetedRouteObservation,
+    instrument_qwen35,
+    instrument_qwen35_targeted,
+)
 from reverse_reap.qwen35 import ArchitectureError, Qwen35Architecture, inspect_qwen35_moe
 
 
@@ -175,6 +190,386 @@ def _run_capture(
     with torch.inference_mode(), instrument_qwen35(architecture, observer=observer) as capture:
         model(input_ids=input_ids, attention_mask=torch.ones_like(input_ids), use_cache=False)
     return capture
+
+
+def pad_token_batch(
+    sequences: list[Any], pad_token_id: int, *, left: bool = False
+) -> tuple[Any, Any, list[tuple[int, int] | None]]:
+    """Pad one-dimensional token sequences and return a valid-token index map.
+
+    Qwen's expert kernel receives a flattened ``batch * sequence`` dimension.
+    The returned map converts that flattened index back to ``(sample_index,
+    unpadded_token_position)`` and marks padding positions as ``None``.
+    """
+    import torch
+
+    if not sequences:
+        raise RuntimeCompatibilityError("cannot pad an empty token batch")
+    normalized = []
+    for sequence in sequences:
+        value = sequence
+        if not isinstance(value, torch.Tensor):
+            value = torch.as_tensor(value, dtype=torch.long)
+        if value.ndim == 2 and tuple(value.shape[:1]) == (1,):
+            value = value[0]
+        if value.ndim != 1 or value.numel() == 0:
+            raise RuntimeCompatibilityError("each token sequence must be a non-empty 1-D tensor")
+        normalized.append(value.to(dtype=torch.long))
+    width = max(int(value.numel()) for value in normalized)
+    batch = torch.full(
+        (len(normalized), width), int(pad_token_id), dtype=torch.long, device=normalized[0].device
+    )
+    attention = torch.zeros_like(batch)
+    mapping: list[tuple[int, int] | None] = [None] * (len(normalized) * width)
+    for sample_index, value in enumerate(normalized):
+        length = int(value.numel())
+        start = width - length if left else 0
+        batch[sample_index, start : start + length] = value
+        attention[sample_index, start : start + length] = 1
+        for position in range(length):
+            mapping[sample_index * width + start + position] = (sample_index, position)
+    return batch, attention, mapping
+
+
+def _run_targeted_batch(
+    model: Any,
+    architecture: Qwen35Architecture,
+    input_ids: Any,
+    attention_mask: Any,
+    targets: frozenset[tuple[int, int]],
+    observer: Any,
+) -> None:
+    """Run one padded, teacher-forced batch through the native donor path."""
+    device = model.get_input_embeddings().weight.device
+    input_ids = input_ids.to(device)
+    attention_mask = attention_mask.to(device)
+    import torch
+
+    with torch.inference_mode(), instrument_qwen35_targeted(
+        architecture, targets, observer=observer
+    ):
+        model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+        )
+
+
+def capture_targeted_manifest(
+    model_path: Path,
+    capture_manifest_path: Path,
+    destination: Path,
+    config: ExperimentConfig,
+    *,
+    batch_size: int | None = None,
+    left_padding: bool = False,
+    shard_max_records: int = 4096,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Capture selected donor expert vectors into resumable BF16 shards.
+
+    This path is deliberately separate from :func:`capture_manifest`: it saves
+    only target routes and never changes the returned native model output.
+    ``run_id`` is supplied by the lead controller so a CLI invocation resolves
+    the identity once and all records share it.
+    """
+    manifest = load_bridge_manifest(capture_manifest_path)
+    if config.model.revision != manifest.model_revision:
+        raise RuntimeCompatibilityError("capture manifest and config donor revisions differ")
+    if config.runtime.enable_thinking or manifest.enable_thinking:
+        raise RuntimeCompatibilityError(
+            "bridge target capture is currently C0 thinking-disabled only"
+        )
+    selected_batch_size = batch_size or config.runtime.batch_size
+    if selected_batch_size not in (1, 2, 4, 8):
+        raise RuntimeCompatibilityError("target capture batch_size must be one of 1, 2, 4, or 8")
+    effective_run_id = run_id or config.run_id
+    if not effective_run_id or effective_run_id == "unresolved":
+        raise RuntimeCompatibilityError("target capture requires a resolved run_id")
+    if manifest.run_id != effective_run_id:
+        raise RuntimeCompatibilityError("capture manifest and runtime run IDs differ")
+    if manifest.config_sha256 != config.fingerprint():
+        raise RuntimeCompatibilityError("capture manifest and config hashes differ")
+    targets = frozenset((item.layer, item.expert) for item in manifest.experts)
+    sample_ordinals = {
+        item.sample.sample_id: item.sample_ordinal for item in manifest.samples
+    }
+    model, tokenizer = load_donor(model_path, config)
+    try:
+        architecture = inspect_qwen35_moe(model)
+    except ArchitectureError as error:
+        raise RuntimeCompatibilityError(str(error)) from error
+    validate_donor_contract(model, architecture)
+    if any(
+        layer < 0
+        or layer >= architecture.num_layers
+        or expert < 0
+        or expert >= architecture.num_experts
+        for layer, expert in targets
+    ):
+        raise RuntimeCompatibilityError("capture manifest contains an out-of-range target expert")
+
+    rendered: list[tuple[NormalizedSample, list[int]]] = []
+    for selected in manifest.samples:
+        _, full_ids = _render_ids(tokenizer, selected.sample, manifest.enable_thinking)
+        token_ids = [int(value) for value in full_ids[0].tolist()]
+        if len(token_ids) != selected.token_count:
+            raise RuntimeCompatibilityError(
+                f"token count changed for {selected.sample.sample_id}: "
+                f"manifest={selected.token_count}, runtime={len(token_ids)}"
+            )
+        if len(token_ids) > manifest.max_input_tokens:
+            raise RuntimeCompatibilityError(
+                f"sample {selected.sample.sample_id} exceeds max_input_tokens without truncation"
+            )
+        rendered.append((selected.sample, token_ids))
+
+    destination.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = destination / "capture-state.json"
+    existing_shards = sorted(
+        path for path in destination.glob("shard-*") if path.is_dir()
+    )
+    checkpoint = load_target_capture_state(
+        checkpoint_path,
+        run_id=effective_run_id,
+        capture_manifest_sha256=manifest.manifest_sha256,
+    )
+    if existing_shards and checkpoint is None:
+        raise BridgeCaptureError(
+            "completed target shards exist without a resumable capture checkpoint"
+        )
+    for shard_path in existing_shards:
+        validate_target_shard(shard_path, hidden_size=architecture.hidden_size)
+        metadata = json.loads((shard_path / "shard.json").read_text(encoding="utf-8"))
+        if (
+            metadata.get("run_id") != effective_run_id
+            or metadata.get("source_manifest_hash") != manifest.source_manifest_sha256
+            or metadata.get("model_revision") != manifest.model_revision
+            or metadata.get("tokenizer_fingerprint") != manifest.tokenizer_fingerprint
+            or metadata.get("config_sha256") != manifest.config_sha256
+            or metadata.get("candidate_manifest_sha256")
+            != manifest.candidate_manifest_sha256
+        ):
+            raise BridgeCaptureError(
+                f"existing target shard does not match this capture: {shard_path}"
+            )
+    if checkpoint is not None:
+        existing_names = {path.name for path in existing_shards}
+        if set(checkpoint.completed_shards) != existing_names:
+            raise BridgeCaptureError(
+                "capture checkpoint and completed target shards disagree"
+            )
+    coverage = CoverageTracker(
+        targets,
+        min_coding_events=manifest.min_coding_events_per_expert,
+        min_control_events=manifest.min_control_events_per_expert,
+        target_tokens=manifest.target_analyzed_tokens,
+        hard_token_ceiling=manifest.hard_token_ceiling,
+    )
+    if checkpoint is not None:
+        coverage.restore(checkpoint.coverage)
+    shard_ids = [path.name.removeprefix("shard-") for path in existing_shards]
+    try:
+        shard_index = max((int(value) for value in shard_ids), default=-1) + 1
+    except ValueError as error:
+        raise BridgeCaptureError("target shard directory has a non-numeric id") from error
+    shard_dirs: list[Path] = list(existing_shards)
+    writer: AtomicTargetShardWriter | None = None
+
+    def persist_checkpoint(
+        *, next_sample_index: int, next_batch_number: int, complete: bool
+    ) -> None:
+        write_target_capture_state(
+            checkpoint_path,
+            {
+                "run_id": effective_run_id,
+                "capture_manifest_sha256": manifest.manifest_sha256,
+                "next_sample_index": next_sample_index,
+                "next_batch_number": next_batch_number,
+                "completed_shards": [path.name for path in shard_dirs],
+                "coverage": coverage.report(),
+                "complete": complete,
+            },
+        )
+
+    if checkpoint is None:
+        persist_checkpoint(next_sample_index=0, next_batch_number=0, complete=False)
+    elif checkpoint.complete and not shard_dirs:
+        raise BridgeCaptureError(
+            "completed target capture checkpoint has no completed shards"
+        )
+    elif checkpoint.complete:
+        return {
+            "run_id": effective_run_id,
+            "manifest_sha256": manifest.manifest_sha256,
+            "selected_batch_size": selected_batch_size,
+            "left_padding": left_padding,
+            "shards": [str(path) for path in shard_dirs],
+            "coverage": coverage.report(),
+            "analyzed_tokens": coverage.analyzed_tokens,
+            "target_reached": coverage.analyzed_tokens >= coverage.target_tokens,
+            "coverage_sufficient": coverage.capture_success,
+            "hard_ceiling_reached": coverage.hard_ceiling_reached,
+            "valid": coverage.capture_success,
+            "resumed": True,
+        }
+
+    def new_writer() -> AtomicTargetShardWriter:
+        nonlocal shard_index
+        candidate = AtomicTargetShardWriter(
+            destination,
+            run_id=effective_run_id,
+            shard_id=f"{shard_index:06d}",
+            source_manifest_hash=manifest.source_manifest_sha256,
+            model_revision=manifest.model_revision,
+            tokenizer_fingerprint_value=manifest.tokenizer_fingerprint,
+            config_sha256=manifest.config_sha256,
+            candidate_manifest_sha256=manifest.candidate_manifest_sha256,
+            target_experts=targets,
+            hidden_size=architecture.hidden_size,
+            max_records=shard_max_records,
+        )
+        shard_index += 1
+        return candidate
+
+    def observe(observation: TargetedRouteObservation) -> None:
+        nonlocal writer
+        if writer is None:
+            writer = new_writer()
+        token_indices = observation.token_indices.detach().cpu().tolist()
+        route_ranks = observation.route_ranks.detach().cpu().tolist()
+        weights = observation.router_weights.detach().cpu().tolist()
+        for offset, flat_index in enumerate(token_indices):
+            if not 0 <= int(flat_index) < len(batch_mapping):
+                raise RuntimeCompatibilityError(
+                    "target hook returned an invalid flattened token index"
+                )
+            metadata = batch_mapping[int(flat_index)]
+            if metadata is None:
+                continue
+            sample_index, token_position = metadata
+            sample, token_ids = batch_samples[sample_index]
+            if writer.full:
+                shard_dirs.append(writer.finalize())
+                writer = new_writer()
+            record = {
+                "schema_version": 1,
+                "run_id": effective_run_id,
+                "row_index": 0,
+                "event_id": target_event_id(
+                    sample.sample_id,
+                    token_position,
+                    observation.layer_index,
+                    observation.expert_index,
+                    int(route_ranks[offset]),
+                ),
+                "sample_ordinal": sample_ordinals[sample.sample_id],
+                "sample_id": sample.sample_id,
+                "sample_content_sha256": sample.content_sha256,
+                "domain": sample.domain,
+                "split": sample.split,
+                "token_position": token_position,
+                "token_id": token_ids[token_position],
+                "donor_layer": observation.layer_index,
+                "expert_id": observation.expert_index,
+                "route_rank": int(route_ranks[offset]),
+                "router_weight": float(weights[offset]),
+                "source_manifest_hash": manifest.source_manifest_sha256,
+                "model_revision": manifest.model_revision,
+                "tokenizer_fingerprint": manifest.tokenizer_fingerprint,
+                "config_sha256": manifest.config_sha256,
+                "candidate_manifest_sha256": manifest.candidate_manifest_sha256,
+                "condition_id": manifest.condition_id,
+                "chunk_id": f"batch-{batch_number:06d}",
+            }
+            writer.append(
+                record,
+                observation.expert_inputs[offset],
+                observation.replayed_expert_output[offset],
+                observation.weighted_replayed_expert_output[offset],
+            )
+            coverage.add_event(sample.domain, observation.layer_index, observation.expert_index)
+
+    sample_offset = checkpoint.next_sample_index if checkpoint is not None else 0
+    batch_number = checkpoint.next_batch_number if checkpoint is not None else 0
+    while sample_offset < len(rendered) and not coverage.should_stop:
+        batch_samples: list[tuple[NormalizedSample, list[int]]] = []
+        token_total = 0
+        while sample_offset < len(rendered) and len(batch_samples) < selected_batch_size:
+            candidate = rendered[sample_offset]
+            candidate_tokens = len(candidate[1])
+            if (
+                token_total
+                and coverage.analyzed_tokens + token_total + candidate_tokens
+                > coverage.hard_token_ceiling
+            ):
+                break
+            if (
+                not token_total
+                and coverage.analyzed_tokens + candidate_tokens
+                > coverage.hard_token_ceiling
+            ):
+                raise RuntimeCompatibilityError(
+                    f"sample {candidate[0].sample_id} would exceed hard token ceiling"
+                )
+            batch_samples.append(candidate)
+            token_total += candidate_tokens
+            sample_offset += 1
+        if not batch_samples:
+            break
+        sequences = [token_ids for _, token_ids in batch_samples]
+        pad_token_id = getattr(tokenizer, "pad_token_id", None)
+        if pad_token_id is None:
+            pad_token_id = getattr(tokenizer, "eos_token_id", None)
+        if pad_token_id is None:
+            raise RuntimeCompatibilityError("tokenizer has neither pad_token_id nor eos_token_id")
+        batch_ids, attention_mask, batch_mapping = pad_token_batch(
+            sequences, int(pad_token_id), left=left_padding
+        )
+        if batch_ids.device.type != "cpu":
+            batch_ids = batch_ids.cpu()
+            attention_mask = attention_mask.cpu()
+        _run_targeted_batch(
+            model,
+            architecture,
+            batch_ids,
+            attention_mask,
+            targets,
+            observe,
+        )
+        coverage.add_tokens(token_total)
+        batch_number += 1
+        if writer is not None and writer.record_count:
+            shard_dirs.append(writer.finalize())
+            writer = None
+        persist_checkpoint(
+            next_sample_index=sample_offset,
+            next_batch_number=batch_number,
+            complete=coverage.should_stop or sample_offset >= len(rendered),
+        )
+    if writer is not None and writer.record_count:
+        shard_dirs.append(writer.finalize())
+        writer = None
+    persist_checkpoint(
+        next_sample_index=sample_offset,
+        next_batch_number=batch_number,
+        complete=coverage.should_stop or sample_offset >= len(rendered),
+    )
+    if not shard_dirs:
+        raise BridgeCaptureError("targeted capture produced no routed target records")
+    return {
+        "valid": coverage.capture_success,
+        "run_id": effective_run_id,
+        "manifest_sha256": manifest.manifest_sha256,
+        "selected_batch_size": selected_batch_size,
+        "left_padding": left_padding,
+        "shards": [str(path) for path in shard_dirs],
+        "coverage": coverage.report(),
+        "analyzed_tokens": coverage.analyzed_tokens,
+        "target_reached": coverage.analyzed_tokens >= coverage.target_tokens,
+        "coverage_sufficient": coverage.capture_success,
+        "hard_ceiling_reached": coverage.hard_ceiling_reached,
+    }
 
 
 def _segment_rows(
