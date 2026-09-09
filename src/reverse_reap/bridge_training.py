@@ -593,8 +593,10 @@ def capture_host_hidden_states(
     ]
     mapping_lookup = _mapping_lookup(typed_mappings)
     capture_manifest = load_bridge_manifest(capture_manifest_path)
-    if capture_manifest.run_id != run_id:
-        raise BridgeTrainingError("host capture and donor capture run IDs differ")
+    # The host-states manifest records the bridge run ID, not the donor run
+    # ID: manifest-hash bindings (checked by repair and training) already
+    # prevent mixing donor generations. Requiring equality here would collapse
+    # the two namespaces and contradict the documented --run-id <bridge-run-id>.
     source_rows = _load_source_rows(
         handoff_path,
         allow_observational_coverage_incomplete=allow_observational_coverage_incomplete,
