@@ -142,6 +142,43 @@ def test_tokenizer_ids_accepts_mapping_batch_encoding_and_sequences():
     assert _tokenizer_ids(_FakeTokenizer([9]), [], enable_thinking=False) == [9]
 
 
+def test_ceiling_batch_decision_covers_all_branches():
+    from reverse_reap.bridge_capture import ceiling_batch_decision as decide
+
+    assert (
+        decide(analyzed_tokens=0, batch_tokens=0, sample_tokens=10, hard_token_ceiling=100)
+        == "append"
+    )
+    # Exact fit appends rather than sealing.
+    assert (
+        decide(analyzed_tokens=90, batch_tokens=0, sample_tokens=10, hard_token_ceiling=100)
+        == "append"
+    )
+    assert (
+        decide(analyzed_tokens=90, batch_tokens=5, sample_tokens=10, hard_token_ceiling=100)
+        == "seal_batch"
+    )
+    assert (
+        decide(analyzed_tokens=90, batch_tokens=0, sample_tokens=20, hard_token_ceiling=100)
+        == "stop_cleanly"
+    )
+    assert (
+        decide(analyzed_tokens=0, batch_tokens=0, sample_tokens=101, hard_token_ceiling=100)
+        == "raise_infeasible"
+    )
+    # Regression: blocked run 20260909T104028Z (349266 + 903 > 350000 with
+    # progress) must stop cleanly, never raise.
+    assert (
+        decide(
+            analyzed_tokens=349266,
+            batch_tokens=0,
+            sample_tokens=903,
+            hard_token_ceiling=350000,
+        )
+        == "stop_cleanly"
+    )
+
+
 def test_capture_checkpoint_is_hash_bound_and_resumable(tmp_path):
     tracker = CoverageTracker(
         frozenset({(3, 26)}),

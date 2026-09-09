@@ -595,6 +595,34 @@ def load_bridge_manifest(path: Path) -> BridgeCaptureManifest:
 
 
 @dataclass
+def ceiling_batch_decision(
+    *,
+    analyzed_tokens: int,
+    batch_tokens: int,
+    sample_tokens: int,
+    hard_token_ceiling: int,
+) -> str:
+    """Decide how one teacher-forced sample interacts with the hard token ceiling.
+
+    Returns one of ``"append"``, ``"seal_batch"``, ``"stop_cleanly"`` or
+    ``"raise_infeasible"``, mirroring the governed capture loop exactly.
+    Samples are never partially processed: a sample that does not fit is
+    either deferred to the next batch or ends the run with coverage-incomplete.
+    ``"stop_cleanly"`` applies only after forward progress exists; with zero
+    analyzed tokens the run is infeasible and must fail loudly instead.
+    """
+    if analyzed_tokens < 0 or batch_tokens < 0 or sample_tokens < 0:
+        raise BridgeCaptureError("token counts cannot be negative")
+    if (
+        batch_tokens
+        and analyzed_tokens + batch_tokens + sample_tokens > hard_token_ceiling
+    ):
+        return "seal_batch"
+    if not batch_tokens and analyzed_tokens + sample_tokens > hard_token_ceiling:
+        return "stop_cleanly" if analyzed_tokens > 0 else "raise_infeasible"
+    return "append"
+
+
 class CoverageTracker:
     """Explicit adaptive stopping state for selected-expert capture."""
 
