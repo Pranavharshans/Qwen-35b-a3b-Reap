@@ -1,0 +1,40 @@
+# Separate, opt-in donor target capture configuration — 350k amended run.
+# Amendment basis (human-approved): the frozen full-lengthmatched source pool
+# yields 370,292 eligible teacher-forced tokens under calibration+selection,
+# so the original 500k hard ceiling is unreachable. Target stays 200,000;
+# hard ceiling becomes 350,000. Splits, experts, thresholds, prompts,
+# precision, seed, and batch size are unchanged. This does not alter the v0
+# causal configs or upgrade the observational label.
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  source_precision: bf16
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 4
+  max_input_tokens: 1024
+  max_new_tokens: 0
+  enable_thinking: false
+  use_cache: false
+  speculative_decoding: false
+budget:
+  # One PRO 6000 host-hour budget for the 350k amended run on offer 44119447
+  # (all-in $1.2014/h); the lead must replace the provider rate with the
+  # live all-inclusive offer before any paid launch.
+  max_gpu_hours: 7
+  max_cost_usd: 8
+  provider_rate_usd_per_hour: 1.2014
+  storage_limit_gb: 150
+  deadline_utc: 2027-01-01T00:00:00Z
+datasets:
+  manifest: datasets/manifests/full-lengthmatched.jsonl
+  split: full
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false

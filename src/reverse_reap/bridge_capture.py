@@ -16,6 +16,7 @@ import re
 import shutil
 import tempfile
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -341,7 +342,9 @@ def _tokenizer_ids(
         return_tensors=None,
         enable_thinking=enable_thinking,
     )
-    if isinstance(rendered, dict):
+    # transformers>=5 slow-tokenizer path returns a BatchEncoding (a UserDict,
+    # not a dict) here; Mapping covers both without touching list/ndarray/tensor.
+    if isinstance(rendered, Mapping):
         rendered = rendered["input_ids"]
     if hasattr(rendered, "tolist"):
         rendered = rendered.tolist()

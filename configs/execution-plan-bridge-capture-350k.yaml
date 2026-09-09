@@ -1,0 +1,95 @@
+# Governed, opt-in capture and lossless extraction of the four frozen
+# observational candidates — 350k AMENDED run. This plan does not train a
+# bridge or make a causal coding-critical claim. GPU-hour estimates are
+# single-host wall-hours.
+#
+# Amendment basis (human-approved): the frozen full-lengthmatched source pool
+# yields 370,292 eligible teacher-forced tokens under calibration+selection,
+# so the original 500k hard ceiling is unreachable. Target stays 200,000;
+# hard ceiling becomes 350,000. Splits, experts, thresholds, prompts,
+# precision, seed, and batch size are unchanged.
+schema_version: 1
+tasks:
+  - task_id: verify-frozen-inputs
+    objective: Fail before GPU spend unless the full source manifest and passed frozen candidate artifact are present and valid.
+    definition_of_done: Input report binds config, source manifest, candidate manifest, donor revision, and exactly four target experts.
+    command: [timeout, --kill-after=60, "900", python, scripts/validate_bridge_inputs.py, configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, datasets/manifests/full-lengthmatched.jsonl, runs/bridge-capture/inputs/candidate-manifest.json, "runs/bridge-capture/${RUN_ID}/input-validation.json", --require-full]
+    validation_command: [python, -c, "import json,sys; assert json.load(open(sys.argv[1]))['passed']", "runs/bridge-capture/${RUN_ID}/input-validation.json"]
+    inputs: [configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, datasets/manifests/full-lengthmatched.jsonl, runs/bridge-capture/inputs/candidate-manifest.json]
+    outputs: ["runs/bridge-capture/${RUN_ID}/input-validation.json"]
+    dependencies: []
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.01
+    failure_behavior: terminal
+
+  - task_id: freeze-capture-manifest
+    objective: Freeze a deterministic teacher-forced coding/control sample order before observing target activations.
+    definition_of_done: Hash-bound manifest contains enough eligible tokens to support the immutable 200k target and 350k hard ceiling.
+    command: [timeout, --kill-after=60, "1800", reverse-reap, freeze-bridge-manifest, datasets/manifests/full-lengthmatched.jsonl, /models/qwen, "runs/bridge-capture/${RUN_ID}/capture-manifest.json", --config, configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, --candidate-manifest, runs/bridge-capture/inputs/candidate-manifest.json, --model-revision, 59d61f3ce65a6d9863b86d2e96597125219dc754, --run-id, "${RUN_ID}", --target-tokens, "200000", --hard-token-ceiling, "350000", --max-input-tokens, "1024", --report, "runs/bridge-capture/${RUN_ID}/manifest-freeze-report.json"]
+    validation_command: [python, -c, "import json,sys; x=json.load(open(sys.argv[1])); assert x['target_reached'] and x['analyzed_tokens'] >= 350000", "runs/bridge-capture/${RUN_ID}/capture-manifest.json"]
+    inputs: [datasets/manifests/full-lengthmatched.jsonl, runs/bridge-capture/inputs/candidate-manifest.json, configs/pinned-pro6000-bf16-bridge-capture-350k.yaml]
+    outputs: ["runs/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/bridge-capture/${RUN_ID}/manifest-freeze-report.json"]
+    dependencies: [verify-frozen-inputs]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
+
+  - task_id: gpu-preflight
+    objective: Verify the exact 96GB RTX PRO 6000 runtime and free disk before loading donor weights.
+    definition_of_done: CUDA, sm_120, torch 2.11 cu128, VRAM, and disk gates pass.
+    command: [timeout, --kill-after=60, "900", python, scripts/gpu_preflight.py, --profile, pro6000, --output, "runs/bridge-capture/${RUN_ID}/gpu-preflight.json"]
+    validation_command: [python, -c, "import json,sys; assert json.load(open(sys.argv[1]))['passed']", "runs/bridge-capture/${RUN_ID}/gpu-preflight.json"]
+    inputs: [configs/pinned-pro6000-bf16-bridge-capture-350k.yaml]
+    outputs: ["runs/bridge-capture/${RUN_ID}/gpu-preflight.json"]
+    dependencies: [freeze-capture-manifest]
+    estimated_gpu_hours: 0.02
+    estimated_storage_gb: 0.01
+    failure_behavior: terminal
+
+  - task_id: batch-probe
+    objective: Select the largest contiguous safe batch from B1, B2, B4, and B8 without changing logits or exceeding 92 percent reserved VRAM.
+    definition_of_done: Probe records exact no-hook versus hook logits and selects a safe batch size; failure stops bulk capture.
+    command: [timeout, --kill-after=60, "3600", python, scripts/probe_bridge_batches.py, configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, /models/qwen, "runs/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/bridge-capture/${RUN_ID}/batch-probe.json", --batches, "1", "2", "4", "8"]
+    validation_command: [python, -c, "import json,sys; x=json.load(open(sys.argv[1])); assert x['passed'] and x['selected_batch_size'] in (1,2,4,8)", "runs/bridge-capture/${RUN_ID}/batch-probe.json"]
+    inputs: [configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, "runs/bridge-capture/${RUN_ID}/capture-manifest.json"]
+    outputs: ["runs/bridge-capture/${RUN_ID}/batch-probe.json"]
+    dependencies: [gpu-preflight]
+    estimated_gpu_hours: 0.5
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
+
+  - task_id: capture-targets
+    objective: Capture selected-route donor inputs and replayed outputs until all coverage minima pass after at least 200k analysed tokens, or stop at 350k.
+    definition_of_done: Atomic BF16 safetensor shards and capture state validate with every target meeting coding and control minima.
+    command: [timeout, --kill-after=60, "18000", reverse-reap, capture-targets, configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, /models/qwen, "runs/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/bridge-capture/${RUN_ID}/targets", --batch-size, "4", --shard-max-records, "4096", --run-id, "${RUN_ID}", --report, "runs/bridge-capture/${RUN_ID}/capture-report.json"]
+    validation_command: [python, scripts/validate_bridge_capture.py, "runs/bridge-capture/${RUN_ID}/targets", "runs/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/bridge-capture/${RUN_ID}/capture-validation.json"]
+    inputs: [configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, "runs/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/bridge-capture/${RUN_ID}/batch-probe.json"]
+    outputs: ["runs/bridge-capture/${RUN_ID}/targets", "runs/bridge-capture/${RUN_ID}/capture-report.json", "runs/bridge-capture/${RUN_ID}/capture-validation.json"]
+    dependencies: [batch-probe]
+    estimated_gpu_hours: 5.0
+    estimated_storage_gb: 40
+    failure_behavior: retry
+
+  - task_id: extract-observational-candidates
+    objective: Copy the four frozen expert tensors byte-for-byte from the official BF16 donor without changing dtype or layout.
+    definition_of_done: Extraction manifest and independent verification report prove exact source-to-artifact bytes for every required tensor.
+    command: [timeout, --kill-after=60, "3600", reverse-reap, extract, configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, /models/qwen, runs/bridge-capture/inputs/candidate-manifest.json, "runs/bridge-capture/${RUN_ID}/extraction"]
+    validation_command: [python, -c, "import json,sys; x=json.load(open(sys.argv[1])); assert x['passed']", "runs/bridge-capture/${RUN_ID}/extraction/verification-report.json"]
+    inputs: [configs/pinned-pro6000-bf16-bridge-capture-350k.yaml, runs/bridge-capture/inputs/candidate-manifest.json, "runs/bridge-capture/${RUN_ID}/capture-validation.json"]
+    outputs: ["runs/bridge-capture/${RUN_ID}/extraction"]
+    dependencies: [capture-targets]
+    estimated_gpu_hours: 0.25
+    estimated_storage_gb: 1
+    failure_behavior: terminal
+
+  - task_id: build-handoff
+    objective: Freeze a portable hash inventory for capture shards, checkpoint, capture manifest, and extracted tensors.
+    definition_of_done: Handoff validates every listed path, size, and SHA-256 from its destination root.
+    command: [timeout, --kill-after=60, "1800", reverse-reap, build-target-handoff, "runs/bridge-capture/${RUN_ID}/targets", "runs/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/bridge-capture/${RUN_ID}/handoff-manifest.json", --extraction-dir, "runs/bridge-capture/${RUN_ID}/extraction"]
+    validation_command: [reverse-reap, validate-target-handoff, "runs/bridge-capture/${RUN_ID}/handoff-manifest.json"]
+    inputs: ["runs/bridge-capture/${RUN_ID}/targets", "runs/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/bridge-capture/${RUN_ID}/extraction"]
+    outputs: ["runs/bridge-capture/${RUN_ID}/handoff-manifest.json"]
+    dependencies: [extract-observational-candidates]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal

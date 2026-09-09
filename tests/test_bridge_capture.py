@@ -13,6 +13,7 @@ from reverse_reap.bridge_capture import (
     target_event_id,
     validate_target_shard,
     write_target_capture_state,
+    _tokenizer_ids,
 )
 from reverse_reap.datasets import freeze_manifest, normalize_sample
 
@@ -112,6 +113,33 @@ def test_coverage_reports_hard_ceiling_when_domain_coverage_is_incomplete():
     assert tracker.should_stop is True
     assert tracker.stop_reason == "hard-token-ceiling"
     assert tracker.report()["minimum_coverage_reached"] is False
+
+
+def test_tokenizer_ids_accepts_mapping_batch_encoding_and_sequences():
+    """transformers>=5 slow tokenizers return BatchEncoding (UserDict, not dict)."""
+    from collections import UserDict
+
+    class _FakeTokenizer:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def apply_chat_template(self, messages, **kwargs):
+            assert kwargs.get("enable_thinking") is False
+            return self._payload
+
+    expected = [1, 2, 3]
+    assert (
+        _tokenizer_ids(_FakeTokenizer({"input_ids": expected}), [], enable_thinking=False)
+        == expected
+    )
+    assert (
+        _tokenizer_ids(
+            _FakeTokenizer(UserDict({"input_ids": expected})), [], enable_thinking=False
+        )
+        == expected
+    )
+    assert _tokenizer_ids(_FakeTokenizer([[7, 8]]), [], enable_thinking=False) == [7, 8]
+    assert _tokenizer_ids(_FakeTokenizer([9]), [], enable_thinking=False) == [9]
 
 
 def test_capture_checkpoint_is_hash_bound_and_resumable(tmp_path):
