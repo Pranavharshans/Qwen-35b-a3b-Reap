@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from reverse_reap.artifacts import CandidateManifest, ExtractionManifest, RoutingRow
+from reverse_reap.bridge_benchmark import BridgeBenchmarkConfig
 from reverse_reap.bridge_capture import (
     BridgeCaptureManifest,
     BridgeTargetBundle,
@@ -44,6 +45,7 @@ SCHEMAS = {
     "bridge-training-manifest.schema.json": BridgeTrainingManifest,
     "bridge-training-row.schema.json": BridgeTrainingRow,
     "bridge-unused-row.schema.json": BridgeUnusedRow,
+    "bridge-benchmark-config.schema.json": BridgeBenchmarkConfig,
 }
 
 

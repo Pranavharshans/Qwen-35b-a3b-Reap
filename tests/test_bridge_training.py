@@ -117,6 +117,15 @@ def test_bridge_model_freezes_experts_and_starts_as_identity():
     assert all(torch.isfinite(parameter.grad).all() for parameter in trainable)
 
 
+def test_bridge_accepts_bf16_runtime_hidden_with_fp32_adapters():
+    torch = pytest.importorskip("torch")
+    mappings, model = _two_expert_model(torch)
+    hidden = torch.randn(2048, dtype=torch.bfloat16)
+    output = model(hidden, mappings[0].key)
+    assert output.dtype == torch.bfloat16
+    assert output.shape == hidden.shape
+
+
 def _two_expert_model(torch):
     from reverse_reap.bridge_training import FrozenSwiGLUExpert
 

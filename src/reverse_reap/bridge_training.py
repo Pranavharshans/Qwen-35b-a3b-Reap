@@ -1500,10 +1500,13 @@ else:
                     f"host hidden state must end in {self.hidden_size}, "
                     f"got {tuple(host_hidden.shape)}"
                 )
-            donor_input = self._input_adapter(key)(host_hidden)
+            input_adapter = self._input_adapter(key)
+            adapter_dtype = next(input_adapter.parameters()).dtype
+            working_hidden = host_hidden.to(dtype=adapter_dtype)
+            donor_input = input_adapter(working_hidden)
             donor_output = self._expert(key)(donor_input)
             mapped_output = self._output_adapter(key)(donor_output)
-            gate = self.gate_cap * _torch.sigmoid(self._gate_head(key)(host_hidden))
+            gate = self.gate_cap * _torch.sigmoid(self._gate_head(key)(working_hidden))
             gated_output = gate * mapped_output
             return donor_input, donor_output, mapped_output, gated_output, gate
 
@@ -1517,7 +1520,7 @@ else:
             if not enabled:
                 return host_hidden
             _, _, _, gated_output, _ = self.components(host_hidden, key)
-            return host_hidden + gated_output
+            return host_hidden + gated_output.to(dtype=host_hidden.dtype)
 
         def forward_at_host_layer(
             self,
@@ -1562,6 +1565,8 @@ def install_bridge_sidecars(
     host_model: Any,
     bridge_model: Any,
     mappings: Sequence[BridgeExpertMapping | Mapping[str, Any]],
+    *,
+    telemetry: Any | None = None,
 ) -> list[Any]:
     """Attach frozen-host parallel sidecars at the configured MLP modules.
 
@@ -1604,7 +1609,11 @@ def install_bridge_sidecars(
             if not isinstance(hidden, torch.Tensor) or hidden.shape[-1] != 2048:
                 raise BridgeTrainingError("host MLP hook received an unexpected hidden shape")
             flat = hidden.reshape(-1, hidden.shape[-1])
-            residual = bridge_model(flat, mapping.key) - flat
+            if telemetry is None:
+                residual = bridge_model(flat, mapping.key) - flat
+            else:
+                _, _, _, residual, gate = bridge_model.components(flat, mapping.key)
+                telemetry.record(mapping.key, gate, residual)
             residual = residual.reshape_as(hidden).to(dtype=hidden.dtype)
             if isinstance(output, torch.Tensor):
                 return output + residual.to(dtype=output.dtype)

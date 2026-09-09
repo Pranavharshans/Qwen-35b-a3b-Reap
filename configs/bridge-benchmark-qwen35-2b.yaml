@@ -1,0 +1,41 @@
+# Intentionally unlaunchable template. Replace every REQUIRED value in a new,
+# immutable run configuration after the bridge checkpoint is hash-verified.
+schema_version: 1
+run_id: REQUIRED_BRIDGE_BENCHMARK_RUN_ID
+host_model: /absolute/path/to/Qwen3.5-2B
+host_revision: REQUIRED_HOST_REVISION_SHA40
+host_files_manifest: /absolute/path/to/host-files-manifest.json
+host_files_manifest_sha256: REQUIRED_HOST_FILES_MANIFEST_SHA256
+bridge_config: /absolute/path/to/bridge-config-pinned.yaml
+bridge_config_sha256: REQUIRED_BRIDGE_CONFIG_SHA256
+bridge_checkpoint: /absolute/path/to/bridge.safetensors
+bridge_checkpoint_sha256: REQUIRED_BRIDGE_CHECKPOINT_SHA256
+dataset:
+  source_manifest: /absolute/path/to/frozen-source-manifest.jsonl
+  source_manifest_sha256: REQUIRED_SOURCE_MANIFEST_SHA256
+  source_id: evalplus/humanevalplus
+  pilot_items: 25
+  # null means every eligible Python HumanEval item in the frozen source.
+  full_items: null
+  selection_seed: 20260909
+runtime:
+  seed: 20260909
+  deterministic: true
+  enable_thinking: false
+  batch_size: 1
+  max_input_tokens: 1024
+  max_new_tokens: 512
+  repeats_per_condition: 2
+  heartbeat_seconds: 300
+# Vast GPU containers commonly cannot run nested Docker. Deferred scoring
+# preserves all four raw generation runs for a later Docker-capable CPU host.
+scoring_mode: deferred
+evaluator_image: null
+budget:
+  max_wall_hours: 6
+  max_cost_usd: 5
+  provider_rate_usd_per_hour: 0.1478
+  usable_fraction: 0.8
+  deadline_utc: "2000-01-01T00:00:00+00:00"
+output_dir: runs/bridge-benchmark/REQUIRED_BRIDGE_BENCHMARK_RUN_ID
+proceed_full_regardless_of_pilot_score: true

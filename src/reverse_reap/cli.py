@@ -7,6 +7,11 @@ import json
 import subprocess
 from pathlib import Path
 
+from reverse_reap.bridge_benchmark import (
+    fetch_and_freeze_humanevalplus,
+    run_bridge_benchmark,
+    score_bridge_benchmark,
+)
 from reverse_reap.bridge_capture import (
     build_target_handoff,
     freeze_bridge_manifest,
@@ -200,6 +205,15 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_train = subparsers.add_parser("train-bridge")
     bridge_train.add_argument("config", type=Path)
     bridge_train.add_argument("--resume-checkpoint", type=Path)
+    bridge_benchmark = subparsers.add_parser("run-bridge-benchmark")
+    bridge_benchmark.add_argument("config", type=Path)
+    bridge_dataset = subparsers.add_parser("freeze-humanevalplus")
+    bridge_dataset.add_argument("revision")
+    bridge_dataset.add_argument("destination", type=Path)
+    bridge_dataset.add_argument("--seed", type=int, default=20260909)
+    bridge_score = subparsers.add_parser("score-bridge-benchmark")
+    bridge_score.add_argument("config", type=Path)
+    bridge_score.add_argument("--evaluator-image", required=True)
     probe = subparsers.add_parser("probe")
     probe.add_argument("config", type=Path)
     probe.add_argument("model_path", type=Path)
@@ -509,6 +523,22 @@ def main() -> int:
         return 0
     if args.command == "train-bridge":
         output = train_bridge(args.config, resume_checkpoint=args.resume_checkpoint)
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
+    if args.command == "run-bridge-benchmark":
+        output = run_bridge_benchmark(args.config)
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
+    if args.command == "freeze-humanevalplus":
+        output = fetch_and_freeze_humanevalplus(
+            args.destination, revision=args.revision, seed=args.seed
+        )
+        emit_json(output)
+        return 0
+    if args.command == "score-bridge-benchmark":
+        output = score_bridge_benchmark(
+            args.config, evaluator_image=args.evaluator_image
+        )
         emit_json(output)
         return 0 if output["status"] == "PASS" else 2
     if args.command == "probe":

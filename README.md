@@ -161,6 +161,14 @@ GPU-facing host-state capture is explicit as `capture-host-states`.
 dependencies. Random-expert control is reported unavailable until a separately
 verified random extraction exists.
 
+The paired coding evaluation is documented in
+[`docs/bridge-benchmark.md`](docs/bridge-benchmark.md). One
+`run-bridge-benchmark` command executes two deterministic base runs and two
+deterministic trained-bridge runs on both a 25-item pilot and the frozen full
+HumanEval+ set. Pilot score never suppresses the full tier; integrity and budget
+failures still stop it. Raw generations can be scored later on the qualified
+Docker/KVM boundary with `score-bridge-benchmark`.
+
 ## SWE-bench scoring boundary
 
 Repository-repair responses are not treated as scoreable until the official SWE-bench

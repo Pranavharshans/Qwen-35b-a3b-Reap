@@ -20,10 +20,12 @@ def test_checked_in_schema_files_exist_and_forbid_extra_fields():
         "bridge-training-manifest.schema.json",
         "bridge-training-row.schema.json",
         "bridge-unused-row.schema.json",
+        "bridge-benchmark-config.schema.json",
     }
     from pathlib import Path
 
     from reverse_reap.artifacts import CandidateManifest, ExtractionManifest, RoutingRow
+    from reverse_reap.bridge_benchmark import BridgeBenchmarkConfig
     from reverse_reap.bridge_capture import (
         BridgeCaptureManifest,
         BridgeTargetBundle,
@@ -61,6 +63,7 @@ def test_checked_in_schema_files_exist_and_forbid_extra_fields():
         "bridge-training-manifest.schema.json": BridgeTrainingManifest,
         "bridge-training-row.schema.json": BridgeTrainingRow,
         "bridge-unused-row.schema.json": BridgeUnusedRow,
+        "bridge-benchmark-config.schema.json": BridgeBenchmarkConfig,
     }
 
     assert set(schemas) == expected
