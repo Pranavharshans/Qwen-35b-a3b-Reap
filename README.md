@@ -142,6 +142,25 @@ The controller writes atomic task state, hashes inputs and outputs, reserves 20%
 declared budget, retries an identical failure at most twice, and records periodic heartbeats.
 No model weights or extracted tensors are committed or uploaded automatically.
 
+## Opt-in bridge training v1
+
+Bridge training is a separately governed follow-on for the frozen,
+post-trained `Qwen/Qwen3.5-2B` host. It consumes only a verified donor handoff,
+an explicitly mapped host-layer sidecar, and host hidden-state records. The
+bridge trains input/output adapters and a capped residual gate around frozen
+extracted SwiGLU experts; it never saves host weights. v1 is vector
+supervision over precomputed host states, not host end-to-end language-model
+training or an LM-loss claim. See
+[`docs/bridge-training.md`](docs/bridge-training.md) and the intentionally
+unlaunchable template [`configs/bridge-qwen35-2b.yaml`](configs/bridge-qwen35-2b.yaml).
+
+The CPU-only preflight and split-repair commands are available as
+`bridge-preflight`, `freeze-host-states`, and `repair-bridge-manifest`; the
+GPU-facing host-state capture is explicit as `capture-host-states`.
+`train-bridge` requires a fully hash-bound config and the optional GPU
+dependencies. Random-expert control is reported unavailable until a separately
+verified random extraction exists.
+
 ## SWE-bench scoring boundary
 
 Repository-repair responses are not treated as scoreable until the official SWE-bench

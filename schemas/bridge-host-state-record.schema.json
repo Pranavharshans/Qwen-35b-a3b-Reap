@@ -1,0 +1,58 @@
+{
+  "additionalProperties": false,
+  "description": "Index row for one frozen host hidden state.",
+  "properties": {
+    "host_layer": {
+      "minimum": 0,
+      "title": "Host Layer",
+      "type": "integer"
+    },
+    "row_index": {
+      "minimum": 0,
+      "title": "Row Index",
+      "type": "integer"
+    },
+    "sample_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sample Content Sha256",
+      "type": "string"
+    },
+    "sample_id": {
+      "minLength": 1,
+      "title": "Sample Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "tensor_key": {
+      "minLength": 1,
+      "title": "Tensor Key",
+      "type": "string"
+    },
+    "token_id": {
+      "minimum": 0,
+      "title": "Token Id",
+      "type": "integer"
+    },
+    "token_position": {
+      "minimum": 0,
+      "title": "Token Position",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "row_index",
+    "sample_id",
+    "sample_content_sha256",
+    "token_position",
+    "token_id",
+    "host_layer",
+    "tensor_key"
+  ],
+  "title": "BridgeHostStateRecord",
+  "type": "object"
+}

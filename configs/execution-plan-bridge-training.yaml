@@ -1,0 +1,80 @@
+# Governed bridge-training plan. This is controller-compatible but remains
+# unlaunchable until a human pins every hash and authorizes an existing GPU.
+schema_version: 1
+tasks:
+  - task_id: bridge-input-preflight
+    objective: Validate the frozen host, donor extraction, handoff, host-state, and row-manifest hashes.
+    definition_of_done: Every configured hash matches and every sample-content and sample-ID group is split-disjoint.
+    command:
+      - reverse-reap
+      - validate-bridge-config
+      - configs/bridge-qwen35-2b.yaml
+      - --output
+      - runs/bridge/${RUN_ID}/input-validation.json
+    validation_command:
+      - reverse-reap
+      - validate-bridge-config
+      - configs/bridge-qwen35-2b.yaml
+    inputs:
+      - configs/bridge-qwen35-2b.yaml
+      - handoff-manifest.json
+      - host-states-manifest.json
+      - bridge-training-manifest.json
+    outputs:
+      - runs/bridge/${RUN_ID}/input-validation.json
+    dependencies: []
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: wait_for_human
+  - task_id: bridge-b1-memory-probe
+    objective: Run the read-only B1 preflight for the frozen Qwen3.5-2B host plus bridge.
+    definition_of_done: The estimate is at or below 92 percent of the selected GPU capacity and an empirical probe is still required.
+    command:
+      - reverse-reap
+      - bridge-preflight
+      - "${VRAM_BYTES}"
+      - --host-parameter-count
+      - "2000000000"
+      - --output
+      - runs/bridge/${RUN_ID}/bridge-preflight.json
+    validation_command:
+      - reverse-reap
+      - bridge-preflight
+      - "${VRAM_BYTES}"
+      - --output
+      - runs/bridge/${RUN_ID}/bridge-preflight-validation.json
+    inputs:
+      - configs/bridge-qwen35-2b.yaml
+    outputs:
+      - runs/bridge/${RUN_ID}/bridge-preflight.json
+    dependencies:
+      - bridge-input-preflight
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: wait_for_human
+  - task_id: bridge-pilot
+    objective: Train vector-supervision adapters on train rows with validation early stopping.
+    definition_of_done: Only bridge tensors are saved; validation selects the checkpoint; test is scored once afterward; no host end-to-end LM claim is made.
+    command:
+      - reverse-reap
+      - train-bridge
+      - configs/bridge-qwen35-2b.yaml
+    validation_command:
+      - reverse-reap
+      - validate-bridge-config
+      - configs/bridge-qwen35-2b.yaml
+    inputs:
+      - configs/bridge-qwen35-2b.yaml
+      - bridge-training-manifest.json
+      - extraction/extraction-manifest.json
+      - host-states-manifest.json
+    dependencies:
+      - bridge-input-preflight
+      - bridge-b1-memory-probe
+    outputs:
+      - runs/bridge/${RUN_ID}/bridge.safetensors
+      - runs/bridge/${RUN_ID}/training-report.json
+      - runs/bridge/${RUN_ID}/metrics.jsonl
+    estimated_gpu_hours: 2
+    estimated_storage_gb: 2
+    failure_behavior: wait_for_human

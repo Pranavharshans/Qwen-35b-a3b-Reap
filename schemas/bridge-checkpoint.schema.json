@@ -1,0 +1,82 @@
+{
+  "additionalProperties": false,
+  "description": "Hash-bound checkpoint metadata; tensor payloads contain bridge state only.",
+  "properties": {
+    "bridge_file": {
+      "minLength": 1,
+      "title": "Bridge File",
+      "type": "string"
+    },
+    "bridge_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Bridge Sha256",
+      "type": "string"
+    },
+    "checkpoint_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Checkpoint Sha256",
+      "type": "string"
+    },
+    "config_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Config Sha256",
+      "type": "string"
+    },
+    "epoch": {
+      "minimum": 0,
+      "title": "Epoch",
+      "type": "integer"
+    },
+    "kind": {
+      "const": "bridge-checkpoint",
+      "title": "Kind",
+      "type": "string"
+    },
+    "metrics": {
+      "additionalProperties": true,
+      "title": "Metrics",
+      "type": "object"
+    },
+    "optimizer_file": {
+      "minLength": 1,
+      "title": "Optimizer File",
+      "type": "string"
+    },
+    "optimizer_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Optimizer Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "step": {
+      "minimum": 0,
+      "title": "Step",
+      "type": "integer"
+    },
+    "training_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Training Manifest Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "config_sha256",
+    "training_manifest_sha256",
+    "epoch",
+    "step",
+    "metrics",
+    "bridge_file",
+    "optimizer_file",
+    "bridge_sha256",
+    "optimizer_sha256",
+    "checkpoint_sha256"
+  ],
+  "title": "BridgeCheckpoint",
+  "type": "object"
+}

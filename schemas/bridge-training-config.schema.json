@@ -1,0 +1,434 @@
+{
+  "$defs": {
+    "BridgeBudgetConfig": {
+      "additionalProperties": false,
+      "description": "Hard resource and deadline contract for a future GPU run.",
+      "properties": {
+        "deadline_utc": {
+          "format": "date-time",
+          "title": "Deadline Utc",
+          "type": "string"
+        },
+        "max_cost_usd": {
+          "exclusiveMinimum": 0,
+          "title": "Max Cost Usd",
+          "type": "number"
+        },
+        "max_gpu_hours": {
+          "exclusiveMinimum": 0,
+          "title": "Max Gpu Hours",
+          "type": "number"
+        },
+        "provider_rate_usd_per_hour": {
+          "exclusiveMinimum": 0,
+          "title": "Provider Rate Usd Per Hour",
+          "type": "number"
+        },
+        "storage_limit_gb": {
+          "exclusiveMinimum": 0,
+          "title": "Storage Limit Gb",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_gpu_hours",
+        "max_cost_usd",
+        "provider_rate_usd_per_hour",
+        "storage_limit_gb",
+        "deadline_utc"
+      ],
+      "title": "BridgeBudgetConfig",
+      "type": "object"
+    },
+    "BridgeControlsConfig": {
+      "additionalProperties": false,
+      "description": "Required controls; random experts are only available with a verified artifact.",
+      "properties": {
+        "conditions": {
+          "default": [
+            "disabled",
+            "untrained",
+            "trained",
+            "shuffled-pair",
+            "equal-parameter-adapter"
+          ],
+          "items": {
+            "enum": [
+              "disabled",
+              "untrained",
+              "trained",
+              "shuffled-pair",
+              "random-expert",
+              "equal-parameter-adapter"
+            ],
+            "type": "string"
+          },
+          "minItems": 5,
+          "title": "Conditions",
+          "type": "array"
+        }
+      },
+      "title": "BridgeControlsConfig",
+      "type": "object"
+    },
+    "BridgeDataConfig": {
+      "additionalProperties": false,
+      "description": "Hash-bound input inventory for a bridge run.",
+      "properties": {
+        "allow_observational_coverage_incomplete": {
+          "default": false,
+          "title": "Allow Observational Coverage Incomplete",
+          "type": "boolean"
+        },
+        "candidate_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Candidate Manifest Sha256",
+          "type": "string"
+        },
+        "capture_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Capture Manifest Sha256",
+          "type": "string"
+        },
+        "handoff_manifest": {
+          "format": "path",
+          "title": "Handoff Manifest",
+          "type": "string"
+        },
+        "handoff_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Handoff Manifest Sha256",
+          "type": "string"
+        },
+        "host_states_manifest": {
+          "format": "path",
+          "title": "Host States Manifest",
+          "type": "string"
+        },
+        "host_states_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Host States Manifest Sha256",
+          "type": "string"
+        },
+        "source_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Manifest Sha256",
+          "type": "string"
+        },
+        "training_manifest": {
+          "format": "path",
+          "title": "Training Manifest",
+          "type": "string"
+        },
+        "training_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Training Manifest Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "handoff_manifest",
+        "handoff_manifest_sha256",
+        "capture_manifest_sha256",
+        "source_manifest_sha256",
+        "candidate_manifest_sha256",
+        "host_states_manifest",
+        "host_states_manifest_sha256",
+        "training_manifest",
+        "training_manifest_sha256"
+      ],
+      "title": "BridgeDataConfig",
+      "type": "object"
+    },
+    "BridgeDonorConfig": {
+      "additionalProperties": false,
+      "description": "Immutable donor/extraction identity crossing the VM boundary.",
+      "properties": {
+        "extraction_dir": {
+          "format": "path",
+          "title": "Extraction Dir",
+          "type": "string"
+        },
+        "extraction_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Extraction Manifest Sha256",
+          "type": "string"
+        },
+        "model_id": {
+          "const": "Qwen/Qwen3.5-35B-A3B",
+          "title": "Model Id",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_id",
+        "revision",
+        "extraction_dir",
+        "extraction_manifest_sha256"
+      ],
+      "title": "BridgeDonorConfig",
+      "type": "object"
+    },
+    "BridgeExpertMapping": {
+      "additionalProperties": false,
+      "description": "Explicit mapping from one donor expert to one host MLP sidecar layer.",
+      "properties": {
+        "donor_expert": {
+          "minimum": 0,
+          "title": "Donor Expert",
+          "type": "integer"
+        },
+        "donor_layer": {
+          "minimum": 0,
+          "title": "Donor Layer",
+          "type": "integer"
+        },
+        "host_layer": {
+          "minimum": 0,
+          "title": "Host Layer",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "donor_layer",
+        "donor_expert",
+        "host_layer"
+      ],
+      "title": "BridgeExpertMapping",
+      "type": "object"
+    },
+    "BridgeHostConfig": {
+      "additionalProperties": false,
+      "description": "Pinned recipient model contract.",
+      "properties": {
+        "hidden_size": {
+          "const": 2048,
+          "default": 2048,
+          "title": "Hidden Size",
+          "type": "integer"
+        },
+        "model_id": {
+          "const": "Qwen/Qwen3.5-2B",
+          "title": "Model Id",
+          "type": "string"
+        },
+        "num_layers": {
+          "exclusiveMinimum": 0,
+          "title": "Num Layers",
+          "type": "integer"
+        },
+        "precision": {
+          "const": "bf16",
+          "default": "bf16",
+          "title": "Precision",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_id",
+        "revision",
+        "num_layers"
+      ],
+      "title": "BridgeHostConfig",
+      "type": "object"
+    },
+    "BridgeLossConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "input_weight": {
+          "minimum": 0,
+          "title": "Input Weight",
+          "type": "number"
+        },
+        "output_weight": {
+          "minimum": 0,
+          "title": "Output Weight",
+          "type": "number"
+        },
+        "retention_weight": {
+          "minimum": 0,
+          "title": "Retention Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "input_weight",
+        "output_weight",
+        "retention_weight"
+      ],
+      "title": "BridgeLossConfig",
+      "type": "object"
+    },
+    "BridgeRuntimeConfig": {
+      "additionalProperties": false,
+      "description": "Deterministic B1 training settings.",
+      "properties": {
+        "batch_size": {
+          "const": 1,
+          "default": 1,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "bottleneck_size": {
+          "exclusiveMinimum": 0,
+          "maximum": 2048,
+          "title": "Bottleneck Size",
+          "type": "integer"
+        },
+        "deterministic": {
+          "const": true,
+          "default": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "device": {
+          "default": "cuda",
+          "enum": [
+            "cpu",
+            "cuda"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
+        "gate_cap": {
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Gate Cap",
+          "type": "number"
+        },
+        "gate_init_bias": {
+          "maximum": 0,
+          "minimum": -20,
+          "title": "Gate Init Bias",
+          "type": "number"
+        },
+        "learning_rate": {
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Learning Rate",
+          "type": "number"
+        },
+        "max_epochs": {
+          "exclusiveMinimum": 0,
+          "title": "Max Epochs",
+          "type": "integer"
+        },
+        "max_grad_norm": {
+          "exclusiveMinimum": 0,
+          "title": "Max Grad Norm",
+          "type": "number"
+        },
+        "patience": {
+          "minimum": 0,
+          "title": "Patience",
+          "type": "integer"
+        },
+        "seed": {
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "weight_decay": {
+          "exclusiveMaximum": 1,
+          "minimum": 0,
+          "title": "Weight Decay",
+          "type": "number"
+        }
+      },
+      "required": [
+        "seed",
+        "max_epochs",
+        "patience",
+        "learning_rate",
+        "weight_decay",
+        "max_grad_norm",
+        "bottleneck_size",
+        "gate_cap",
+        "gate_init_bias"
+      ],
+      "title": "BridgeRuntimeConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Strict, intentionally unlaunchable-until-pinned bridge configuration.",
+  "properties": {
+    "budget": {
+      "$ref": "#/$defs/BridgeBudgetConfig"
+    },
+    "controls": {
+      "$ref": "#/$defs/BridgeControlsConfig",
+      "default": {
+        "conditions": [
+          "disabled",
+          "untrained",
+          "trained",
+          "shuffled-pair",
+          "equal-parameter-adapter"
+        ]
+      }
+    },
+    "data": {
+      "$ref": "#/$defs/BridgeDataConfig"
+    },
+    "donor": {
+      "$ref": "#/$defs/BridgeDonorConfig"
+    },
+    "host": {
+      "$ref": "#/$defs/BridgeHostConfig"
+    },
+    "losses": {
+      "$ref": "#/$defs/BridgeLossConfig"
+    },
+    "mappings": {
+      "items": {
+        "$ref": "#/$defs/BridgeExpertMapping"
+      },
+      "minItems": 1,
+      "title": "Mappings",
+      "type": "array"
+    },
+    "output_dir": {
+      "format": "path",
+      "title": "Output Dir",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime": {
+      "$ref": "#/$defs/BridgeRuntimeConfig"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "host",
+    "donor",
+    "data",
+    "mappings",
+    "runtime",
+    "losses",
+    "budget",
+    "output_dir"
+  ],
+  "title": "BridgeTrainingConfig",
+  "type": "object"
+}

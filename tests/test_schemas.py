@@ -13,6 +13,13 @@ def test_checked_in_schema_files_exist_and_forbid_extra_fields():
         "bridge-target-shard.schema.json",
         "bridge-target-bundle.schema.json",
         "bridge-target-capture-state.schema.json",
+        "bridge-training-config.schema.json",
+        "bridge-checkpoint.schema.json",
+        "bridge-host-state-manifest.schema.json",
+        "bridge-host-state-record.schema.json",
+        "bridge-training-manifest.schema.json",
+        "bridge-training-row.schema.json",
+        "bridge-unused-row.schema.json",
     }
     from pathlib import Path
 
@@ -23,6 +30,15 @@ def test_checked_in_schema_files_exist_and_forbid_extra_fields():
         BridgeTargetCaptureState,
         BridgeTargetRecord,
         BridgeTargetShard,
+    )
+    from reverse_reap.bridge_training import (
+        BridgeCheckpoint,
+        BridgeHostStateManifest,
+        BridgeHostStateRecord,
+        BridgeTrainingConfig,
+        BridgeTrainingManifest,
+        BridgeTrainingRow,
+        BridgeUnusedRow,
     )
     from reverse_reap.config import ExperimentConfig
     from reverse_reap.state import RunState
@@ -38,6 +54,13 @@ def test_checked_in_schema_files_exist_and_forbid_extra_fields():
         "bridge-target-shard.schema.json": BridgeTargetShard,
         "bridge-target-bundle.schema.json": BridgeTargetBundle,
         "bridge-target-capture-state.schema.json": BridgeTargetCaptureState,
+        "bridge-training-config.schema.json": BridgeTrainingConfig,
+        "bridge-checkpoint.schema.json": BridgeCheckpoint,
+        "bridge-host-state-manifest.schema.json": BridgeHostStateManifest,
+        "bridge-host-state-record.schema.json": BridgeHostStateRecord,
+        "bridge-training-manifest.schema.json": BridgeTrainingManifest,
+        "bridge-training-row.schema.json": BridgeTrainingRow,
+        "bridge-unused-row.schema.json": BridgeUnusedRow,
     }
 
     assert set(schemas) == expected
