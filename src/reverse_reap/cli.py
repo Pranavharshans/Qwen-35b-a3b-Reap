@@ -7,12 +7,27 @@ import json
 import subprocess
 from pathlib import Path
 
+from reverse_reap.bridge_benchmark import (
+    fetch_and_freeze_humanevalplus,
+    run_bridge_benchmark,
+    score_bridge_benchmark,
+)
 from reverse_reap.bridge_capture import (
     build_target_handoff,
     freeze_bridge_manifest,
     tokenizer_fingerprint,
     validate_target_handoff,
     validate_target_shard,
+)
+from reverse_reap.bridge_training import (
+    BridgeExpertMapping,
+    capture_host_hidden_states,
+    estimate_bridge_memory,
+    freeze_host_state_manifest,
+    load_bridge_training_config,
+    repair_bridge_manifest,
+    train_bridge,
+    validate_bridge_training_config,
 )
 from reverse_reap.causal import (
     causal_gate_report,
@@ -135,6 +150,70 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bridge_bundle_validate = subparsers.add_parser("validate-target-handoff")
     bridge_bundle_validate.add_argument("handoff", type=Path)
+    bridge_config = subparsers.add_parser("validate-bridge-config")
+    bridge_config.add_argument("config", type=Path)
+    bridge_config.add_argument("--output", type=Path)
+    bridge_repair = subparsers.add_parser("repair-bridge-manifest")
+    bridge_repair.add_argument("config", type=Path)
+    bridge_repair.add_argument("--output", type=Path)
+    bridge_repair_raw = subparsers.add_parser("repair-bridge-manifest-raw")
+    bridge_repair_raw.add_argument("handoff", type=Path)
+    bridge_repair_raw.add_argument("host_states", type=Path)
+    bridge_repair_raw.add_argument("destination", type=Path)
+    bridge_repair_raw.add_argument(
+        "--mapping",
+        action="append",
+        required=True,
+        metavar="DONOR_LAYER:DONOR_EXPERT:HOST_LAYER",
+    )
+    bridge_repair_raw.add_argument("--seed", type=int, default=20260909)
+    bridge_repair_raw.add_argument("--min-samples-per-cell", type=int, default=1)
+    bridge_repair_raw.add_argument("--min-events-per-cell", type=int, default=32)
+    bridge_repair_raw.add_argument("--max-rows-per-sample", type=int, default=128)
+    bridge_repair_raw.add_argument(
+        "--allow-observational-coverage-incomplete", action="store_true"
+    )
+    host_capture = subparsers.add_parser("capture-host-states")
+    host_capture.add_argument("host_model", type=Path)
+    host_capture.add_argument("tokenizer", type=Path)
+    host_capture.add_argument("handoff", type=Path)
+    host_capture.add_argument("capture_manifest", type=Path)
+    host_capture.add_argument("destination", type=Path)
+    host_capture.add_argument("--host-revision", required=True)
+    host_capture.add_argument("--run-id", required=True)
+    host_capture.add_argument(
+        "--allow-observational-coverage-incomplete", action="store_true"
+    )
+    host_capture.add_argument(
+        "--mapping",
+        action="append",
+        required=True,
+        metavar="DONOR_LAYER:DONOR_EXPERT:HOST_LAYER",
+    )
+    bridge_preflight = subparsers.add_parser("bridge-preflight")
+    bridge_preflight.add_argument("vram_bytes", type=int)
+    bridge_preflight.add_argument("--host-parameter-count", type=int, default=2_000_000_000)
+    bridge_preflight.add_argument("--sequence-tokens", type=int, default=1024)
+    bridge_preflight.add_argument("--mapped-experts", type=int, default=4)
+    bridge_preflight.add_argument("--output", type=Path)
+    host_states = subparsers.add_parser("freeze-host-states")
+    host_states.add_argument("tensors", type=Path)
+    host_states.add_argument("records", type=Path)
+    host_states.add_argument("destination", type=Path)
+    host_states.add_argument("--run-id", required=True)
+    host_states.add_argument("--host-revision", required=True)
+    bridge_train = subparsers.add_parser("train-bridge")
+    bridge_train.add_argument("config", type=Path)
+    bridge_train.add_argument("--resume-checkpoint", type=Path)
+    bridge_benchmark = subparsers.add_parser("run-bridge-benchmark")
+    bridge_benchmark.add_argument("config", type=Path)
+    bridge_dataset = subparsers.add_parser("freeze-humanevalplus")
+    bridge_dataset.add_argument("revision")
+    bridge_dataset.add_argument("destination", type=Path)
+    bridge_dataset.add_argument("--seed", type=int, default=20260909)
+    bridge_score = subparsers.add_parser("score-bridge-benchmark")
+    bridge_score.add_argument("config", type=Path)
+    bridge_score.add_argument("--evaluator-image", required=True)
     probe = subparsers.add_parser("probe")
     probe.add_argument("config", type=Path)
     probe.add_argument("model_path", type=Path)
@@ -345,6 +424,123 @@ def main() -> int:
     if args.command == "validate-target-handoff":
         emit_json(validate_target_handoff(args.handoff))
         return 0
+    if args.command == "validate-bridge-config":
+        emit_json(validate_bridge_training_config(args.config), args.output)
+        return 0
+    if args.command == "repair-bridge-manifest":
+        config = load_bridge_training_config(args.config)
+        destination = args.output or config.data.training_manifest
+        output = repair_bridge_manifest(
+            config.data.handoff_manifest,
+            config.data.host_states_manifest,
+            destination,
+            mappings=config.mappings,
+            seed=config.runtime.seed,
+            allow_observational_coverage_incomplete=(
+                config.data.allow_observational_coverage_incomplete
+            ),
+        )
+        emit_json(output)
+        return 0
+    if args.command == "repair-bridge-manifest-raw":
+        try:
+            mappings = [
+                BridgeExpertMapping(
+                    donor_layer=int(value.split(":")[0]),
+                    donor_expert=int(value.split(":")[1]),
+                    host_layer=int(value.split(":")[2]),
+                )
+                for value in args.mapping
+                if len(value.split(":")) == 3
+            ]
+            if len(mappings) != len(args.mapping):
+                raise ValueError("each --mapping must be LAYER:EXPERT:HOST_LAYER")
+        except (TypeError, ValueError) as error:
+            raise SystemExit(str(error)) from error
+        output = repair_bridge_manifest(
+            args.handoff,
+            args.host_states,
+            args.destination,
+            mappings=mappings,
+            seed=args.seed,
+            min_samples_per_cell=args.min_samples_per_cell,
+            min_events_per_cell=args.min_events_per_cell,
+            max_rows_per_sample=args.max_rows_per_sample,
+            allow_observational_coverage_incomplete=(
+                args.allow_observational_coverage_incomplete
+            ),
+        )
+        emit_json(output)
+        return 0
+    if args.command == "capture-host-states":
+        try:
+            mappings = [
+                BridgeExpertMapping(
+                    donor_layer=int(value.split(":")[0]),
+                    donor_expert=int(value.split(":")[1]),
+                    host_layer=int(value.split(":")[2]),
+                )
+                for value in args.mapping
+                if len(value.split(":")) == 3
+            ]
+            if len(mappings) != len(args.mapping):
+                raise ValueError("each --mapping must be LAYER:EXPERT:HOST_LAYER")
+        except (TypeError, ValueError) as error:
+            raise SystemExit(str(error)) from error
+        output = capture_host_hidden_states(
+            args.host_model,
+            args.tokenizer,
+            args.handoff,
+            args.capture_manifest,
+            args.destination,
+            mappings=mappings,
+            host_revision=args.host_revision,
+            run_id=args.run_id,
+            allow_observational_coverage_incomplete=(
+                args.allow_observational_coverage_incomplete
+            ),
+        )
+        emit_json(output)
+        return 0
+    if args.command == "bridge-preflight":
+        report = estimate_bridge_memory(
+            vram_bytes=args.vram_bytes,
+            host_parameter_count=args.host_parameter_count,
+            sequence_tokens=args.sequence_tokens,
+            mapped_expert_count=args.mapped_experts,
+        )
+        emit_json(report, args.output)
+        return 0 if report["passed"] else 2
+    if args.command == "freeze-host-states":
+        output = freeze_host_state_manifest(
+            args.tensors,
+            args.records,
+            args.destination,
+            run_id=args.run_id,
+            host_revision=args.host_revision,
+        )
+        emit_json(output)
+        return 0
+    if args.command == "train-bridge":
+        output = train_bridge(args.config, resume_checkpoint=args.resume_checkpoint)
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
+    if args.command == "run-bridge-benchmark":
+        output = run_bridge_benchmark(args.config)
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
+    if args.command == "freeze-humanevalplus":
+        output = fetch_and_freeze_humanevalplus(
+            args.destination, revision=args.revision, seed=args.seed
+        )
+        emit_json(output)
+        return 0
+    if args.command == "score-bridge-benchmark":
+        output = score_bridge_benchmark(
+            args.config, evaluator_image=args.evaluator_image
+        )
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
     if args.command == "probe":
         output = probe_instrumentation(args.model_path, load_config(args.config), args.prompt)
         emit_json(output, args.output)

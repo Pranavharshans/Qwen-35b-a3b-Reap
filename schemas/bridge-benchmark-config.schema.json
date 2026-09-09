@@ -1,0 +1,268 @@
+{
+  "$defs": {
+    "BridgeBenchmarkBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline_utc": {
+          "format": "date-time",
+          "title": "Deadline Utc",
+          "type": "string"
+        },
+        "max_cost_usd": {
+          "exclusiveMinimum": 0,
+          "title": "Max Cost Usd",
+          "type": "number"
+        },
+        "max_wall_hours": {
+          "exclusiveMinimum": 0,
+          "title": "Max Wall Hours",
+          "type": "number"
+        },
+        "provider_rate_usd_per_hour": {
+          "exclusiveMinimum": 0,
+          "title": "Provider Rate Usd Per Hour",
+          "type": "number"
+        },
+        "usable_fraction": {
+          "const": 0.8,
+          "default": 0.8,
+          "title": "Usable Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_wall_hours",
+        "max_cost_usd",
+        "provider_rate_usd_per_hour",
+        "deadline_utc"
+      ],
+      "title": "BridgeBenchmarkBudget",
+      "type": "object"
+    },
+    "BridgeBenchmarkDataset": {
+      "additionalProperties": false,
+      "properties": {
+        "full_items": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Full Items"
+        },
+        "pilot_items": {
+          "default": 25,
+          "minimum": 1,
+          "title": "Pilot Items",
+          "type": "integer"
+        },
+        "selection_seed": {
+          "default": 20260909,
+          "minimum": 0,
+          "title": "Selection Seed",
+          "type": "integer"
+        },
+        "source_id": {
+          "default": "evalplus/humanevalplus",
+          "enum": [
+            "evalplus/humanevalplus",
+            "openai/openai_humaneval"
+          ],
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_manifest": {
+          "format": "path",
+          "title": "Source Manifest",
+          "type": "string"
+        },
+        "source_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Manifest Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_manifest",
+        "source_manifest_sha256"
+      ],
+      "title": "BridgeBenchmarkDataset",
+      "type": "object"
+    },
+    "BridgeBenchmarkRuntime": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_size": {
+          "const": 1,
+          "default": 1,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "deterministic": {
+          "const": true,
+          "default": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "enable_thinking": {
+          "const": false,
+          "default": false,
+          "title": "Enable Thinking",
+          "type": "boolean"
+        },
+        "heartbeat_seconds": {
+          "const": 300,
+          "default": 300,
+          "title": "Heartbeat Seconds",
+          "type": "integer"
+        },
+        "max_input_tokens": {
+          "exclusiveMinimum": 0,
+          "title": "Max Input Tokens",
+          "type": "integer"
+        },
+        "max_new_tokens": {
+          "exclusiveMinimum": 0,
+          "title": "Max New Tokens",
+          "type": "integer"
+        },
+        "repeats_per_condition": {
+          "const": 2,
+          "default": 2,
+          "title": "Repeats Per Condition",
+          "type": "integer"
+        },
+        "seed": {
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seed",
+        "max_input_tokens",
+        "max_new_tokens"
+      ],
+      "title": "BridgeBenchmarkRuntime",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bridge_checkpoint": {
+      "format": "path",
+      "title": "Bridge Checkpoint",
+      "type": "string"
+    },
+    "bridge_checkpoint_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Bridge Checkpoint Sha256",
+      "type": "string"
+    },
+    "bridge_config": {
+      "format": "path",
+      "title": "Bridge Config",
+      "type": "string"
+    },
+    "bridge_config_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Bridge Config Sha256",
+      "type": "string"
+    },
+    "budget": {
+      "$ref": "#/$defs/BridgeBenchmarkBudget"
+    },
+    "dataset": {
+      "$ref": "#/$defs/BridgeBenchmarkDataset"
+    },
+    "evaluator_image": {
+      "anyOf": [
+        {
+          "pattern": "^[^\\s]+@sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evaluator Image"
+    },
+    "host_files_manifest": {
+      "format": "path",
+      "title": "Host Files Manifest",
+      "type": "string"
+    },
+    "host_files_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Host Files Manifest Sha256",
+      "type": "string"
+    },
+    "host_model": {
+      "format": "path",
+      "title": "Host Model",
+      "type": "string"
+    },
+    "host_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Host Revision",
+      "type": "string"
+    },
+    "output_dir": {
+      "format": "path",
+      "title": "Output Dir",
+      "type": "string"
+    },
+    "proceed_full_regardless_of_pilot_score": {
+      "const": true,
+      "default": true,
+      "title": "Proceed Full Regardless Of Pilot Score",
+      "type": "boolean"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime": {
+      "$ref": "#/$defs/BridgeBenchmarkRuntime"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "scoring_mode": {
+      "default": "deferred",
+      "enum": [
+        "deferred",
+        "docker-local"
+      ],
+      "title": "Scoring Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "host_model",
+    "host_revision",
+    "host_files_manifest",
+    "host_files_manifest_sha256",
+    "bridge_config",
+    "bridge_config_sha256",
+    "bridge_checkpoint",
+    "bridge_checkpoint_sha256",
+    "dataset",
+    "runtime",
+    "budget",
+    "output_dir"
+  ],
+  "title": "BridgeBenchmarkConfig",
+  "type": "object"
+}

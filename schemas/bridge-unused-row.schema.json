@@ -1,0 +1,71 @@
+{
+  "additionalProperties": false,
+  "description": "A valid source row deliberately excluded, with a machine-readable reason.",
+  "properties": {
+    "domain": {
+      "enum": [
+        "coding",
+        "control"
+      ],
+      "title": "Domain",
+      "type": "string"
+    },
+    "donor_expert": {
+      "minimum": 0,
+      "title": "Donor Expert",
+      "type": "integer"
+    },
+    "donor_layer": {
+      "minimum": 0,
+      "title": "Donor Layer",
+      "type": "integer"
+    },
+    "event_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "reason": {
+      "enum": [
+        "missing-host-state",
+        "per-sample-cap",
+        "invalid-token-alignment"
+      ],
+      "title": "Reason",
+      "type": "string"
+    },
+    "row_index": {
+      "minimum": 0,
+      "title": "Row Index",
+      "type": "integer"
+    },
+    "sample_content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sample Content Sha256",
+      "type": "string"
+    },
+    "sample_id": {
+      "minLength": 1,
+      "title": "Sample Id",
+      "type": "string"
+    },
+    "shard_path": {
+      "minLength": 1,
+      "title": "Shard Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "shard_path",
+    "row_index",
+    "sample_id",
+    "sample_content_sha256",
+    "donor_layer",
+    "donor_expert",
+    "domain",
+    "reason"
+  ],
+  "title": "BridgeUnusedRow",
+  "type": "object"
+}

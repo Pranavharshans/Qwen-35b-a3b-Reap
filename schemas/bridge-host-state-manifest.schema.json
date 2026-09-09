@@ -1,0 +1,151 @@
+{
+  "$defs": {
+    "BridgeHostStateRecord": {
+      "additionalProperties": false,
+      "description": "Index row for one frozen host hidden state.",
+      "properties": {
+        "host_layer": {
+          "minimum": 0,
+          "title": "Host Layer",
+          "type": "integer"
+        },
+        "row_index": {
+          "minimum": 0,
+          "title": "Row Index",
+          "type": "integer"
+        },
+        "sample_content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sample Content Sha256",
+          "type": "string"
+        },
+        "sample_id": {
+          "minLength": 1,
+          "title": "Sample Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "tensor_key": {
+          "minLength": 1,
+          "title": "Tensor Key",
+          "type": "string"
+        },
+        "token_id": {
+          "minimum": 0,
+          "title": "Token Id",
+          "type": "integer"
+        },
+        "token_position": {
+          "minimum": 0,
+          "title": "Token Position",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "row_index",
+        "sample_id",
+        "sample_content_sha256",
+        "token_position",
+        "token_id",
+        "host_layer",
+        "tensor_key"
+      ],
+      "title": "BridgeHostStateRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Hash inventory for host hidden states captured with the frozen host.",
+  "properties": {
+    "hidden_size": {
+      "const": 2048,
+      "default": 2048,
+      "title": "Hidden Size",
+      "type": "integer"
+    },
+    "host_model_id": {
+      "const": "Qwen/Qwen3.5-2B",
+      "title": "Host Model Id",
+      "type": "string"
+    },
+    "host_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Host Revision",
+      "type": "string"
+    },
+    "kind": {
+      "const": "bridge-host-states",
+      "title": "Kind",
+      "type": "string"
+    },
+    "manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Manifest Sha256",
+      "type": "string"
+    },
+    "records": {
+      "items": {
+        "$ref": "#/$defs/BridgeHostStateRecord"
+      },
+      "minItems": 1,
+      "title": "Records",
+      "type": "array"
+    },
+    "records_file": {
+      "minLength": 1,
+      "title": "Records File",
+      "type": "string"
+    },
+    "records_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Records Sha256",
+      "type": "string"
+    },
+    "row_count": {
+      "exclusiveMinimum": 0,
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "tensors_file": {
+      "minLength": 1,
+      "title": "Tensors File",
+      "type": "string"
+    },
+    "tensors_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Tensors Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind",
+    "run_id",
+    "host_model_id",
+    "host_revision",
+    "tensors_file",
+    "records_file",
+    "tensors_sha256",
+    "records_sha256",
+    "row_count",
+    "records",
+    "manifest_sha256"
+  ],
+  "title": "BridgeHostStateManifest",
+  "type": "object"
+}

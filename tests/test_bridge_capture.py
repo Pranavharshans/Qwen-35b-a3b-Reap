@@ -7,6 +7,7 @@ from reverse_reap.bridge_capture import (
     AtomicTargetShardWriter,
     BridgeCaptureError,
     CoverageTracker,
+    _tokenizer_ids,
     build_target_handoff,
     freeze_bridge_manifest,
     load_bridge_manifest,
@@ -15,7 +16,6 @@ from reverse_reap.bridge_capture import (
     validate_target_handoff,
     validate_target_shard,
     write_target_capture_state,
-    _tokenizer_ids,
 )
 from reverse_reap.datasets import freeze_manifest, normalize_sample
 

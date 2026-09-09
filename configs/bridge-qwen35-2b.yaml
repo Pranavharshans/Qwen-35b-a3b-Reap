@@ -1,0 +1,78 @@
+# Bridge-training v1 template.  This file is intentionally unlaunchable until
+# the host revision, donor handoff, frozen host-state index, and all artifact
+# hashes are filled from the verified run bundle.  The mapping is explicit and
+# must be reviewed before use; it is never inferred from layer counts.
+schema_version: 1
+run_id: REQUIRED_BRIDGE_RUN_ID
+host:
+  model_id: Qwen/Qwen3.5-2B
+  revision: REQUIRED_HOST_REVISION_SHA40
+  hidden_size: 2048
+  precision: bf16
+  num_layers: 24
+donor:
+  model_id: Qwen/Qwen3.5-35B-A3B
+  revision: 59d61f3ce65a6d9863b86d2e96597125219dc754
+  extraction_dir: /absolute/path/to/verified/extraction
+  extraction_manifest_sha256: REQUIRED_EXTRACTION_MANIFEST_SHA256
+data:
+  handoff_manifest: /absolute/path/to/verified/handoff-manifest.json
+  handoff_manifest_sha256: REQUIRED_HANDOFF_MANIFEST_SHA256
+  capture_manifest_sha256: REQUIRED_CAPTURE_MANIFEST_SHA256
+  source_manifest_sha256: REQUIRED_SOURCE_MANIFEST_SHA256
+  candidate_manifest_sha256: REQUIRED_CANDIDATE_MANIFEST_SHA256
+  host_states_manifest: /absolute/path/to/frozen/host-states-manifest.json
+  host_states_manifest_sha256: REQUIRED_HOST_STATES_MANIFEST_SHA256
+  training_manifest: /absolute/path/to/bridge-training-manifest.json
+  training_manifest_sha256: REQUIRED_TRAINING_MANIFEST_SHA256
+  # Explicitly acknowledges the preserved original coverage failure. This
+  # permits method development, never a coding-critical or causal label.
+  allow_observational_coverage_incomplete: true
+# Example pre-registered map for the four extracted observational candidates.
+# Replace only before freezing a new bridge generation; do not tune after tests.
+mappings:
+  - donor_layer: 3
+    donor_expert: 26
+    host_layer: 2
+  - donor_layer: 7
+    donor_expert: 18
+    host_layer: 4
+  - donor_layer: 35
+    donor_expert: 239
+    host_layer: 18
+  - donor_layer: 37
+    donor_expert: 5
+    host_layer: 20
+runtime:
+  seed: 20260909
+  deterministic: true
+  batch_size: 1
+  max_epochs: 10
+  patience: 2
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  max_grad_norm: 1.0
+  bottleneck_size: 256
+  gate_cap: 0.25
+  gate_init_bias: -6.0
+  device: cuda
+losses:
+  input_weight: 1.0
+  output_weight: 1.0
+  retention_weight: 0.1
+controls:
+  conditions:
+    - disabled
+    - untrained
+    - trained
+    - shuffled-pair
+    - equal-parameter-adapter
+# Expired intentionally: replace only after an approved provider, rate, and
+# deadline are recorded in a new immutable run config.
+budget:
+  max_gpu_hours: 2.0
+  max_cost_usd: 0.01
+  provider_rate_usd_per_hour: 0.01
+  storage_limit_gb: 5.0
+  deadline_utc: "2000-01-01T00:00:00+00:00"
+output_dir: runs/bridge/REQUIRED_BRIDGE_RUN_ID
