@@ -214,6 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_score = subparsers.add_parser("score-bridge-benchmark")
     bridge_score.add_argument("config", type=Path)
     bridge_score.add_argument("--evaluator-image", required=True)
+    bridge_score.add_argument("--exclusion-manifest", type=Path, default=None)
     probe = subparsers.add_parser("probe")
     probe.add_argument("config", type=Path)
     probe.add_argument("model_path", type=Path)
@@ -537,7 +538,9 @@ def main() -> int:
         return 0
     if args.command == "score-bridge-benchmark":
         output = score_bridge_benchmark(
-            args.config, evaluator_image=args.evaluator_image
+            args.config,
+            evaluator_image=args.evaluator_image,
+            exclusion_manifest=args.exclusion_manifest,
         )
         emit_json(output)
         return 0 if output["status"] == "PASS" else 2
