@@ -169,6 +169,32 @@ HumanEval+ set. Pilot score never suppresses the full tier; integrity and budget
 failures still stop it. Raw generations can be scored later on the qualified
 Docker/KVM boundary with `score-bridge-benchmark`.
 
+## Official MBPP+ four-condition bridge benchmark
+
+The MBPP+ follow-on uses the official EvalPlus v0.3.1 evaluator instead of the
+repository's generic Python scorer. It loads the host once, strictly verifies
+the trained bridge checkpoint and all four extracted frozen experts, then emits
+four separate conditions: base and bridged inference with thinking disabled and
+enabled. See [`docs/mbppplus-bridge-benchmark.md`](docs/mbppplus-bridge-benchmark.md)
+and [`configs/mbppplus-bridge-qwen35-2b.yaml`](configs/mbppplus-bridge-qwen35-2b.yaml).
+
+```bash
+reverse-reap run-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml
+reverse-reap validate-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml
+```
+
+Generated code is untrusted, so official scoring remains on a Docker-capable
+scorer. Build the revision-labelled, digest-pinned image with
+`scripts/prepare_evalplus_docker.py`, transfer the small run directory, and run:
+
+```bash
+reverse-reap score-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml \
+  --evalplus-image 'localhost:5000/reverse-reap-evalplus@sha256:<digest>'
+```
+
+The report keeps MBPP base tests, MBPP+ extended tests, and thinking modes
+separate. It is a capability comparison, not causal evidence.
+
 ## SWE-bench scoring boundary
 
 Repository-repair responses are not treated as scoreable until the official SWE-bench

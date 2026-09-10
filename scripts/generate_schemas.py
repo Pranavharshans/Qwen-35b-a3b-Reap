@@ -25,6 +25,7 @@ from reverse_reap.bridge_training import (
     BridgeUnusedRow,
 )
 from reverse_reap.config import ExperimentConfig
+from reverse_reap.mbpp_bridge_benchmark import MbppBridgeBenchmarkConfig
 from reverse_reap.state import RunState
 
 SCHEMAS = {
@@ -46,6 +47,7 @@ SCHEMAS = {
     "bridge-training-row.schema.json": BridgeTrainingRow,
     "bridge-unused-row.schema.json": BridgeUnusedRow,
     "bridge-benchmark-config.schema.json": BridgeBenchmarkConfig,
+    "mbpp-bridge-benchmark-config.schema.json": MbppBridgeBenchmarkConfig,
 }
 
 

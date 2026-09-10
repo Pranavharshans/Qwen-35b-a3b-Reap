@@ -42,6 +42,12 @@ from reverse_reap.extraction import (
     extract_experts,
     verify_extraction,
 )
+from reverse_reap.mbpp_bridge_benchmark import (
+    load_mbpp_bridge_config,
+    run_mbpp_bridge_benchmark,
+    score_mbpp_bridge_benchmark,
+    validate_mbpp_generation,
+)
 from reverse_reap.model_preflight import download_verified_weights, preflight_model
 from reverse_reap.pipeline import analyze_telemetry
 from reverse_reap.plans import write_full_plan
@@ -215,6 +221,13 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_score.add_argument("config", type=Path)
     bridge_score.add_argument("--evaluator-image", required=True)
     bridge_score.add_argument("--exclusion-manifest", type=Path, default=None)
+    mbpp_bridge = subparsers.add_parser("run-mbpp-bridge-benchmark")
+    mbpp_bridge.add_argument("config", type=Path)
+    mbpp_bridge_validate = subparsers.add_parser("validate-mbpp-bridge-benchmark")
+    mbpp_bridge_validate.add_argument("config", type=Path)
+    mbpp_bridge_score = subparsers.add_parser("score-mbpp-bridge-benchmark")
+    mbpp_bridge_score.add_argument("config", type=Path)
+    mbpp_bridge_score.add_argument("--evalplus-image", required=True)
     probe = subparsers.add_parser("probe")
     probe.add_argument("config", type=Path)
     probe.add_argument("model_path", type=Path)
@@ -541,6 +554,22 @@ def main() -> int:
             args.config,
             evaluator_image=args.evaluator_image,
             exclusion_manifest=args.exclusion_manifest,
+        )
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
+    if args.command == "run-mbpp-bridge-benchmark":
+        output = run_mbpp_bridge_benchmark(args.config)
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
+    if args.command == "validate-mbpp-bridge-benchmark":
+        output = validate_mbpp_generation(
+            load_mbpp_bridge_config(args.config, allow_expired=True)
+        )
+        emit_json(output)
+        return 0 if output["passed"] else 2
+    if args.command == "score-mbpp-bridge-benchmark":
+        output = score_mbpp_bridge_benchmark(
+            args.config, evalplus_image=args.evalplus_image
         )
         emit_json(output)
         return 0 if output["status"] == "PASS" else 2
