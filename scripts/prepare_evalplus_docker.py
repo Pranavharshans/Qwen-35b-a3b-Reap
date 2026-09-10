@@ -139,10 +139,32 @@ def main() -> int:
         ]
     ).stdout.strip()
     dataset = verify_image_metadata(pinned)
-    probe = run(
-        ["docker", "run", "--rm", "--network=none", pinned, "evalplus.evaluate", "--help"]
+    # The pinned EvalPlus revision exposes its CLI through Google Fire, and
+    # ``--help`` exits with status 2. Probe an offline import of the exact
+    # evaluate entrypoint instead of relying on a help exit code.
+    probe_command = (
+        "from evalplus.evaluate import evaluate; "
+        "from evalplus.sanitize import sanitize; "
+        "print('evalplus-import-ok')"
     )
-    if revision != EVALPLUS_REVISION or probe.returncode != 0:
+    probe = run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network=none",
+            pinned,
+            "python",
+            "-c",
+            probe_command,
+        ],
+        check=False,
+    )
+    if (
+        revision != EVALPLUS_REVISION
+        or probe.returncode != 0
+        or "evalplus-import-ok" not in probe.stdout
+    ):
         raise SystemExit("built image failed EvalPlus revision/CLI verification")
     (args.output_dir / "evalplus-image.txt").write_text(pinned + "\n", encoding="utf-8")
     report = {
@@ -150,7 +172,7 @@ def main() -> int:
         "evalplus_revision": EVALPLUS_REVISION,
         "evalplus_image": pinned,
         **dataset,
-        "cli_probe": "PASS",
+        "cli_probe": "PASS (offline import of evaluate and sanitize)",
     }
     (args.output_dir / "evalplus-image-report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"

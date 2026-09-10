@@ -183,6 +183,12 @@ reverse-reap run-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml
 reverse-reap validate-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml
 ```
 
+After a failed pilot safety gate, a separately authorized fresh full run uses
+`execution_mode: exploratory_full_only` with explicit `full_only_reason` and
+`historical_pilot` provenance. It generates all 378 tasks from task 1, imports
+zero pilot rows, and never evaluates the pilot gate; see
+[`docs/mbppplus-bridge-benchmark.md`](docs/mbppplus-bridge-benchmark.md).
+
 Generated code is untrusted, so official scoring remains on a Docker-capable
 scorer. Build the revision-labelled, digest-pinned image with
 `scripts/prepare_evalplus_docker.py`, transfer the small run directory, and run:

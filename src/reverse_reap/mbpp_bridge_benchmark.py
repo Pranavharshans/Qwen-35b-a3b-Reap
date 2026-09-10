@@ -89,7 +89,8 @@ class PilotSafetyGateConfig(StrictModel):
     structural failures (cap hit, unclosed reasoning, missing final answer,
     unsanitizable output) never abort generation and never leave the
     denominator; the gate only decides whether the 50-task pilot is
-    representative enough to continue to the full 378-task set.
+    representative enough to continue to the full 378-task set. The gate is
+    never evaluated in ``exploratory_full_only`` execution mode.
     """
 
     max_cap_hit_rate: Literal[0.05] = 0.05
@@ -101,9 +102,24 @@ class PilotSafetyGateConfig(StrictModel):
     require_full_bridge_engagement: Literal[True] = True
 
 
+class HistoricalPilotConfig(StrictModel):
+    """Preserved provenance for a failed pilot that motivates a full-only run.
+
+    Historical evidence only. A full-only run imports zero rows from it and
+    the historical safety gate is never re-evaluated or relaxed.
+    """
+
+    run_id: str = Field(min_length=1)
+    outcome: Literal["pilot-safety-gate-failed"] = "pilot-safety-gate-failed"
+    reused_rows: Literal[0] = 0
+
+
 class MbppBridgeBenchmarkConfig(StrictModel):
     schema_version: Literal[1]
     run_id: str = Field(min_length=1)
+    execution_mode: Literal["pilot_then_full", "exploratory_full_only"] = "pilot_then_full"
+    full_only_reason: str | None = Field(default=None, min_length=1)
+    historical_pilot: HistoricalPilotConfig | None = None
     host_model: Path
     host_revision: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     host_files_manifest: Path
@@ -124,10 +140,43 @@ class MbppBridgeBenchmarkConfig(StrictModel):
     def immutable_upstream_artifacts(self) -> MbppBridgeBenchmarkConfig:
         if self.dataset.archive_sha256 != OFFICIAL_MBPP_ARCHIVE_SHA256:
             raise ValueError("MBPP+ archive SHA-256 differs from the approved v0.2.0 release")
+        if self.execution_mode == "exploratory_full_only":
+            if not self.full_only_reason:
+                raise ValueError(
+                    "exploratory_full_only requires full_only_reason authorization text"
+                )
+            if self.historical_pilot is None:
+                raise ValueError(
+                    "exploratory_full_only requires historical_pilot provenance"
+                )
         return self
 
     def fingerprint(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump(mode="json"))).hexdigest()
+
+
+def planned_tiers(
+    config: MbppBridgeBenchmarkConfig, task_count: int
+) -> tuple[tuple[str, int], ...]:
+    """Return the generation tiers for this run.
+
+    ``exploratory_full_only`` has exactly one tier: all tasks from task 1, no
+    pilot generation stage and no pilot safety gate. ``pilot_then_full`` keeps
+    the historical pilot-first behaviour unchanged.
+    """
+    if config.execution_mode == "exploratory_full_only":
+        return (("full", task_count),)
+    return (("pilot", config.dataset.pilot_items), ("full", task_count))
+
+
+def expected_generation_totals(config: MbppBridgeBenchmarkConfig) -> dict[str, int]:
+    """Expected row totals for the frozen run identity."""
+    tasks = int(config.dataset.expected_tasks)
+    return {
+        "conditions": len(CONDITIONS),
+        "rows_per_condition": tasks,
+        "total_rows": len(CONDITIONS) * tasks,
+    }
 
 
 DETERMINISTIC_CUBLAS_WORKSPACE_VALUES = (":4096:8", ":16:8")
@@ -427,6 +476,7 @@ def _generate_one(
     )
     return {
         "schema_version": 1,
+        "run_id": config.run_id,
         "task_id": task["task_id"],
         "solution": raw,
         "condition": condition,
@@ -826,7 +876,7 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
         _write_state(config, "RUNNING", "four-condition-generation")
         engagement: dict[str, dict[str, Any]] = {}
         tier_statistics: dict[str, Any] = {}
-        tiers = (("pilot", config.dataset.pilot_items), ("full", len(tasks)))
+        tiers = planned_tiers(config, len(tasks))
         for tier, boundary in tiers:
             for condition in CONDITIONS:
                 _check_budget(config, started)
@@ -840,6 +890,28 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                         task["task_id"] for task in tasks[: len(rows)]
                     ]:
                         raise BridgeBenchmarkError(f"resume prefix differs for {condition}")
+                    for row, task in zip(rows, tasks, strict=False):
+                        if row.get("run_id") != config.run_id:
+                            raise BridgeBenchmarkError(
+                                f"condition file contains rows from another run: {condition}"
+                            )
+                        if row.get("condition") != condition:
+                            raise BridgeBenchmarkError(
+                                f"condition identity differs in resume prefix: {condition}"
+                            )
+                        if row.get("source_row_sha256") != task["source_row_sha256"]:
+                            raise BridgeBenchmarkError(
+                                f"resume row source hash differs for {condition}: "
+                                f"{row.get('task_id')}"
+                            )
+                        raw = str(row.get("solution", ""))
+                        if hashlib.sha256(raw.encode()).hexdigest() != row.get(
+                            "raw_solution_sha256"
+                        ):
+                            raise BridgeBenchmarkError(
+                                f"resume row output hash differs for {condition}: "
+                                f"{row.get('task_id')}"
+                            )
                 telemetry = BridgeGenerationTelemetry() if condition.startswith("bridge-") else None
                 handles = (
                     install_bridge_sidecars(model, bridge, mappings, telemetry=telemetry)
@@ -898,6 +970,7 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                     "tier": tier,
                     "status": "PASS",
                     "run_id": config.run_id,
+                    "execution_mode": config.execution_mode,
                     "validation": tier_validation,
                     "output_statistics": tier_statistics,
                     "proceed_full_regardless_of_pilot_score": True,
@@ -924,12 +997,25 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                     raise PilotSafetyGateError(message)
         validation = validate_mbpp_generation(config)
         elapsed = time.monotonic() - started
+        full_only = config.execution_mode == "exploratory_full_only"
         report = {
             "schema_version": 1,
             "kind": "mbppplus-four-condition-generation",
             "status": "PASS",
-            "classification": "generation-complete-official-scoring-deferred",
+            "classification": (
+                "exploratory-full-after-failed-pilot-safety-gate"
+                if full_only
+                else "generation-complete-official-scoring-deferred"
+            ),
             "run_id": config.run_id,
+            "execution_mode": config.execution_mode,
+            "pilot_rows_reused": 0 if full_only else None,
+            "historical_pilot": (
+                config.historical_pilot.model_dump(mode="json")
+                if config.historical_pilot is not None
+                else None
+            ),
+            "expected_totals": expected_generation_totals(config),
             "config_fingerprint": config.fingerprint(),
             "conditions": list(CONDITIONS),
             "validation": validation,

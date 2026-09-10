@@ -68,6 +68,32 @@ structurally-invalid rate, or has missing/duplicate rows, non-finite telemetry,
 or incomplete bridge engagement. When every integrity and rate gate passes,
 generation proceeds to all 378 tasks regardless of capability score.
 
+## Governed full-only exploratory mode
+
+A failed pilot safety gate blocks the standard pilot-then-full path, but does
+not authorize silently relaxing it. When a fresh full benchmark is explicitly
+approved, the pinned configuration uses:
+
+```yaml
+execution_mode: exploratory_full_only
+full_only_reason: <human authorization summary>
+historical_pilot:
+  run_id: <failed pilot run id>
+  outcome: pilot-safety-gate-failed
+  reused_rows: 0
+```
+
+Full-only mode generates all 378 tasks from task 1 in a single tier, creates
+exactly four fresh condition files, imports zero previous rows and never
+evaluates the pilot safety gate. A non-empty condition file is accepted only
+as a resumable prefix from the same run: every existing row must carry the
+same `run_id` and `condition`, match the frozen `source_row_sha256`, match the
+expected task order, and its raw output must hash to `raw_solution_sha256`;
+otherwise generation fails closed before producing a row. Item-level failures
+(cap hits, unclosed reasoning, missing final answers, unsanitizable code) stay
+in the denominator, and generation settings, prompts, task order and official
+scoring are unchanged.
+
 ## Commands
 
 Download the immutable official release artifact and verify the SHA-256 shown
