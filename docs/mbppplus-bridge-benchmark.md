@@ -34,6 +34,40 @@ never pooled. The bridge hooks are absent for both base conditions. For each
 bridged condition, generation fails unless telemetry proves that every mapped
 sidecar executed, its learned gate opened, and it emitted a nonzero residual.
 
+## Pre-pilot policy amendment
+
+Two preserved one-sample preflights are the rationale for treating truncated
+thinking output as an item-level benchmark failure rather than a pipeline
+integrity failure:
+
+- `20260910T075838Z-qwen35-2b-mbpp-bridge-0ff6beb` (2,048-token thinking cap):
+  `base-thinking-on` hit the cap with an unclosed reasoning block. Report
+  SHA-256 `b13fa426b13067b16bcdbb1d3dfafc998929c41c84f581cca466650ef5429d66`;
+  outcome SHA-256
+  `44b45648653686e453fb3ec3669f915e20c1d8bd03d4f4301bf7e428018d844a`.
+- `20260910T090943Z-qwen35-2b-mbpp-bridge-0ff6beb` (4,096-token thinking cap):
+  the same condition again consumed the full cap with an unclosed block.
+  Report SHA-256
+  `176bd4eb0f1f728ab3b58bc883497803c7a2f6b8f69e5ec5f79535ce0ca92afc`;
+  outcome SHA-256
+  `66c42d5c9249080d91cbf9aca600c4b8fb2c56492344d5c412122020a36c1f4c`.
+
+Both runs remain classified `FAIL / WAITING_FOR_HUMAN`; this policy does not
+reclassify them. Generation records `cap_hit`, `reasoning_opened`,
+`reasoning_closed`, `final_answer_present`, `sanitizable`, `score_eligible` and
+`failure_reason` on every row. Such rows stay in the denominator and are never
+excluded, replaced, retried or regenerated. Official EvalPlus sanitization
+still receives every row: recoverable code is scored normally; a row without a
+recoverable executable remains in the scored task universe with a deterministic
+failed result. Per-condition rates are reported for cap hits, unclosed
+reasoning, missing final answers and sanitization failures.
+
+The pre-registered pilot safety gate stops after the 50-task pilot with a
+feasibility failure when any condition exceeds a 5% cap-hit rate or a 5%
+structurally-invalid rate, or has missing/duplicate rows, non-finite telemetry,
+or incomplete bridge engagement. When every integrity and rate gate passes,
+generation proceeds to all 378 tasks regardless of capability score.
+
 ## Commands
 
 Download the immutable official release artifact and verify the SHA-256 shown
