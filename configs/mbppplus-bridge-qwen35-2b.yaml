@@ -1,7 +1,17 @@
 # Intentionally unlaunchable template. Fill paths, hashes, run ID, provider
 # rate, budget and deadline from the preserved bridge VM before execution.
+# For an authorized fresh full-only run set:
+#   execution_mode: exploratory_full_only
+#   full_only_reason: <human authorization summary>
+#   historical_pilot:
+#     run_id: 20260910T094515Z-qwen35-2b-mbpp-bridge-796d57b
+#     outcome: pilot-safety-gate-failed
+#     reused_rows: 0
 schema_version: 1
 run_id: REQUIRED_MBPP_BRIDGE_RUN_ID
+execution_mode: pilot_then_full
+full_only_reason: null
+historical_pilot: null
 host_model: /absolute/path/to/Qwen3.5-2B
 host_revision: 15852e8c16360a2fea060d615a32b45270f8a8fc
 host_files_manifest: /absolute/path/to/host-files-manifest.json

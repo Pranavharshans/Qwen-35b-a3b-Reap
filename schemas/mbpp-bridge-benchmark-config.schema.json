@@ -80,6 +80,34 @@
       "title": "EvalPlusContract",
       "type": "object"
     },
+    "HistoricalPilotConfig": {
+      "additionalProperties": false,
+      "description": "Preserved provenance for a failed pilot that motivates a full-only run.\n\nHistorical evidence only. A full-only run imports zero rows from it and\nthe historical safety gate is never re-evaluated or relaxed.",
+      "properties": {
+        "outcome": {
+          "const": "pilot-safety-gate-failed",
+          "default": "pilot-safety-gate-failed",
+          "title": "Outcome",
+          "type": "string"
+        },
+        "reused_rows": {
+          "const": 0,
+          "default": 0,
+          "title": "Reused Rows",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "title": "HistoricalPilotConfig",
+      "type": "object"
+    },
     "MbppDataset": {
       "additionalProperties": false,
       "properties": {
@@ -174,6 +202,56 @@
       },
       "title": "MbppRuntime",
       "type": "object"
+    },
+    "PilotSafetyGateConfig": {
+      "additionalProperties": false,
+      "description": "Pre-registered aggregate pilot gate for the MBPP+ bridge benchmark.\n\nValues are literal-pinned so a run cannot silently relax them. Item-level\nstructural failures (cap hit, unclosed reasoning, missing final answer,\nunsanitizable output) never abort generation and never leave the\ndenominator; the gate only decides whether the 50-task pilot is\nrepresentative enough to continue to the full 378-task set. The gate is\nnever evaluated in ``exploratory_full_only`` execution mode.",
+      "properties": {
+        "max_cap_hit_rate": {
+          "const": 0.05,
+          "default": 0.05,
+          "title": "Max Cap Hit Rate",
+          "type": "number"
+        },
+        "max_structurally_invalid_rate": {
+          "const": 0.05,
+          "default": 0.05,
+          "title": "Max Structurally Invalid Rate",
+          "type": "number"
+        },
+        "require_exact_task_order_and_hashes": {
+          "const": true,
+          "default": true,
+          "title": "Require Exact Task Order And Hashes",
+          "type": "boolean"
+        },
+        "require_full_bridge_engagement": {
+          "const": true,
+          "default": true,
+          "title": "Require Full Bridge Engagement",
+          "type": "boolean"
+        },
+        "require_no_oom_nan_inf": {
+          "const": true,
+          "default": true,
+          "title": "Require No Oom Nan Inf",
+          "type": "boolean"
+        },
+        "require_zero_duplicate_rows": {
+          "const": true,
+          "default": true,
+          "title": "Require Zero Duplicate Rows",
+          "type": "boolean"
+        },
+        "require_zero_missing_rows": {
+          "const": true,
+          "default": true,
+          "title": "Require Zero Missing Rows",
+          "type": "boolean"
+        }
+      },
+      "title": "PilotSafetyGateConfig",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -207,6 +285,39 @@
     "evalplus": {
       "$ref": "#/$defs/EvalPlusContract"
     },
+    "execution_mode": {
+      "default": "pilot_then_full",
+      "enum": [
+        "pilot_then_full",
+        "exploratory_full_only"
+      ],
+      "title": "Execution Mode",
+      "type": "string"
+    },
+    "full_only_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Full Only Reason"
+    },
+    "historical_pilot": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HistoricalPilotConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "host_files_manifest": {
       "format": "path",
       "title": "Host Files Manifest",
@@ -231,6 +342,9 @@
       "format": "path",
       "title": "Output Dir",
       "type": "string"
+    },
+    "pilot_safety_gate": {
+      "$ref": "#/$defs/PilotSafetyGateConfig"
     },
     "proceed_full_regardless_of_pilot_score": {
       "const": true,

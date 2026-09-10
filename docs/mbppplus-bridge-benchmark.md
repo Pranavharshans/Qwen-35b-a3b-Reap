@@ -34,6 +34,66 @@ never pooled. The bridge hooks are absent for both base conditions. For each
 bridged condition, generation fails unless telemetry proves that every mapped
 sidecar executed, its learned gate opened, and it emitted a nonzero residual.
 
+## Pre-pilot policy amendment
+
+Two preserved one-sample preflights are the rationale for treating truncated
+thinking output as an item-level benchmark failure rather than a pipeline
+integrity failure:
+
+- `20260910T075838Z-qwen35-2b-mbpp-bridge-0ff6beb` (2,048-token thinking cap):
+  `base-thinking-on` hit the cap with an unclosed reasoning block. Report
+  SHA-256 `b13fa426b13067b16bcdbb1d3dfafc998929c41c84f581cca466650ef5429d66`;
+  outcome SHA-256
+  `44b45648653686e453fb3ec3669f915e20c1d8bd03d4f4301bf7e428018d844a`.
+- `20260910T090943Z-qwen35-2b-mbpp-bridge-0ff6beb` (4,096-token thinking cap):
+  the same condition again consumed the full cap with an unclosed block.
+  Report SHA-256
+  `176bd4eb0f1f728ab3b58bc883497803c7a2f6b8f69e5ec5f79535ce0ca92afc`;
+  outcome SHA-256
+  `66c42d5c9249080d91cbf9aca600c4b8fb2c56492344d5c412122020a36c1f4c`.
+
+Both runs remain classified `FAIL / WAITING_FOR_HUMAN`; this policy does not
+reclassify them. Generation records `cap_hit`, `reasoning_opened`,
+`reasoning_closed`, `final_answer_present`, `sanitizable`, `score_eligible` and
+`failure_reason` on every row. Such rows stay in the denominator and are never
+excluded, replaced, retried or regenerated. Official EvalPlus sanitization
+still receives every row: recoverable code is scored normally; a row without a
+recoverable executable remains in the scored task universe with a deterministic
+failed result. Per-condition rates are reported for cap hits, unclosed
+reasoning, missing final answers and sanitization failures.
+
+The pre-registered pilot safety gate stops after the 50-task pilot with a
+feasibility failure when any condition exceeds a 5% cap-hit rate or a 5%
+structurally-invalid rate, or has missing/duplicate rows, non-finite telemetry,
+or incomplete bridge engagement. When every integrity and rate gate passes,
+generation proceeds to all 378 tasks regardless of capability score.
+
+## Governed full-only exploratory mode
+
+A failed pilot safety gate blocks the standard pilot-then-full path, but does
+not authorize silently relaxing it. When a fresh full benchmark is explicitly
+approved, the pinned configuration uses:
+
+```yaml
+execution_mode: exploratory_full_only
+full_only_reason: <human authorization summary>
+historical_pilot:
+  run_id: <failed pilot run id>
+  outcome: pilot-safety-gate-failed
+  reused_rows: 0
+```
+
+Full-only mode generates all 378 tasks from task 1 in a single tier, creates
+exactly four fresh condition files, imports zero previous rows and never
+evaluates the pilot safety gate. A non-empty condition file is accepted only
+as a resumable prefix from the same run: every existing row must carry the
+same `run_id` and `condition`, match the frozen `source_row_sha256`, match the
+expected task order, and its raw output must hash to `raw_solution_sha256`;
+otherwise generation fails closed before producing a row. Item-level failures
+(cap hits, unclosed reasoning, missing final answers, unsanitizable code) stay
+in the denominator, and generation settings, prompts, task order and official
+scoring are unchanged.
+
 ## Commands
 
 Download the immutable official release artifact and verify the SHA-256 shown
@@ -52,6 +112,13 @@ Build a digest-pinned official EvalPlus v0.3.1 image on a Docker-capable scorer:
 python scripts/prepare_evalplus_docker.py --output-dir /path/to/evalplus-image
 ```
 
+The image contains the official HumanEval+ v0.1.10 archive at
+`/opt/evalplus-data/HumanEvalPlus.jsonl.gz`, pinned by SHA-256
+`e62f4130146963d969da64553f407a66e52d095adbfed4ee6733b4d59e14a3ed`. Image
+preparation and scoring both verify the OCI labels and the archive bytes before
+accepting the image. The locked-down scorer sets `HUMANEVAL_OVERRIDE_PATH` to
+that image path because `evalplus.sanitize` loads HumanEval+ and MBPP+ together.
+
 Copy the completed run directory and the official MBPP+ archive to that scorer,
 then score all conditions with one command:
 
@@ -60,6 +127,10 @@ reverse-reap score-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml \
   --evalplus-image "$(cat /path/to/evalplus-image/evalplus-image.txt)"
 ```
 
-The scorer runs `evalplus.sanitize` and `evalplus.evaluate --dataset mbpp`
-inside a network-disabled, read-only, capability-dropped Docker container. It
-reports official MBPP base-test and MBPP+ base-plus-extra pass rates separately.
+The scorer runs `evalplus.sanitize --mbpp_version v0.2.0` and
+`evalplus.evaluate --dataset mbpp --version v0.2.0` inside a network-disabled,
+read-only, capability-dropped Docker container. EvalPlus e5d0ed0 does not
+support `--output-file`; it deterministically writes
+`<samples path without .jsonl>_eval_results.json`, which the scorer requires
+and validates before parsing. It reports official MBPP base-test and MBPP+
+base-plus-extra pass rates separately.
