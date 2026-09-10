@@ -86,6 +86,13 @@ Build a digest-pinned official EvalPlus v0.3.1 image on a Docker-capable scorer:
 python scripts/prepare_evalplus_docker.py --output-dir /path/to/evalplus-image
 ```
 
+The image contains the official HumanEval+ v0.1.10 archive at
+`/opt/evalplus-data/HumanEvalPlus.jsonl.gz`, pinned by SHA-256
+`e62f4130146963d969da64553f407a66e52d095adbfed4ee6733b4d59e14a3ed`. Image
+preparation and scoring both verify the OCI labels and the archive bytes before
+accepting the image. The locked-down scorer sets `HUMANEVAL_OVERRIDE_PATH` to
+that image path because `evalplus.sanitize` loads HumanEval+ and MBPP+ together.
+
 Copy the completed run directory and the official MBPP+ archive to that scorer,
 then score all conditions with one command:
 
@@ -94,6 +101,10 @@ reverse-reap score-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml \
   --evalplus-image "$(cat /path/to/evalplus-image/evalplus-image.txt)"
 ```
 
-The scorer runs `evalplus.sanitize` and `evalplus.evaluate --dataset mbpp`
-inside a network-disabled, read-only, capability-dropped Docker container. It
-reports official MBPP base-test and MBPP+ base-plus-extra pass rates separately.
+The scorer runs `evalplus.sanitize --mbpp_version v0.2.0` and
+`evalplus.evaluate --dataset mbpp --version v0.2.0` inside a network-disabled,
+read-only, capability-dropped Docker container. EvalPlus e5d0ed0 does not
+support `--output-file`; it deterministically writes
+`<samples path without .jsonl>_eval_results.json`, which the scorer requires
+and validates before parsing. It reports official MBPP base-test and MBPP+
+base-plus-extra pass rates separately.

@@ -38,6 +38,11 @@ OFFICIAL_MBPP_VERSION = "v0.2.0"
 OFFICIAL_MBPP_TASKS = 378
 OFFICIAL_MBPP_ARCHIVE_SHA256 = "af43697e8791c4c149bdfd6b489d8b5412507551ac20e28a439f650b8225db63"
 OFFICIAL_EVALPLUS_REVISION = "e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2"
+OFFICIAL_HUMANEVAL_PLUS_VERSION = "v0.1.10"
+OFFICIAL_HUMANEVAL_PLUS_SHA256 = (
+    "e62f4130146963d969da64553f407a66e52d095adbfed4ee6733b4d59e14a3ed"
+)
+HUMANEVAL_OVERRIDE_PATH = "/opt/evalplus-data/HumanEvalPlus.jsonl.gz"
 INSTRUCTION_PREFIX = (
     "Please provide a self-contained Python script that solves the following problem "
     "in a markdown code block:"
@@ -965,6 +970,8 @@ def _docker_prefix(config: MbppBridgeBenchmarkConfig, image: str, *, work: Path)
         "--env",
         "MBPP_OVERRIDE_PATH=/dataset/MbppPlus.jsonl.gz",
         "--env",
+        f"HUMANEVAL_OVERRIDE_PATH={HUMANEVAL_OVERRIDE_PATH}",
+        "--env",
         "HOME=/tmp",
         image,
     ]
@@ -979,25 +986,76 @@ def _verify_evalplus_image(image: str, revision: str) -> None:
             "image",
             "inspect",
             "--format",
-            '{{index .Config.Labels "org.opencontainers.image.revision"}}',
+            "{{json .Config.Labels}}",
             image,
         ],
         capture_output=True,
         text=True,
         check=False,
     )
-    if result.returncode != 0 or result.stdout.strip() != revision:
-        raise BridgeBenchmarkError("EvalPlus image revision label differs from pinned config")
+    if result.returncode != 0:
+        raise BridgeBenchmarkError("EvalPlus image metadata inspection failed")
+    try:
+        labels = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise BridgeBenchmarkError("EvalPlus image metadata labels are not valid JSON") from error
+    expected_labels = {
+        "org.opencontainers.image.revision": revision,
+        "org.opencontainers.image.humanevalplus.version": OFFICIAL_HUMANEVAL_PLUS_VERSION,
+        "org.opencontainers.image.humanevalplus.path": HUMANEVAL_OVERRIDE_PATH,
+        "org.opencontainers.image.humanevalplus.sha256": OFFICIAL_HUMANEVAL_PLUS_SHA256,
+    }
+    labels_match = isinstance(labels, dict) and all(
+        labels.get(key) == value for key, value in expected_labels.items()
+    )
+    if not labels_match:
+        raise BridgeBenchmarkError("EvalPlus image labels differ from the pinned scoring contract")
+    content = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            image,
+            "sha256sum",
+            HUMANEVAL_OVERRIDE_PATH,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    actual = content.stdout.strip().split(maxsplit=1)[0] if content.stdout.strip() else ""
+    if content.returncode != 0 or actual != OFFICIAL_HUMANEVAL_PLUS_SHA256:
+        raise BridgeBenchmarkError("EvalPlus image HumanEval+ artifact hash differs from pin")
+
+
+def _official_result_path(samples: Path) -> Path:
+    """Return EvalPlus's result path for a JSONL sample file.
+
+    EvalPlus e5d0ed0 has no supported output-file CLI flag. Its deterministic
+    file mode is ``samples.replace('.jsonl', '_eval_results.json')``; keep the
+    suffix check here so a changed sample path cannot silently select another
+    output convention.
+    """
+    if samples.suffix != ".jsonl":
+        raise BridgeBenchmarkError("official EvalPlus samples path must end in .jsonl")
+    return samples.with_name(f"{samples.stem}_eval_results.json")
 
 
 def _official_result_rows(path: Path, expected_ids: set[str]) -> dict[str, dict[str, bool]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BridgeBenchmarkError("official EvalPlus result is not valid JSON") from error
+    if not isinstance(payload, dict):
+        raise BridgeBenchmarkError("official EvalPlus result is not a JSON object")
     evaluated = payload.get("eval")
     if not isinstance(evaluated, dict) or set(evaluated) != expected_ids:
         raise BridgeBenchmarkError("official EvalPlus result task universe differs")
     rows = {}
     for task_id, values in evaluated.items():
-        if not isinstance(values, list) or len(values) != 1:
+        if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
             raise BridgeBenchmarkError("official EvalPlus result is not pass@1")
         row = values[0]
         base = row.get("base_status") == "pass"
@@ -1033,7 +1091,11 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
         source = config.output_dir / "conditions" / f"{condition}.jsonl"
         relative_source = source.resolve().relative_to(config.output_dir.resolve())
         sanitized = scores_dir / f"{condition}-sanitized.jsonl"
-        result_path = scores_dir / f"{condition}.eval_results.json"
+        result_path = _official_result_path(sanitized)
+        # The pre-fix scorer attempted to direct EvalPlus to this unsupported
+        # path. Refuse to mistake that stale artifact for the official CLI's
+        # deterministic ``*_eval_results.json`` output.
+        legacy_result_path = scores_dir / f"{condition}.eval_results.json"
         prefix = _docker_prefix(config, evalplus_image, work=config.output_dir.resolve())
         if not sanitized.is_file():
             command = prefix + [
@@ -1042,6 +1104,8 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
                 "evalplus.sanitize",
                 "--samples",
                 f"/work/{relative_source}",
+                "--mbpp_version",
+                config.dataset.version,
             ]
             run = subprocess.run(
                 command,
@@ -1080,6 +1144,11 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
             ),
         }
         if not result_path.is_file():
+            if legacy_result_path.is_file():
+                raise BridgeBenchmarkError(
+                    "legacy EvalPlus result path exists without the official result path: "
+                    f"{legacy_result_path.name}"
+                )
             command = prefix + [
                 "python",
                 "-m",
@@ -1092,8 +1161,6 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
                 str(config.evalplus.parallel_workers),
                 "--version",
                 config.dataset.version,
-                "--output-file",
-                f"/work/{result_path.resolve().relative_to(config.output_dir.resolve())}",
             ]
             run = subprocess.run(
                 command,
@@ -1124,7 +1191,7 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
         path.name: {"sha256": _sha256_file(path), "bytes": path.stat().st_size}
         for path in sorted(scores_dir.iterdir())
         if path.is_file()
-        and (path.name.endswith("-sanitized.jsonl") or path.name.endswith(".eval_results.json"))
+        and (path.name.endswith("-sanitized.jsonl") or path.name.endswith("_eval_results.json"))
     }
     report = {
         "schema_version": 1,

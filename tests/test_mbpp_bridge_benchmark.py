@@ -16,6 +16,7 @@ from reverse_reap.mbpp_bridge_benchmark import (
     MbppDataset,
     MbppRuntime,
     _classify_output,
+    _official_result_path,
     _official_result_rows,
     _render_prompt,
     _validate_bridge_engagement,
@@ -174,6 +175,13 @@ def test_sanitize_recovers_code_from_thinking_off_output():
     cleaned = sanitize(raw, "solve_0")
     assert "def solve_0():" in cleaned
     compile(cleaned, "<thinking-off>", "exec")
+
+
+def test_official_evalplus_result_path_matches_pinned_cli_contract(tmp_path: Path):
+    samples = tmp_path / "condition-sanitized.jsonl"
+    assert _official_result_path(samples) == tmp_path / "condition-sanitized_eval_results.json"
+    with pytest.raises(BridgeBenchmarkError, match="must end in .jsonl"):
+        _official_result_path(tmp_path / "condition-sanitized.json")
 
 
 def test_deterministic_cuda_requires_cublas_workspace(monkeypatch: pytest.MonkeyPatch):
@@ -373,8 +381,9 @@ def test_scoring_uses_official_sanitize_and_evaluate_for_all_four_conditions(
                 source_path.read_text(encoding="utf-8"), encoding="utf-8"
             )
         if "evalplus.evaluate" in command:
-            output = command[command.index("--output-file") + 1].removeprefix("/work/")
-            (config.output_dir / output).write_text(
+            samples = command[command.index("--samples") + 1].removeprefix("/work/")
+            result_path = benchmark._official_result_path(config.output_dir / samples)
+            result_path.write_text(
                 json.dumps(
                     {
                         "eval": {
@@ -395,6 +404,54 @@ def test_scoring_uses_official_sanitize_and_evaluate_for_all_four_conditions(
     assert sum("evalplus.sanitize" in command for command in commands) == 4
     assert sum("evalplus.evaluate" in command for command in commands) == 4
     assert all("--network=none" in command for command in commands)
+    assert all("--output-file" not in command for command in commands)
+    assert all(
+        "HUMANEVAL_OVERRIDE_PATH=/opt/evalplus-data/HumanEvalPlus.jsonl.gz" in command
+        for command in commands
+    )
+    sanitize_commands = [command for command in commands if "evalplus.sanitize" in command]
+    assert all("--mbpp_version" in command for command in sanitize_commands)
+    assert all("v0.2.0" in command for command in sanitize_commands)
+    result_names = {
+        name for name in report["official_artifacts"] if name.endswith("_eval_results.json")
+    }
+    assert result_names == {f"{condition}-sanitized_eval_results.json" for condition in CONDITIONS}
+
+
+def test_evalplus_image_validation_requires_pinned_dataset_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    labels = {
+        "org.opencontainers.image.revision": benchmark.OFFICIAL_EVALPLUS_REVISION,
+        "org.opencontainers.image.humanevalplus.version": benchmark.OFFICIAL_HUMANEVAL_PLUS_VERSION,
+        "org.opencontainers.image.humanevalplus.path": benchmark.HUMANEVAL_OVERRIDE_PATH,
+        "org.opencontainers.image.humanevalplus.sha256": benchmark.OFFICIAL_HUMANEVAL_PLUS_SHA256,
+    }
+    responses = iter(
+        [
+            SimpleNamespace(returncode=0, stdout=json.dumps(labels), stderr=""),
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    f"{benchmark.OFFICIAL_HUMANEVAL_PLUS_SHA256} "
+                    f"{benchmark.HUMANEVAL_OVERRIDE_PATH}\n"
+                ),
+                stderr="",
+            ),
+        ]
+    )
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        return next(responses)
+
+    monkeypatch.setattr(benchmark.subprocess, "run", fake_run)
+    benchmark._verify_evalplus_image(
+        "local/image@sha256:" + "a" * 64, benchmark.OFFICIAL_EVALPLUS_REVISION
+    )
+    assert commands[0][0:4] == ["docker", "image", "inspect", "--format"]
+    assert commands[1][-2:] == ["sha256sum", benchmark.HUMANEVAL_OVERRIDE_PATH]
 
 
 def _policy_row(
@@ -658,6 +715,34 @@ def test_scoring_rejects_sanitizer_row_loss(tmp_path: Path, monkeypatch: pytest.
         score_mbpp_bridge_benchmark(config_path, evalplus_image="local/image@sha256:" + "a" * 64)
 
 
+def test_scoring_rejects_legacy_result_path_without_official_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config, _tasks, config_path = _score_fixture(
+        tmp_path, monkeypatch, drop_last=False, empty_last=False
+    )
+    scores_dir = config.output_dir / "official-evalplus"
+    scores_dir.mkdir(parents=True)
+    (scores_dir / "base-thinking-off.eval_results.json").write_text(
+        "{}", encoding="utf-8"
+    )
+
+    def fake_run(command, **_kwargs):
+        if "evalplus.sanitize" in command:
+            source = command[command.index("--samples") + 1].removeprefix("/work/")
+            source_path = config.output_dir / source
+            source_path.with_name(source_path.stem + "-sanitized.jsonl").write_text(
+                source_path.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(benchmark.subprocess, "run", fake_run)
+    with pytest.raises(BridgeBenchmarkError, match="legacy EvalPlus result path"):
+        score_mbpp_bridge_benchmark(
+            config_path, evalplus_image="local/image@sha256:" + "a" * 64
+        )
+
+
 def test_scoring_reports_unrecoverable_items_and_keeps_universe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -678,7 +763,8 @@ def test_scoring_reports_unrecoverable_items_and_keeps_universe(
                 "".join(json.dumps(row) + "\n" for row in out_rows), encoding="utf-8"
             )
         if "evalplus.evaluate" in command:
-            output = command[command.index("--output-file") + 1].removeprefix("/work/")
+            samples = command[command.index("--samples") + 1].removeprefix("/work/")
+            result_path = benchmark._official_result_path(config.output_dir / samples)
             result = {
                 "eval": {
                     task["task_id"]: [
@@ -690,7 +776,7 @@ def test_scoring_reports_unrecoverable_items_and_keeps_universe(
                     for index, task in enumerate(tasks)
                 }
             }
-            (config.output_dir / output).write_text(json.dumps(result), encoding="utf-8")
+            result_path.write_text(json.dumps(result), encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(benchmark.subprocess, "run", fake_run)
@@ -704,4 +790,3 @@ def test_scoring_reports_unrecoverable_items_and_keeps_universe(
         assert stats["unrecoverable_items"] == [tasks[1]["task_id"]]
         assert stats["unrecoverable_rate"] == 0.5
     assert report["comparisons"]["thinking-off"]["full"]["base"]["samples"] == 2
-
