@@ -79,11 +79,13 @@ reverse-reap score-bridge-benchmark /path/to/pinned-benchmark.yaml \
 Scoring executes every completion with no network, a read-only root,
 capabilities dropped, bounded processes, CPU, memory and time, and a disposable
 filesystem. It writes scored copies rather than modifying raw generations.
-The continuation-safe v2 scorer always reconstructs executable text from the
-immutable `raw_completion`, preserves leading indentation, and records both the
-normalizer version and reconstructed completion. Its `*-v2` scored files,
+The continuation-boundary v3 scorer always reconstructs executable text from
+the immutable `raw_completion`, preserves leading indentation, and records both
+the normalizer version and reconstructed completion. Its `*-v3` scored files,
 reports, states, reference preflight and artifact manifest never overwrite the
-original scoring evidence.
+original or v2 scoring evidence. Because normalized task prompts may omit their
+trailing newline, v3 joins each prompt and reference/generated continuation with
+exactly one line boundary while preserving continuation indentation.
 Before accepting model scores, every canonical reference solution must pass
 its own frozen tests inside the exact pinned evaluator image. Any reference
 failure invalidates the scorer and stops the benchmark.

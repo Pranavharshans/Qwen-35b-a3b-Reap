@@ -47,8 +47,8 @@ class BridgeBenchmarkError(RuntimeError):
     """Raised when benchmark evidence would be invalid or unsafe."""
 
 
-COMPLETION_NORMALIZER_VERSION = "continuation-preserving-v2"
-SCORING_ARTIFACT_SUFFIX = "v2"
+COMPLETION_NORMALIZER_VERSION = "continuation-boundary-v3"
+SCORING_ARTIFACT_SUFFIX = "v3"
 
 
 class BridgeGenerationTelemetry:
@@ -97,9 +97,9 @@ class BridgeBenchmarkRuntime(StrictModel):
 class BridgeBenchmarkDataset(StrictModel):
     source_manifest: Path
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source_id: Literal[
-        "evalplus/humanevalplus", "openai/openai_humaneval"
-    ] = "evalplus/humanevalplus"
+    source_id: Literal["evalplus/humanevalplus", "openai/openai_humaneval"] = (
+        "evalplus/humanevalplus"
+    )
     pilot_items: int = Field(default=25, ge=1)
     full_items: int | None = Field(default=None, ge=1)
     selection_seed: int = Field(default=20260909, ge=0)
@@ -133,9 +133,7 @@ class BridgeBenchmarkConfig(StrictModel):
     dataset: BridgeBenchmarkDataset
     runtime: BridgeBenchmarkRuntime
     scoring_mode: Literal["deferred", "docker-local"] = "deferred"
-    evaluator_image: str | None = Field(
-        default=None, pattern=r"^[^\s]+@sha256:[0-9a-f]{64}$"
-    )
+    evaluator_image: str | None = Field(default=None, pattern=r"^[^\s]+@sha256:[0-9a-f]{64}$")
     budget: BridgeBenchmarkBudget
     output_dir: Path
     proceed_full_regardless_of_pilot_score: Literal[True] = True
@@ -163,9 +161,7 @@ def _atomic_json(path: Path, payload: dict[str, Any], *, refuse: bool = True) ->
     body = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     if path.exists() and refuse:
         if path.read_text(encoding="utf-8") != body:
-            raise BridgeBenchmarkError(
-                f"refusing to overwrite benchmark artifact: {path}"
-            )
+            raise BridgeBenchmarkError(f"refusing to overwrite benchmark artifact: {path}")
         return
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -179,13 +175,9 @@ def _atomic_json(path: Path, payload: dict[str, Any], *, refuse: bool = True) ->
             os.unlink(temporary)
 
 
-def _write_jsonl_atomic(
-    path: Path, rows: list[dict[str, Any]], *, replace: bool = False
-) -> None:
+def _write_jsonl_atomic(path: Path, rows: list[dict[str, Any]], *, replace: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    rendered = "".join(
-        json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n" for row in rows
-    )
+    rendered = "".join(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n" for row in rows)
     if path.exists() and not replace:
         if path.read_text(encoding="utf-8") != rendered:
             raise BridgeBenchmarkError(f"refusing to overwrite benchmark rows: {path}")
@@ -211,10 +203,7 @@ def load_bridge_benchmark_config(
         config = BridgeBenchmarkConfig.model_validate(
             yaml.safe_load(path.read_text(encoding="utf-8"))
         )
-        if (
-            not allow_expired
-            and config.budget.deadline_utc.astimezone(UTC) <= datetime.now(UTC)
-        ):
+        if not allow_expired and config.budget.deadline_utc.astimezone(UTC) <= datetime.now(UTC):
             raise ValueError("benchmark deadline has expired")
         return config
     except Exception as error:
@@ -231,9 +220,7 @@ def fetch_and_freeze_humanevalplus(
         from datasets import load_dataset
     except ImportError as error:  # pragma: no cover - optional data dependency
         raise BridgeBenchmarkError("datasets and huggingface_hub are required") from error
-    resolved = HfApi().dataset_info(
-        "evalplus/humanevalplus", revision=revision
-    ).sha
+    resolved = HfApi().dataset_info("evalplus/humanevalplus", revision=revision).sha
     if resolved != revision:
         raise BridgeBenchmarkError(
             f"HumanEval+ revision moved: expected {revision}, resolved {resolved}"
@@ -301,9 +288,7 @@ def freeze_bridge_benchmark_tasks(
     )
     full_count = config.dataset.full_items or len(ordered)
     if config.dataset.pilot_items > full_count or full_count > len(ordered):
-        raise BridgeBenchmarkError(
-            f"invalid pilot/full sizes for {len(ordered)} eligible tasks"
-        )
+        raise BridgeBenchmarkError(f"invalid pilot/full sizes for {len(ordered)} eligible tasks")
     full = ordered[:full_count]
     pilot = full[: config.dataset.pilot_items]
     if len({sample.content_sha256 for sample in full}) != len(full):
@@ -364,6 +349,11 @@ def _clean_code(text: str) -> str:
     return text.rstrip()
 
 
+def _append_continuation(prefix: str, continuation: str) -> str:
+    """Join a code prefix and continuation with exactly one line boundary."""
+    return prefix.rstrip("\r\n") + "\n" + continuation.lstrip("\r\n")
+
+
 def _prompt(sample: NormalizedSample) -> str:
     return (
         "Complete the Python function below. Return only the executable Python "
@@ -376,6 +366,7 @@ def _load_host(config: BridgeBenchmarkConfig) -> tuple[Any, Any]:
     try:
         import torch
         from transformers import AutoTokenizer
+
         try:
             from transformers import AutoModelForImageTextToText as HostModel
         except ImportError:  # pragma: no cover
@@ -432,9 +423,7 @@ def _load_bridge(config: BridgeBenchmarkConfig, device: Any) -> tuple[Any, Any]:
     bridge_config = load_bridge_training_config(config.bridge_config)
     if bridge_config.host.revision != config.host_revision:
         raise BridgeBenchmarkError("benchmark and bridge host revisions differ")
-    experts = _load_extracted_experts(
-        bridge_config.donor.extraction_dir, bridge_config.mappings
-    )
+    experts = _load_extracted_experts(bridge_config.donor.extraction_dir, bridge_config.mappings)
     bridge = BridgeModel(
         bridge_config.mappings,
         experts,
@@ -444,18 +433,14 @@ def _load_bridge(config: BridgeBenchmarkConfig, device: Any) -> tuple[Any, Any]:
         gate_init_bias=bridge_config.runtime.gate_init_bias,
     )
     state = load_file(str(config.bridge_checkpoint), device="cpu")
-    expected = {
-        key for key in bridge.state_dict() if not key.startswith("experts.")
-    }
+    expected = {key for key in bridge.state_dict() if not key.startswith("experts.")}
     if set(state) != expected:
         raise BridgeBenchmarkError(
             f"bridge checkpoint keys differ: missing={sorted(expected - set(state))[:5]}, "
             f"unexpected={sorted(set(state) - expected)[:5]}"
         )
     result = bridge.load_state_dict(state, strict=False)
-    expected_missing = {
-        key for key in bridge.state_dict() if key.startswith("experts.")
-    }
+    expected_missing = {key for key in bridge.state_dict() if key.startswith("experts.")}
     if set(result.missing_keys) != expected_missing or result.unexpected_keys:
         raise BridgeBenchmarkError("bridge checkpoint did not load with exact expected keys")
     bridge.to(device)
@@ -495,9 +480,7 @@ def _heartbeat(
         "total": total,
         "elapsed_seconds": elapsed,
         "throughput_items_per_minute": completed / max(elapsed / 60, 1e-9),
-        "estimated_compute_cost_usd": (
-            elapsed / 3600 * config.budget.provider_rate_usd_per_hour
-        ),
+        "estimated_compute_cost_usd": (elapsed / 3600 * config.budget.provider_rate_usd_per_hour),
     }
     try:
         import torch
@@ -576,7 +559,7 @@ def _score_rows(
             )
         scored_completion = _clean_code(raw_completion)
         result = evaluate_python(
-            sample.prompt + scored_completion,
+            _append_continuation(sample.prompt, scored_completion),
             sample.tests or "",
             image=image,
             timeout_seconds=sample.timeout_seconds,
@@ -591,12 +574,8 @@ def _score_rows(
                 "scorer_stderr": result.stderr,
                 "scored_program_sha256": result.program_sha256,
                 "scored_completion": scored_completion,
-                "scored_completion_sha256": hashlib.sha256(
-                    scored_completion.encode()
-                ).hexdigest(),
-                "raw_completion_sha256": hashlib.sha256(
-                    raw_completion.encode()
-                ).hexdigest(),
+                "scored_completion_sha256": hashlib.sha256(scored_completion.encode()).hexdigest(),
+                "raw_completion_sha256": hashlib.sha256(raw_completion.encode()).hexdigest(),
                 "completion_normalizer_version": COMPLETION_NORMALIZER_VERSION,
                 "completion_reconstructed_from": "raw_completion",
                 "normalization_changed_from_stored_completion": (
@@ -607,13 +586,11 @@ def _score_rows(
     return scored
 
 
-def _validate_reference_scoring(
-    samples: list[NormalizedSample], image: str
-) -> dict[str, Any]:
+def _validate_reference_scoring(samples: list[NormalizedSample], image: str) -> dict[str, Any]:
     failures = []
     for sample in samples:
         result = evaluate_python(
-            sample.prompt + (sample.reference or ""),
+            _append_continuation(sample.prompt, sample.reference or ""),
             sample.tests or "",
             image=image,
             timeout_seconds=sample.timeout_seconds,
@@ -665,9 +642,7 @@ def load_scoring_exclusions(path: Path) -> tuple[frozenset[str], str]:
     return frozenset(excluded), digest
 
 
-def _exclusion_summary(
-    original_ids: set[str], excluded_ids: frozenset[str]
-) -> dict[str, Any]:
+def _exclusion_summary(original_ids: set[str], excluded_ids: frozenset[str]) -> dict[str, Any]:
     """Report original/eligible denominators for one task set.
 
     Unknown exclusion IDs fail closed, and the returned eligible list is a
@@ -685,6 +660,22 @@ def _exclusion_summary(
         "coverage": f"{len(eligible)}/{len(original)}",
         "eligible_sample_ids": eligible,
     }
+
+
+def _validate_scoring_rows(
+    rows: list[dict[str, Any]], expected_ids: set[str], context: str
+) -> None:
+    """Require one row for every frozen task, with no duplicate IDs."""
+    if len(rows) != len(expected_ids):
+        raise BridgeBenchmarkError(
+            f"{context} row count differs from freeze: {len(rows)} != {len(expected_ids)}"
+        )
+    row_ids = [row.get("sample_id") for row in rows]
+    duplicates = sorted(sample_id for sample_id, count in Counter(row_ids).items() if count > 1)
+    if duplicates:
+        raise BridgeBenchmarkError(f"{context} contains duplicate sample IDs: {duplicates}")
+    if set(row_ids) != expected_ids:
+        raise BridgeBenchmarkError(f"{context} task IDs differ from freeze")
 
 
 def _validate_repeats(
@@ -738,8 +729,7 @@ def _paired_report(base: list[dict[str, Any]], bridge: list[dict[str, Any]]) -> 
     exact_p = 1.0
     if discordant:
         tail = sum(
-            _binomial_probability(discordant, value)
-            for value in range(0, min(fixes, breaks) + 1)
+            _binomial_probability(discordant, value) for value in range(0, min(fixes, breaks) + 1)
         )
         exact_p = min(1.0, 2 * tail)
     rng = np.random.default_rng(20260909)
@@ -757,8 +747,7 @@ def _paired_report(base: list[dict[str, Any]], bridge: list[dict[str, Any]]) -> 
         "base_pass_rate": sum(row["base_pass"] for row in items) / total,
         "bridge_pass_rate": sum(row["bridge_pass"] for row in items) / total,
         "absolute_pass_rate_change": (
-            sum(row["bridge_pass"] for row in items)
-            - sum(row["base_pass"] for row in items)
+            sum(row["bridge_pass"] for row in items) - sum(row["base_pass"] for row in items)
         )
         / total,
         "transitions": dict(sorted(transitions.items())),
@@ -818,18 +807,14 @@ def _write_state(
     )
 
 
-def _run_bridge_benchmark(
-    config_path: Path, config: BridgeBenchmarkConfig
-) -> dict[str, Any]:
+def _run_bridge_benchmark(config_path: Path, config: BridgeBenchmarkConfig) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     _write_state(config, status="PREFLIGHTED", stage="freezing-tasks")
     started = time.monotonic()
     _check_budget(config, started)
     pilot, full, freeze = freeze_bridge_benchmark_tasks(config)
     _atomic_json(config.output_dir / "task-freeze.json", freeze)
-    _atomic_json(
-        config.output_dir / "config-snapshot.json", config.model_dump(mode="json")
-    )
+    _atomic_json(config.output_dir / "config-snapshot.json", config.model_dump(mode="json"))
     _write_jsonl_atomic(
         config.output_dir / "pilot-tasks.jsonl",
         [sample.model_dump(mode="json") for sample in pilot],
@@ -850,8 +835,7 @@ def _run_bridge_benchmark(
         if not evaluator_probe.passed:
             raise BridgeBenchmarkError("pinned evaluator image failed its preflight")
         _atomic_json(
-            config.output_dir
-            / f"reference-scorer-preflight-{SCORING_ARTIFACT_SUFFIX}.json",
+            config.output_dir / f"reference-scorer-preflight-{SCORING_ARTIFACT_SUFFIX}.json",
             _validate_reference_scoring(full, config.evaluator_image),
         )
     _seed_runtime(config.runtime.seed)
@@ -867,9 +851,7 @@ def _run_bridge_benchmark(
             handles = []
             telemetry = BridgeGenerationTelemetry() if condition == "bridge" else None
             if condition == "bridge":
-                handles = install_bridge_sidecars(
-                    model, bridge, mappings, telemetry=telemetry
-                )
+                handles = install_bridge_sidecars(model, bridge, mappings, telemetry=telemetry)
             try:
                 for repeat in ("a", "b"):
                     run_name = f"{condition}-{repeat}"
@@ -938,25 +920,19 @@ def _run_bridge_benchmark(
             finally:
                 for handle in handles:
                     handle.remove()
-        base_determinism = _validate_repeats(
-            tier_rows["base-a"], tier_rows["base-b"], "base"
-        )
+        base_determinism = _validate_repeats(tier_rows["base-a"], tier_rows["base-b"], "base")
         bridge_determinism = _validate_repeats(
             tier_rows["bridge-a"], tier_rows["bridge-b"], "bridge"
         )
         paired = None
         if config.scoring_mode == "docker-local":
-            paired = _paired_report(
-                scored_tier_rows["base-a"], scored_tier_rows["bridge-a"]
-            )
+            paired = _paired_report(scored_tier_rows["base-a"], scored_tier_rows["bridge-a"])
         report = {
             "tier": tier,
             "base_determinism": base_determinism,
             "bridge_determinism": bridge_determinism,
             "paired": paired,
-            "scoring_status": (
-                "complete" if config.scoring_mode == "docker-local" else "deferred"
-            ),
+            "scoring_status": ("complete" if config.scoring_mode == "docker-local" else "deferred"),
             "pilot_score_controls_full_execution": False,
             "completion_normalizer_version": COMPLETION_NORMALIZER_VERSION,
         }
@@ -983,16 +959,12 @@ def _run_bridge_benchmark(
         "task_freeze": freeze,
         "reports": all_reports,
         "elapsed_seconds": elapsed,
-        "estimated_compute_cost_usd": (
-            elapsed / 3600 * config.budget.provider_rate_usd_per_hour
-        ),
+        "estimated_compute_cost_usd": (elapsed / 3600 * config.budget.provider_rate_usd_per_hour),
         "scientific_claim": "paired benchmark result; not causal proof",
     }
     _atomic_json(config.output_dir / "benchmark-report.json", final)
     _write_state(config, status="COMPLETE", stage="generation-complete")
-    final["artifact_manifest"] = _freeze_artifact_hashes(config.output_dir)[
-        "manifest_sha256"
-    ]
+    final["artifact_manifest"] = _freeze_artifact_hashes(config.output_dir)["manifest_sha256"]
     return final
 
 
@@ -1047,7 +1019,7 @@ def _score_bridge_benchmark(
         for sample_id in sorted(excluded_ids):
             sample = by_id[sample_id]
             result = evaluate_python(
-                sample.prompt + (sample.reference or ""),
+                _append_continuation(sample.prompt, sample.reference or ""),
                 sample.tests or "",
                 image=evaluator_image,
                 timeout_seconds=sample.timeout_seconds,
@@ -1075,8 +1047,7 @@ def _score_bridge_benchmark(
     else:
         preflight = _validate_reference_scoring(full_samples, evaluator_image)
     _atomic_json(
-        config.output_dir
-        / f"reference-scorer-preflight-{SCORING_ARTIFACT_SUFFIX}.json",
+        config.output_dir / f"reference-scorer-preflight-{SCORING_ARTIFACT_SUFFIX}.json",
         preflight,
     )
     reports: dict[str, Any] = {}
@@ -1091,9 +1062,7 @@ def _score_bridge_benchmark(
             )
         }
         summary = _exclusion_summary(set(samples), excluded_ids)
-        eligible = {
-            sample_id: samples[sample_id] for sample_id in summary["eligible_sample_ids"]
-        }
+        eligible = {sample_id: samples[sample_id] for sample_id in summary["eligible_sample_ids"]}
         scored_runs: dict[str, list[dict[str, Any]]] = {}
         scored_row_counts: dict[str, int] = {}
         normalization_change_counts: dict[str, int] = {}
@@ -1106,23 +1075,17 @@ def _score_bridge_benchmark(
                     for line in raw_path.read_text(encoding="utf-8").splitlines()
                     if line.strip()
                 ]
-                if {row["sample_id"] for row in rows} != set(samples):
-                    raise BridgeBenchmarkError(f"{tier}/{name} task IDs differ from freeze")
-                eligible_rows = [
-                    row for row in rows if row["sample_id"] in eligible
-                ]
+                _validate_scoring_rows(rows, set(samples), f"{tier}/{name}")
+                eligible_rows = [row for row in rows if row["sample_id"] in eligible]
                 scored = _score_rows(eligible_rows, eligible, evaluator_image)
                 _write_jsonl_atomic(
-                    config.output_dir
-                    / tier
-                    / f"{name}-scored-{SCORING_ARTIFACT_SUFFIX}.jsonl",
+                    config.output_dir / tier / f"{name}-scored-{SCORING_ARTIFACT_SUFFIX}.jsonl",
                     scored,
                 )
                 scored_runs[name] = scored
                 scored_row_counts[name] = len(scored)
                 normalization_change_counts[name] = sum(
-                    bool(row["normalization_changed_from_stored_completion"])
-                    for row in scored
+                    bool(row["normalization_changed_from_stored_completion"]) for row in scored
                 )
         report = {
             "tier": tier,
@@ -1132,9 +1095,7 @@ def _score_bridge_benchmark(
             "bridge_determinism": _validate_repeats(
                 scored_runs["bridge-a"], scored_runs["bridge-b"], "bridge"
             ),
-            "paired": _paired_report(
-                scored_runs["base-a"], scored_runs["bridge-a"]
-            ),
+            "paired": _paired_report(scored_runs["base-a"], scored_runs["bridge-a"]),
             "scoring_status": "complete",
             "evaluator_image": evaluator_image,
             "pilot_score_controls_full_execution": False,
@@ -1152,9 +1113,7 @@ def _score_bridge_benchmark(
             },
         }
         _atomic_json(
-            config.output_dir
-            / tier
-            / f"scored-report-{SCORING_ARTIFACT_SUFFIX}.json",
+            config.output_dir / tier / f"scored-report-{SCORING_ARTIFACT_SUFFIX}.json",
             report,
         )
         reports[tier] = report
