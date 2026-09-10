@@ -41,11 +41,6 @@ INSTRUCTION_PREFIX = (
     "Please provide a self-contained Python script that solves the following problem "
     "in a markdown code block:"
 )
-RESPONSE_PREFIX = (
-    "Below is a Python script with a self-contained function that solves the problem "
-    "and passes corresponding tests:"
-)
-MAGIC_SPLITTER = "-[[]]-reverse-reap-evalplus-generation-boundary-[[]]-"
 CONDITIONS = (
     "base-thinking-off",
     "base-thinking-on",
@@ -233,19 +228,28 @@ def freeze_mbpp_tasks(config: MbppBridgeBenchmarkConfig) -> tuple[list[dict[str,
 
 
 def _render_prompt(tokenizer: Any, task_prompt: str, *, enable_thinking: bool) -> tuple[str, Any]:
+    """Render one MBPP task through the native Qwen chat template.
+
+    Only the user message is supplied; ``add_generation_prompt=True`` lets the
+    template render the assistant generation header itself, including the
+    thinking-mode switch. This function never provides an assistant message and
+    never injects think tags, a response prefix, or a code-fence prefill. The
+    generation boundary is the end of the rendered prompt, and the official
+    EvalPlus sanitizer extracts the final executable code from the raw
+    generation afterward. Task prompt wording is frozen by INSTRUCTION_PREFIX.
+    """
     user = f"{INSTRUCTION_PREFIX}\n```\n{task_prompt.strip()}\n```\n"
-    assistant = f"{RESPONSE_PREFIX}\n```python\n{MAGIC_SPLITTER}\n```\n"
     rendered = tokenizer.apply_chat_template(
-        [{"role": "user", "content": user}, {"role": "assistant", "content": assistant}],
+        [{"role": "user", "content": user}],
         tokenize=False,
+        add_generation_prompt=True,
         enable_thinking=enable_thinking,
     )
-    if not isinstance(rendered, str) or rendered.count(MAGIC_SPLITTER) != 1:
-        raise BridgeBenchmarkError("host chat template did not preserve the generation boundary")
-    prefix = rendered.split(MAGIC_SPLITTER, 1)[0]
-    encoded = tokenizer(prefix, return_tensors="pt", add_special_tokens=False)
+    if not isinstance(rendered, str) or not rendered:
+        raise BridgeBenchmarkError("host chat template produced an empty prompt")
+    encoded = tokenizer(rendered, return_tensors="pt", add_special_tokens=False)
     ids = encoded["input_ids"] if isinstance(encoded, Mapping) else encoded.input_ids
-    return prefix, ids
+    return rendered, ids
 
 
 def _generate_one(

@@ -97,19 +97,80 @@ def test_freeze_validates_archive_and_is_deterministic(tmp_path: Path):
         freeze_mbpp_tasks(config)
 
 
-def test_render_prompt_passes_real_thinking_switch_to_template():
-    class Tokenizer:
-        def apply_chat_template(self, messages, **kwargs):
-            return f"thinking={kwargs['enable_thinking']}::{messages[-1]['content']}"
+class _RecordingTokenizer:
+    """Fake host tokenizer honouring the native template contract."""
 
-        def __call__(self, text, **_kwargs):
-            return {"input_ids": [[len(text)]]}
+    def __init__(self):
+        self.calls = []
 
-    off, _ = _render_prompt(Tokenizer(), "problem", enable_thinking=False)
-    on, _ = _render_prompt(Tokenizer(), "problem", enable_thinking=True)
+    def apply_chat_template(self, messages, **kwargs):
+        self.calls.append((messages, dict(kwargs)))
+        mode = kwargs.get("enable_thinking")
+        gen = kwargs.get("add_generation_prompt")
+        return f"RENDERED thinking={mode} gen={gen} header::<think>\n::{messages[-1]['content']}"
+
+    def __call__(self, text, **_kwargs):
+        return {"input_ids": [[len(text)]]}
+
+
+def test_native_prompt_differs_by_thinking_mode():
+    tokenizer = _RecordingTokenizer()
+    off, off_ids = _render_prompt(tokenizer, "problem", enable_thinking=False)
+    on, on_ids = _render_prompt(tokenizer, "problem", enable_thinking=True)
     assert off != on
     assert "thinking=False" in off
     assert "thinking=True" in on
+    for _messages, kwargs in tokenizer.calls:
+        assert kwargs.get("add_generation_prompt") is True
+    assert off_ids == [[len(off)]]
+    assert on_ids == [[len(on)]]
+
+
+def test_prompt_injects_no_assistant_message_or_think_tags():
+    tokenizer = _RecordingTokenizer()
+    _render_prompt(tokenizer, "problem", enable_thinking=True)
+    (messages, _kwargs), = tokenizer.calls
+    assert [message["role"] for message in messages] == ["user"]
+    assert "<think>" not in messages[0]["content"]
+    assert "</think>" not in messages[0]["content"]
+    assert "```python" not in messages[0]["content"]
+
+
+def test_base_and_bridge_prompts_identical_within_each_mode():
+    tokenizer = _RecordingTokenizer()
+    for mode in (False, True):
+        base, _ = _render_prompt(tokenizer, "problem", enable_thinking=mode)
+        bridge, _ = _render_prompt(tokenizer, "problem", enable_thinking=mode)
+        assert base == bridge
+
+
+def test_generation_boundary_is_end_of_native_prompt():
+    tokenizer = _RecordingTokenizer()
+    rendered, ids = _render_prompt(tokenizer, "problem", enable_thinking=False)
+    # The whole native prompt is encoded, so generation starts at its end.
+    assert ids == [[len(rendered)]]
+
+
+def test_sanitize_recovers_code_from_thinking_on_reasoning():
+    sanitize = pytest.importorskip("evalplus.sanitize").sanitize
+    raw = (
+        "<think>\nThe task needs a sum, so I will write a helper.\n</think>\n"
+        "Here is the solution:\n```python\ndef solve_0():\n    return 0\n```\n"
+    )
+    cleaned = sanitize(raw, "solve_0")
+    assert "def solve_0():" in cleaned
+    assert "<think>" not in cleaned
+    compile(cleaned, "<thinking-on>", "exec")
+
+
+def test_sanitize_recovers_code_from_thinking_off_output():
+    sanitize = pytest.importorskip("evalplus.sanitize").sanitize
+    raw = (
+        "<think>\n\n</think>\n\n```python\ndef solve_0():\n    return 0\n```\n"
+    )
+    cleaned = sanitize(raw, "solve_0")
+    assert "def solve_0():" in cleaned
+    compile(cleaned, "<thinking-off>", "exec")
 
 
 def test_generation_command_emits_exactly_four_conditions_and_bridge_engagement(
