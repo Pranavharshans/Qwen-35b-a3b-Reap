@@ -9,10 +9,12 @@ from reverse_reap.bridge_benchmark import (
     BridgeBenchmarkConfig,
     BridgeBenchmarkError,
     _clean_code,
+    _exclusion_summary,
     _paired_report,
     _validate_repeats,
     freeze_bridge_benchmark_tasks,
     load_bridge_benchmark_config,
+    load_scoring_exclusions,
 )
 from reverse_reap.datasets import normalize_sample
 
@@ -260,3 +262,81 @@ def test_single_command_records_terminal_failure(
     state = json.loads((config.output_dir / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "FAILED_TERMINAL"
     assert "frozen failure" in state["failure"]
+
+
+def _exclusion_manifest(tmp_path: Path, payload: dict) -> Path:
+    path = tmp_path / "scoring-exclusions.json"
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _valid_exclusion_payload():
+    return {
+        "schema_version": 1,
+        "kind": "scoring-exclusions",
+        "exclusions": [
+            {"sample_id": "aaa", "reason": "malformed-upstream-test"},
+        ],
+    }
+
+
+def test_scoring_exclusions_load_with_deterministic_hash(tmp_path: Path):
+    first = load_scoring_exclusions(_exclusion_manifest(tmp_path, _valid_exclusion_payload()))
+    second = load_scoring_exclusions(tmp_path / "scoring-exclusions.json")
+    assert first[0] == frozenset({"aaa"})
+    assert first[1] == second[1]
+    assert len(first[1]) == 64
+
+
+def test_scoring_exclusions_fail_closed(tmp_path: Path):
+    with pytest.raises(BridgeBenchmarkError, match="unexpected kind"):
+        load_scoring_exclusions(_exclusion_manifest(tmp_path, {"kind": "other", "exclusions": []}))
+    with pytest.raises(BridgeBenchmarkError, match="list no excluded tasks"):
+        load_scoring_exclusions(
+            _exclusion_manifest(tmp_path, {"kind": "scoring-exclusions", "exclusions": []})
+        )
+    with pytest.raises(BridgeBenchmarkError, match="duplicate"):
+        load_scoring_exclusions(
+            _exclusion_manifest(
+                tmp_path,
+                {
+                    "kind": "scoring-exclusions",
+                    "exclusions": [
+                        {"sample_id": "aaa", "reason": "x"},
+                        {"sample_id": "aaa", "reason": "x"},
+                    ],
+                },
+            )
+        )
+    with pytest.raises(BridgeBenchmarkError, match="lacks sample_id or reason"):
+        load_scoring_exclusions(
+            _exclusion_manifest(
+                tmp_path,
+                {"kind": "scoring-exclusions", "exclusions": [{"sample_id": "aaa"}]},
+            )
+        )
+    with pytest.raises(BridgeBenchmarkError):
+        load_scoring_exclusions(tmp_path / "missing.json")
+
+
+def test_exclusion_summary_rejects_unknown_ids_and_reports_denominators():
+    summary = _exclusion_summary({"aaa", "bbb", "ccc"}, frozenset({"aaa"}))
+    assert summary["original_tasks"] == 3
+    assert summary["excluded_tasks"] == 1
+    assert summary["eligible_tasks"] == 2
+    assert summary["coverage"] == "2/3"
+    assert summary["eligible_sample_ids"] == ["bbb", "ccc"]
+    with pytest.raises(BridgeBenchmarkError, match="unknown sample IDs"):
+        _exclusion_summary({"aaa"}, frozenset({"aaa", "zzz"}))
+
+
+def test_exclusions_apply_symmetrically_without_mutating_inputs():
+    universe = {"aaa", "bbb", "ccc"}
+    excluded = frozenset({"aaa"})
+    before = (set(universe), set(excluded))
+    eligible = {
+        condition: _exclusion_summary(universe, excluded)["eligible_sample_ids"]
+        for condition in ("base-a", "base-b", "bridge-a", "bridge-b")
+    }
+    assert all(rows == ["bbb", "ccc"] for rows in eligible.values())
+    assert (set(universe), set(excluded)) == before

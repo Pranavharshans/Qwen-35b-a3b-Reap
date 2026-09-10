@@ -605,6 +605,59 @@ def _validate_reference_scoring(
     return {"passed": True, "references": len(samples), "failures": 0}
 
 
+def load_scoring_exclusions(path: Path) -> tuple[frozenset[str], str]:
+    """Load a hash-pinned scoring-exclusion manifest.
+
+    Returns the excluded sample IDs and the manifest file SHA-256. Fails
+    closed unless the manifest declares the exact ``scoring-exclusions``
+    kind with at least one fully-specified entry and unique sample IDs.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BridgeBenchmarkError(f"unreadable scoring exclusions: {path}") from error
+    if not isinstance(payload, dict) or payload.get("kind") != "scoring-exclusions":
+        raise BridgeBenchmarkError("scoring exclusions have an unexpected kind")
+    entries = payload.get("exclusions")
+    if not isinstance(entries, list) or not entries:
+        raise BridgeBenchmarkError("scoring exclusions list no excluded tasks")
+    excluded: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise BridgeBenchmarkError("scoring exclusion entry is malformed")
+        sample_id = entry.get("sample_id")
+        reason = entry.get("reason")
+        if not sample_id or not reason:
+            raise BridgeBenchmarkError("scoring exclusion entry lacks sample_id or reason")
+        if sample_id in excluded:
+            raise BridgeBenchmarkError(f"duplicate scoring exclusion: {sample_id}")
+        excluded.add(sample_id)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return frozenset(excluded), digest
+
+
+def _exclusion_summary(
+    original_ids: set[str], excluded_ids: frozenset[str]
+) -> dict[str, Any]:
+    """Report original/eligible denominators for one task set.
+
+    Unknown exclusion IDs fail closed, and the returned eligible list is a
+    new object: inputs are never mutated.
+    """
+    original = set(original_ids)
+    unknown = sorted(set(excluded_ids) - original)
+    if unknown:
+        raise BridgeBenchmarkError(f"exclusions name unknown sample IDs: {unknown}")
+    eligible = sorted(original - set(excluded_ids))
+    return {
+        "original_tasks": len(original),
+        "excluded_tasks": len(set(excluded_ids) & original),
+        "eligible_tasks": len(eligible),
+        "coverage": f"{len(eligible)}/{len(original)}",
+        "eligible_sample_ids": eligible,
+    }
+
+
 def _validate_repeats(
     first: list[dict[str, Any]], second: list[dict[str, Any]], condition: str
 ) -> dict[str, Any]:
@@ -922,6 +975,7 @@ def _score_bridge_benchmark(
     *,
     evaluator_image: str,
     config: BridgeBenchmarkConfig,
+    exclusion_manifest: Path | None = None,
 ) -> dict[str, Any]:
     if not re.fullmatch(r"[^\s]+@sha256:[0-9a-f]{64}", evaluator_image):
         raise BridgeBenchmarkError("scoring requires an image pinned by sha256 digest")
@@ -940,9 +994,48 @@ def _score_bridge_benchmark(
         .splitlines()
         if line.strip()
     ]
+    excluded_ids: frozenset[str] = frozenset()
+    exclusion_sha: str | None = None
+    if exclusion_manifest is not None:
+        excluded_ids, exclusion_sha = load_scoring_exclusions(exclusion_manifest)
+        by_id = {sample.sample_id: sample for sample in full_samples}
+        unknown = sorted(set(excluded_ids) - set(by_id))
+        if unknown:
+            raise BridgeBenchmarkError(f"exclusions name unknown sample IDs: {unknown}")
+        proof = []
+        for sample_id in sorted(excluded_ids):
+            sample = by_id[sample_id]
+            result = evaluate_python(
+                sample.prompt + (sample.reference or ""),
+                sample.tests or "",
+                image=evaluator_image,
+                timeout_seconds=sample.timeout_seconds,
+            )
+            if result.passed:
+                raise BridgeBenchmarkError(
+                    f"excluded task unexpectedly passes its reference: {sample_id}"
+                )
+            proof.append(
+                {
+                    "sample_id": sample_id,
+                    "return_code": result.return_code,
+                    "stderr": (result.stderr or "")[-2000:],
+                }
+            )
+        eligible_refs = [s for s in full_samples if s.sample_id not in excluded_ids]
+        preflight = _validate_reference_scoring(eligible_refs, evaluator_image)
+        preflight = {
+            **preflight,
+            "excluded_tasks": sorted(excluded_ids),
+            "excluded_reproduced_failures": proof,
+            "coverage": f"{preflight['references']}/{len(full_samples)}",
+            "exclusion_manifest_sha256": exclusion_sha,
+        }
+    else:
+        preflight = _validate_reference_scoring(full_samples, evaluator_image)
     _atomic_json(
         config.output_dir / "reference-scorer-preflight.json",
-        _validate_reference_scoring(full_samples, evaluator_image),
+        preflight,
     )
     reports: dict[str, Any] = {}
     for tier in ("pilot", "full"):
@@ -955,7 +1048,12 @@ def _score_bridge_benchmark(
                 if line.strip()
             )
         }
+        summary = _exclusion_summary(set(samples), excluded_ids)
+        eligible = {
+            sample_id: samples[sample_id] for sample_id in summary["eligible_sample_ids"]
+        }
         scored_runs: dict[str, list[dict[str, Any]]] = {}
+        scored_row_counts: dict[str, int] = {}
         for condition in ("base", "bridge"):
             for repeat in ("a", "b"):
                 name = f"{condition}-{repeat}"
@@ -967,11 +1065,15 @@ def _score_bridge_benchmark(
                 ]
                 if {row["sample_id"] for row in rows} != set(samples):
                     raise BridgeBenchmarkError(f"{tier}/{name} task IDs differ from freeze")
-                scored = _score_rows(rows, samples, evaluator_image)
+                eligible_rows = [
+                    row for row in rows if row["sample_id"] in eligible
+                ]
+                scored = _score_rows(eligible_rows, eligible, evaluator_image)
                 _write_jsonl_atomic(
                     config.output_dir / tier / f"{name}-scored.jsonl", scored
                 )
                 scored_runs[name] = scored
+                scored_row_counts[name] = len(scored)
         report = {
             "tier": tier,
             "base_determinism": _validate_repeats(
@@ -986,6 +1088,16 @@ def _score_bridge_benchmark(
             "scoring_status": "complete",
             "evaluator_image": evaluator_image,
             "pilot_score_controls_full_execution": False,
+            "exclusions": {
+                "excluded_sample_ids": sorted(excluded_ids),
+                "exclusion_manifest_sha256": exclusion_sha,
+                "original_tasks": summary["original_tasks"],
+                "excluded_tasks": summary["excluded_tasks"],
+                "eligible_tasks": summary["eligible_tasks"],
+                "original_rows": 4 * summary["original_tasks"],
+                "scored_rows": dict(scored_row_counts),
+                "coverage": summary["coverage"],
+            },
         }
         _atomic_json(config.output_dir / tier / "scored-report.json", report)
         reports[tier] = report
@@ -997,6 +1109,7 @@ def _score_bridge_benchmark(
         "run_id": config.run_id,
         "generation_config_sha256": _sha256_file(config_path),
         "evaluator_image": evaluator_image,
+        "exclusion_manifest_sha256": exclusion_sha,
         "reports": reports,
         "scientific_claim": "paired benchmark result; not causal proof",
     }
@@ -1020,7 +1133,7 @@ def _score_bridge_benchmark(
 
 
 def score_bridge_benchmark(
-    config_path: Path, *, evaluator_image: str
+    config_path: Path, *, evaluator_image: str, exclusion_manifest: Path | None = None
 ) -> dict[str, Any]:
     """Score an already-complete four-run bundle on a Docker-capable CPU host."""
     config = load_bridge_benchmark_config(config_path, allow_expired=True)
@@ -1038,7 +1151,10 @@ def score_bridge_benchmark(
     )
     try:
         return _score_bridge_benchmark(
-            config_path, evaluator_image=evaluator_image, config=config
+            config_path,
+            evaluator_image=evaluator_image,
+            config=config,
+            exclusion_manifest=exclusion_manifest,
         )
     except Exception as error:
         _atomic_json(

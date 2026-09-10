@@ -6,7 +6,7 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 openjdk-21-jdk-headless \
+    && apt-get install -y --no-install-recommends python3 python3-numpy openjdk-21-jdk-headless \
     && rm -rf /var/lib/apt/lists/*
 
 RUN test -x /usr/bin/python3 && test -x /usr/bin/javac && test -x /usr/bin/java
