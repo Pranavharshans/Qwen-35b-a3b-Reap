@@ -129,7 +129,7 @@ def test_native_prompt_differs_by_thinking_mode():
 def test_prompt_injects_no_assistant_message_or_think_tags():
     tokenizer = _RecordingTokenizer()
     _render_prompt(tokenizer, "problem", enable_thinking=True)
-    (messages, _kwargs), = tokenizer.calls
+    ((messages, _kwargs),) = tokenizer.calls
     assert [message["role"] for message in messages] == ["user"]
     assert "<think>" not in messages[0]["content"]
     assert "</think>" not in messages[0]["content"]
@@ -165,12 +165,35 @@ def test_sanitize_recovers_code_from_thinking_on_reasoning():
 
 def test_sanitize_recovers_code_from_thinking_off_output():
     sanitize = pytest.importorskip("evalplus.sanitize").sanitize
-    raw = (
-        "<think>\n\n</think>\n\n```python\ndef solve_0():\n    return 0\n```\n"
-    )
+    raw = "<think>\n\n</think>\n\n```python\ndef solve_0():\n    return 0\n```\n"
     cleaned = sanitize(raw, "solve_0")
     assert "def solve_0():" in cleaned
     compile(cleaned, "<thinking-off>", "exec")
+
+
+def test_deterministic_cuda_requires_cublas_workspace(monkeypatch: pytest.MonkeyPatch):
+    import sys
+
+    state = {"deterministic": True, "cuda": True}
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: state["cuda"]),
+        are_deterministic_algorithms_enabled=lambda: state["deterministic"],
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    with pytest.raises(BridgeBenchmarkError, match="CUBLAS_WORKSPACE_CONFIG"):
+        benchmark._require_deterministic_cuda()
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", "bogus")
+    with pytest.raises(BridgeBenchmarkError, match="CUBLAS_WORKSPACE_CONFIG"):
+        benchmark._require_deterministic_cuda()
+    for value in (":4096:8", ":16:8"):
+        monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", value)
+        benchmark._require_deterministic_cuda()
+    state["deterministic"] = False
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    benchmark._require_deterministic_cuda()
+    state.update(deterministic=True, cuda=False)
+    benchmark._require_deterministic_cuda()
 
 
 def test_generation_command_emits_exactly_four_conditions_and_bridge_engagement(
@@ -258,20 +281,10 @@ def test_generation_command_emits_exactly_four_conditions_and_bridge_engagement(
 def test_official_result_parser_requires_full_pass_at_one_universe(tmp_path: Path):
     path = tmp_path / "result.json"
     path.write_text(
-        json.dumps(
-            {
-                "eval": {
-                    "Mbpp/1": [
-                        {"base_status": "pass", "plus_status": "fail"}
-                    ]
-                }
-            }
-        ),
+        json.dumps({"eval": {"Mbpp/1": [{"base_status": "pass", "plus_status": "fail"}]}}),
         encoding="utf-8",
     )
-    assert _official_result_rows(path, {"Mbpp/1"}) == {
-        "Mbpp/1": {"base": True, "plus": False}
-    }
+    assert _official_result_rows(path, {"Mbpp/1"}) == {"Mbpp/1": {"base": True, "plus": False}}
     with pytest.raises(BridgeBenchmarkError, match="universe differs"):
         _official_result_rows(path, {"Mbpp/1", "Mbpp/2"})
 
@@ -333,8 +346,7 @@ def test_scoring_uses_official_sanitize_and_evaluate_for_all_four_conditions(
     for condition in CONDITIONS:
         (conditions / f"{condition}.jsonl").write_text(
             "".join(
-                json.dumps({"task_id": task["task_id"], "solution": "def f(): pass"})
-                + "\n"
+                json.dumps({"task_id": task["task_id"], "solution": "def f(): pass"}) + "\n"
                 for task in tasks
             ),
             encoding="utf-8",
@@ -361,9 +373,7 @@ def test_scoring_uses_official_sanitize_and_evaluate_for_all_four_conditions(
                 json.dumps(
                     {
                         "eval": {
-                            task["task_id"]: [
-                                {"base_status": "pass", "plus_status": "pass"}
-                            ]
+                            task["task_id"]: [{"base_status": "pass", "plus_status": "pass"}]
                             for task in tasks
                         }
                     }

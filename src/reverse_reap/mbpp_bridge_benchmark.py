@@ -69,9 +69,7 @@ class MbppDataset(StrictModel):
 
 
 class EvalPlusContract(StrictModel):
-    revision: Literal["e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2"] = (
-        OFFICIAL_EVALPLUS_REVISION
-    )
+    revision: Literal["e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2"] = OFFICIAL_EVALPLUS_REVISION
     parallel_workers: int = Field(default=8, ge=1, le=64)
     memory_gb: int = Field(default=16, ge=4, le=64)
     cpus: int = Field(default=8, ge=1, le=64)
@@ -104,6 +102,38 @@ class MbppBridgeBenchmarkConfig(StrictModel):
 
     def fingerprint(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump(mode="json"))).hexdigest()
+
+
+DETERMINISTIC_CUBLAS_WORKSPACE_VALUES = (":4096:8", ":16:8")
+
+
+def _require_deterministic_cuda() -> None:
+    """Fail closed when deterministic CUDA execution is requested but unsafe.
+
+    The runtime enables deterministic algorithms; on CUDA >= 10.2 those raise
+    at the first nondeterministic kernel unless a cuBLAS workspace is
+    configured. This check runs before any model load so a misconfigured host
+    fails fast instead of mid-generation. Hardware-free environments (no torch
+    or no CUDA) and runs that did not request deterministic algorithms are
+    unaffected. Prompts, seeds, decoding, mappings, experts, token limits and
+    benchmark membership are unchanged.
+    """
+    try:
+        import torch
+    except ImportError:
+        return
+    if not torch.cuda.is_available():
+        return
+    if not torch.are_deterministic_algorithms_enabled():
+        return
+    if (
+        os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+        not in DETERMINISTIC_CUBLAS_WORKSPACE_VALUES
+    ):
+        raise BridgeBenchmarkError(
+            "deterministic CUDA requested but CUBLAS_WORKSPACE_CONFIG is missing "
+            "or invalid; set CUBLAS_WORKSPACE_CONFIG=:4096:8 before launching"
+        )
 
 
 def _sha256_file(path: Path) -> str:
@@ -274,9 +304,7 @@ def _generate_one(
         )
     input_ids = input_ids.to(next(model.parameters()).device)
     max_new_tokens = (
-        config.runtime.thinking_max_new_tokens
-        if thinking
-        else config.runtime.direct_max_new_tokens
+        config.runtime.thinking_max_new_tokens if thinking else config.runtime.direct_max_new_tokens
     )
     started = time.monotonic()
     with torch.inference_mode():
@@ -382,9 +410,7 @@ def _heartbeat(
         "total_items": total,
         "throughput_items_per_minute": completed / max(elapsed / 60, 1e-9),
         "gpu_hours_consumed": elapsed / 3600,
-        "estimated_cost_consumed": (
-            elapsed / 3600 * config.budget.provider_rate_usd_per_hour
-        ),
+        "estimated_cost_consumed": (elapsed / 3600 * config.budget.provider_rate_usd_per_hour),
     }
     try:
         import torch
@@ -419,9 +445,7 @@ def _bridge_load_evidence(
         f"layers.{item.donor_layer}.experts.{item.donor_expert}.{suffix}"
         for item in mappings
         for suffix in ("gate_up_proj", "down_proj")
-        if hasattr(
-            bridge.experts[f"l{item.donor_layer}_e{item.donor_expert}"], suffix
-        )
+        if hasattr(bridge.experts[f"l{item.donor_layer}_e{item.donor_expert}"], suffix)
     }
     if len(mapping_rows) != 4 or actual != expected:
         raise BridgeBenchmarkError("bridge did not expose exactly four complete expert mappings")
@@ -466,9 +490,7 @@ def _validate_bridge_engagement(
             raise BridgeBenchmarkError(f"bridge sidecar {key} gate is non-finite")
         if gate_mean <= 0:
             raise BridgeBenchmarkError(f"bridge sidecar {key} gate never opened")
-        if not isinstance(residual_l2_mean, (int, float)) or not math.isfinite(
-            residual_l2_mean
-        ):
+        if not isinstance(residual_l2_mean, (int, float)) or not math.isfinite(residual_l2_mean):
             raise BridgeBenchmarkError(f"bridge sidecar {key} residual is non-finite")
         if residual_l2_mean <= 0:
             raise BridgeBenchmarkError(f"bridge sidecar {key} emitted no residual")
@@ -490,14 +512,10 @@ def validate_mbpp_generation(
         path = config.output_dir / "conditions" / f"{condition}.jsonl"
         if not path.is_file():
             raise BridgeBenchmarkError(f"missing condition output: {condition}")
-        all_rows = [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-        ]
+        all_rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         if len(all_rows) < expected_count:
             raise BridgeBenchmarkError(
-                f"condition has too few rows: {condition}: "
-                f"{len(all_rows)} < {expected_count}"
+                f"condition has too few rows: {condition}: {len(all_rows)} < {expected_count}"
             )
         if expected_items is None and len(all_rows) != expected_count:
             raise BridgeBenchmarkError(f"condition has extra rows: {condition}")
@@ -507,8 +525,7 @@ def validate_mbpp_generation(
         if any(row.get("condition") != condition for row in rows):
             raise BridgeBenchmarkError(f"condition identity differs: {condition}")
         if any(
-            bool(row.get("thinking_enabled")) != condition.endswith("thinking-on")
-            for row in rows
+            bool(row.get("thinking_enabled")) != condition.endswith("thinking-on") for row in rows
         ):
             raise BridgeBenchmarkError(f"thinking identity differs: {condition}")
         if any(bool(row.get("bridge_enabled")) != condition.startswith("bridge-") for row in rows):
@@ -535,9 +552,7 @@ def validate_mbpp_generation(
             prompt_hashes[f"base-thinking-{thinking}"]
             != prompt_hashes[f"bridge-thinking-{thinking}"]
         ):
-            raise BridgeBenchmarkError(
-                f"base and bridge prompts differ under thinking-{thinking}"
-            )
+            raise BridgeBenchmarkError(f"base and bridge prompts differ under thinking-{thinking}")
     return {
         "schema_version": 1,
         "kind": "mbppplus-four-condition-generation-validation",
@@ -560,6 +575,7 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
         _write_jsonl(config.output_dir / "tasks.jsonl", tasks)
         host_evidence = _verify_host_files(config)
         _seed_runtime(config.runtime.seed)
+        _require_deterministic_cuda()
         model, tokenizer = _load_host(config)
         bridge, mappings = _load_bridge(config, next(model.parameters()).device)
         load_evidence = {
@@ -569,9 +585,7 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
         _atomic_json(config.output_dir / "load-verification.json", load_evidence)
         first_prompts = {}
         for enabled in (False, True):
-            rendered, _ = _render_prompt(
-                tokenizer, tasks[0]["prompt"], enable_thinking=enabled
-            )
+            rendered, _ = _render_prompt(tokenizer, tasks[0]["prompt"], enable_thinking=enabled)
             first_prompts[enabled] = hashlib.sha256(rendered.encode()).hexdigest()
         if first_prompts[False] == first_prompts[True]:
             raise BridgeBenchmarkError("host tokenizer ignored the thinking-mode switch")
@@ -585,18 +599,13 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                 rows = []
                 if output.is_file():
                     rows = [
-                        json.loads(line)
-                        for line in output.read_text(encoding="utf-8").splitlines()
+                        json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()
                     ]
                     if [row.get("task_id") for row in rows] != [
                         task["task_id"] for task in tasks[: len(rows)]
                     ]:
                         raise BridgeBenchmarkError(f"resume prefix differs for {condition}")
-                telemetry = (
-                    BridgeGenerationTelemetry()
-                    if condition.startswith("bridge-")
-                    else None
-                )
+                telemetry = BridgeGenerationTelemetry() if condition.startswith("bridge-") else None
                 handles = (
                     install_bridge_sidecars(model, bridge, mappings, telemetry=telemetry)
                     if telemetry is not None and len(rows) < boundary
@@ -608,15 +617,10 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                     for index, task in enumerate(pending, start=len(rows)):
                         _check_budget(config, started)
                         rows.append(
-                            _generate_one(
-                                model, tokenizer, task, config, condition=condition
-                            )
+                            _generate_one(model, tokenizer, task, config, condition=condition)
                         )
                         _write_jsonl(output, rows, replace=True)
-                        if (
-                            time.monotonic() - last_heartbeat
-                            >= config.runtime.heartbeat_seconds
-                        ):
+                        if time.monotonic() - last_heartbeat >= config.runtime.heartbeat_seconds:
                             _heartbeat(config, started, condition, index + 1, boundary)
                             last_heartbeat = time.monotonic()
                 finally:
@@ -624,23 +628,17 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                         handle.remove()
                 if telemetry is not None:
                     engagement_path = (
-                        config.output_dir
-                        / "conditions"
-                        / f"{condition}-{tier}-engagement.json"
+                        config.output_dir / "conditions" / f"{condition}-{tier}-engagement.json"
                     )
                     snapshot = telemetry.snapshot()
                     if not snapshot and len(rows) >= boundary and engagement_path.is_file():
-                        snapshot = json.loads(
-                            engagement_path.read_text(encoding="utf-8")
-                        )
+                        snapshot = json.loads(engagement_path.read_text(encoding="utf-8"))
                     verified_engagement = _validate_bridge_engagement(
                         snapshot, mappings, condition=f"{condition}:{tier}"
                     )
                     engagement.setdefault(condition, {})[tier] = verified_engagement
                     _atomic_json(engagement_path, verified_engagement)
-            tier_validation = validate_mbpp_generation(
-                config, expected_items=boundary
-            )
+            tier_validation = validate_mbpp_generation(config, expected_items=boundary)
             _atomic_json(
                 config.output_dir / f"{tier}-generation-report.json",
                 {
@@ -679,9 +677,7 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
         raise
 
 
-def _docker_prefix(
-    config: MbppBridgeBenchmarkConfig, image: str, *, work: Path
-) -> list[str]:
+def _docker_prefix(config: MbppBridgeBenchmarkConfig, image: str, *, work: Path) -> list[str]:
     return [
         "docker",
         "run",
@@ -750,16 +746,11 @@ def _metric_pair(
 ) -> dict[str, Any]:
     return _paired_report(
         [{"sample_id": task_id, "passed": base[task_id][metric]} for task_id in task_ids],
-        [
-            {"sample_id": task_id, "passed": bridge[task_id][metric]}
-            for task_id in task_ids
-        ],
+        [{"sample_id": task_id, "passed": bridge[task_id][metric]} for task_id in task_ids],
     )
 
 
-def _score_mbpp_bridge_benchmark(
-    config_path: Path, *, evalplus_image: str
-) -> dict[str, Any]:
+def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> dict[str, Any]:
     config = load_mbpp_bridge_config(config_path, allow_expired=True)
     validation = validate_mbpp_generation(config)
     _verify_evalplus_image(evalplus_image, config.evalplus.revision)
@@ -837,10 +828,7 @@ def _score_mbpp_bridge_benchmark(
         base = all_rows[f"base-thinking-{thinking}"]
         bridge = all_rows[f"bridge-thinking-{thinking}"]
         comparisons[f"thinking-{thinking}"] = {
-            tier: {
-                metric: _metric_pair(base, bridge, ids, metric)
-                for metric in ("base", "plus")
-            }
+            tier: {metric: _metric_pair(base, bridge, ids, metric) for metric in ("base", "plus")}
             for tier, ids in (("pilot", pilot_ids), ("full", full_ids))
         }
     official_artifacts = {
@@ -871,15 +859,11 @@ def _score_mbpp_bridge_benchmark(
     return report
 
 
-def score_mbpp_bridge_benchmark(
-    config_path: Path, *, evalplus_image: str
-) -> dict[str, Any]:
+def score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> dict[str, Any]:
     config = load_mbpp_bridge_config(config_path, allow_expired=True)
     _write_scoring_state(config, "RUNNING", "official-evalplus")
     try:
-        report = _score_mbpp_bridge_benchmark(
-            config_path, evalplus_image=evalplus_image
-        )
+        report = _score_mbpp_bridge_benchmark(config_path, evalplus_image=evalplus_image)
         _write_scoring_state(
             config,
             "COMPLETE",
