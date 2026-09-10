@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -8,10 +9,14 @@ import pytest
 from reverse_reap.bridge_benchmark import (
     BridgeBenchmarkConfig,
     BridgeBenchmarkError,
+    _append_continuation,
     _clean_code,
     _exclusion_summary,
+    _freeze_artifact_hashes,
     _paired_report,
+    _score_rows,
     _validate_repeats,
+    _validate_scoring_rows,
     freeze_bridge_benchmark_tasks,
     load_bridge_benchmark_config,
     load_scoring_exclusions,
@@ -149,8 +154,131 @@ def test_paired_report_preserves_item_transitions_and_uncertainty():
 
 def test_markdown_fence_cleanup_is_bounded():
     assert _clean_code("```python\ndef f():\n    return 1\n```") == "def f():\n    return 1"
+    assert _clean_code("    return 1\n") == "    return 1"
+    assert _clean_code("```python\n    return 1\n```") == "    return 1"
     prose = "Here is code:\ndef f(): return 1"
     assert _clean_code(prose) == prose
+
+
+def test_continuation_join_repairs_stripped_prompt_boundary():
+    prompt = 'def function_1():\n    """Return one."""'
+    assert _append_continuation(prompt, "    return 1") == (
+        'def function_1():\n    """Return one."""\n    return 1'
+    )
+    assert _append_continuation(prompt + "\n\n", "\n\r    return 1") == (
+        'def function_1():\n    """Return one."""\n    return 1'
+    )
+
+
+def test_scoring_reconstructs_continuation_from_raw_without_mutating_row(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import reverse_reap.bridge_benchmark as benchmark
+
+    sample = _sample(1)
+    sample = sample.model_copy(update={"prompt": "def function_1():\n"})
+    row = {
+        "sample_id": sample.sample_id,
+        "raw_completion": "    return 1\n",
+        "completion": "return 1",
+    }
+    original = dict(row)
+    seen = {}
+
+    class Result:
+        passed = True
+        timed_out = False
+        return_code = 0
+        stdout = ""
+        stderr = ""
+        program_sha256 = "a" * 64
+
+    def fake_evaluate(program, _tests, **_kwargs):
+        seen["program"] = program
+        return Result()
+
+    monkeypatch.setattr(benchmark, "evaluate_python", fake_evaluate)
+    scored = _score_rows([row], {sample.sample_id: sample}, "image@sha256:" + "b" * 64)
+    assert row == original
+    assert seen["program"] == "def function_1():\n    return 1"
+    assert scored[0]["completion"] == "return 1"
+    assert scored[0]["scored_completion"] == "    return 1"
+    assert scored[0]["completion_reconstructed_from"] == "raw_completion"
+    assert scored[0]["completion_normalizer_version"] == "continuation-boundary-v3"
+    assert scored[0]["normalization_changed_from_stored_completion"] is True
+    assert len(scored[0]["raw_completion_sha256"]) == 64
+
+
+def test_scoring_joins_raw_continuation_after_stripped_docstring_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import reverse_reap.bridge_benchmark as benchmark
+
+    sample = normalize_sample(
+        {
+            "source": "openai/openai_humaneval",
+            "source_revision": "a" * 40,
+            "source_id": "HumanEval/1",
+            "domain": "coding",
+            "stratum": "function-synthesis",
+            "language": "python",
+            "prompt": 'def function_1():\n    """Return one."""\n',
+            "reference": "\n    return 1",
+            "tests": "assert function_1() == 1",
+            "entry_point": "function_1",
+            "scorer": "unit_tests",
+        },
+        seed=9,
+    )
+    assert not sample.prompt.endswith("\n")
+    row = {
+        "sample_id": sample.sample_id,
+        "raw_completion": "    return 1",
+        "completion": "    return 1",
+    }
+    seen = {}
+
+    class Result:
+        passed = True
+        timed_out = False
+        return_code = 0
+        stdout = ""
+        stderr = ""
+        program_sha256 = "a" * 64
+
+    def fake_evaluate(program, _tests, **_kwargs):
+        seen["program"] = program
+        return Result()
+
+    monkeypatch.setattr(benchmark, "evaluate_python", fake_evaluate)
+    benchmark._score_rows(
+        [row], {sample.sample_id: sample}, "image@sha256:" + "b" * 64
+    )
+    with pytest.raises(SyntaxError):
+        ast.parse(sample.prompt + row["raw_completion"])
+    ast.parse(seen["program"])
+    assert seen["program"] == (
+        'def function_1():\n    """Return one."""\n    return 1'
+    )
+
+
+def test_scoring_fails_closed_without_raw_completion():
+    sample = _sample(1)
+    with pytest.raises(BridgeBenchmarkError, match="lacks immutable raw_completion"):
+        _score_rows(
+            [{"sample_id": sample.sample_id, "completion": "return 1"}],
+            {sample.sample_id: sample},
+            "image@sha256:" + "b" * 64,
+        )
+
+
+def test_versioned_artifact_manifest_preserves_original(tmp_path: Path):
+    original = tmp_path / "artifact-manifest.json"
+    original.write_text('{"original": true}\n', encoding="utf-8")
+    (tmp_path / "evidence.json").write_text("{}\n", encoding="utf-8")
+    _freeze_artifact_hashes(tmp_path, manifest_name="artifact-manifest-v2.json")
+    assert original.read_text(encoding="utf-8") == '{"original": true}\n'
+    assert (tmp_path / "artifact-manifest-v2.json").is_file()
 
 
 def test_config_requires_image_only_for_local_docker(tmp_path: Path):
@@ -340,3 +468,11 @@ def test_exclusions_apply_symmetrically_without_mutating_inputs():
     }
     assert all(rows == ["bbb", "ccc"] for rows in eligible.values())
     assert (set(universe), set(excluded)) == before
+
+
+def test_scoring_rows_reject_duplicate_or_wrong_count_ids():
+    rows = [{"sample_id": "a"}, {"sample_id": "a"}]
+    with pytest.raises(BridgeBenchmarkError, match="duplicate sample IDs"):
+        _validate_scoring_rows(rows, {"a", "b"}, "pilot/base-a")
+    with pytest.raises(BridgeBenchmarkError, match="row count"):
+        _validate_scoring_rows(rows + [{"sample_id": "b"}], {"a", "b"}, "pilot/base-a")
