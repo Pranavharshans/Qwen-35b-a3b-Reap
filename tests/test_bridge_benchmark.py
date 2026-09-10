@@ -10,7 +10,9 @@ from reverse_reap.bridge_benchmark import (
     BridgeBenchmarkError,
     _clean_code,
     _exclusion_summary,
+    _freeze_artifact_hashes,
     _paired_report,
+    _score_rows,
     _validate_repeats,
     freeze_bridge_benchmark_tasks,
     load_bridge_benchmark_config,
@@ -149,8 +151,68 @@ def test_paired_report_preserves_item_transitions_and_uncertainty():
 
 def test_markdown_fence_cleanup_is_bounded():
     assert _clean_code("```python\ndef f():\n    return 1\n```") == "def f():\n    return 1"
+    assert _clean_code("    return 1\n") == "    return 1"
+    assert _clean_code("```python\n    return 1\n```") == "    return 1"
     prose = "Here is code:\ndef f(): return 1"
     assert _clean_code(prose) == prose
+
+
+def test_scoring_reconstructs_continuation_from_raw_without_mutating_row(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import reverse_reap.bridge_benchmark as benchmark
+
+    sample = _sample(1)
+    sample = sample.model_copy(update={"prompt": "def function_1():\n"})
+    row = {
+        "sample_id": sample.sample_id,
+        "raw_completion": "    return 1\n",
+        "completion": "return 1",
+    }
+    original = dict(row)
+    seen = {}
+
+    class Result:
+        passed = True
+        timed_out = False
+        return_code = 0
+        stdout = ""
+        stderr = ""
+        program_sha256 = "a" * 64
+
+    def fake_evaluate(program, _tests, **_kwargs):
+        seen["program"] = program
+        return Result()
+
+    monkeypatch.setattr(benchmark, "evaluate_python", fake_evaluate)
+    scored = _score_rows([row], {sample.sample_id: sample}, "image@sha256:" + "b" * 64)
+    assert row == original
+    assert seen["program"] == "def function_1():\n    return 1"
+    assert scored[0]["completion"] == "return 1"
+    assert scored[0]["scored_completion"] == "    return 1"
+    assert scored[0]["completion_reconstructed_from"] == "raw_completion"
+    assert scored[0]["completion_normalizer_version"] == "continuation-preserving-v2"
+    assert scored[0]["normalization_changed_from_stored_completion"] is True
+    assert len(scored[0]["raw_completion_sha256"]) == 64
+
+
+def test_scoring_fails_closed_without_raw_completion():
+    sample = _sample(1)
+    with pytest.raises(BridgeBenchmarkError, match="lacks immutable raw_completion"):
+        _score_rows(
+            [{"sample_id": sample.sample_id, "completion": "return 1"}],
+            {sample.sample_id: sample},
+            "image@sha256:" + "b" * 64,
+        )
+
+
+def test_versioned_artifact_manifest_preserves_original(tmp_path: Path):
+    original = tmp_path / "artifact-manifest.json"
+    original.write_text('{"original": true}\n', encoding="utf-8")
+    (tmp_path / "evidence.json").write_text("{}\n", encoding="utf-8")
+    _freeze_artifact_hashes(tmp_path, manifest_name="artifact-manifest-v2.json")
+    assert original.read_text(encoding="utf-8") == '{"original": true}\n'
+    assert (tmp_path / "artifact-manifest-v2.json").is_file()
 
 
 def test_config_requires_image_only_for_local_docker(tmp_path: Path):

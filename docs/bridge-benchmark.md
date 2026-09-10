@@ -49,9 +49,9 @@ The command loads the host once, verifies and loads the bridge checkpoint,
 runs all four pilot generations, enforces both repeat gates, and then runs all
 four full-tier generations regardless of pilot score. It stores task freezes,
 prompts, input and generated token IDs, raw and cleaned completions, hashes,
-timings, per-condition JSONL and tier reports. Atomic `state.json` and
-`scoring-state.json` records distinguish running, complete, and terminal-failure
-outcomes so a stopped run is never mistaken for a finished comparison.
+timings, per-condition JSONL and tier reports. Atomic `state.json` and versioned
+scoring-state records distinguish running, complete, and terminal-failure outcomes
+so a stopped run is never mistaken for a finished comparison.
 Bridged rows also contain streaming per-expert gate means and residual L2
 contribution norms; full hidden activations are never retained.
 
@@ -79,6 +79,11 @@ reverse-reap score-bridge-benchmark /path/to/pinned-benchmark.yaml \
 Scoring executes every completion with no network, a read-only root,
 capabilities dropped, bounded processes, CPU, memory and time, and a disposable
 filesystem. It writes scored copies rather than modifying raw generations.
+The continuation-safe v2 scorer always reconstructs executable text from the
+immutable `raw_completion`, preserves leading indentation, and records both the
+normalizer version and reconstructed completion. Its `*-v2` scored files,
+reports, states, reference preflight and artifact manifest never overwrite the
+original scoring evidence.
 Before accepting model scores, every canonical reference solution must pass
 its own frozen tests inside the exact pinned evaluator image. Any reference
 failure invalidates the scorer and stops the benchmark.

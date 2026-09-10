@@ -47,6 +47,10 @@ class BridgeBenchmarkError(RuntimeError):
     """Raised when benchmark evidence would be invalid or unsafe."""
 
 
+COMPLETION_NORMALIZER_VERSION = "continuation-preserving-v2"
+SCORING_ARTIFACT_SUFFIX = "v2"
+
+
 class BridgeGenerationTelemetry:
     """Streaming aggregate; full hidden activations are never retained."""
 
@@ -348,9 +352,16 @@ def _verify_host_files(config: BridgeBenchmarkConfig) -> dict[str, Any]:
 
 
 def _clean_code(text: str) -> str:
-    stripped = text.strip()
-    match = re.fullmatch(r"```(?:python)?\s*\n?(.*?)```", stripped, flags=re.DOTALL)
-    return (match.group(1) if match else stripped).strip()
+    """Remove one complete Markdown fence without changing code indentation."""
+    outer = text.strip()
+    match = re.fullmatch(
+        r"```(?:python|py)?[ \t]*\r?\n(?P<code>.*?)(?:\r?\n)?```[ \t]*",
+        outer,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if match:
+        return match.group("code").rstrip()
+    return text.rstrip()
 
 
 def _prompt(sample: NormalizedSample) -> str:
@@ -558,8 +569,14 @@ def _score_rows(
     scored = []
     for row in rows:
         sample = samples[row["sample_id"]]
+        raw_completion = row.get("raw_completion")
+        if not isinstance(raw_completion, str):
+            raise BridgeBenchmarkError(
+                f"scoring row lacks immutable raw_completion: {row['sample_id']}"
+            )
+        scored_completion = _clean_code(raw_completion)
         result = evaluate_python(
-            sample.prompt + row["completion"],
+            sample.prompt + scored_completion,
             sample.tests or "",
             image=image,
             timeout_seconds=sample.timeout_seconds,
@@ -573,6 +590,18 @@ def _score_rows(
                 "scorer_stdout": result.stdout,
                 "scorer_stderr": result.stderr,
                 "scored_program_sha256": result.program_sha256,
+                "scored_completion": scored_completion,
+                "scored_completion_sha256": hashlib.sha256(
+                    scored_completion.encode()
+                ).hexdigest(),
+                "raw_completion_sha256": hashlib.sha256(
+                    raw_completion.encode()
+                ).hexdigest(),
+                "completion_normalizer_version": COMPLETION_NORMALIZER_VERSION,
+                "completion_reconstructed_from": "raw_completion",
+                "normalization_changed_from_stored_completion": (
+                    scored_completion != row.get("completion")
+                ),
             }
         )
     return scored
@@ -746,10 +775,12 @@ def _binomial_probability(trials: int, successes: int) -> float:
     return math.comb(trials, successes) * (0.5**trials)
 
 
-def _freeze_artifact_hashes(root: Path) -> dict[str, Any]:
+def _freeze_artifact_hashes(
+    root: Path, *, manifest_name: str = "artifact-manifest.json"
+) -> dict[str, Any]:
     records = []
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        if path.name in {"artifact-manifest.json", "heartbeat.json"}:
+        if path.name.startswith("artifact-manifest") or path.name == "heartbeat.json":
             continue
         records.append(
             {
@@ -760,7 +791,7 @@ def _freeze_artifact_hashes(root: Path) -> dict[str, Any]:
         )
     payload = {"schema_version": 1, "kind": "bridge-benchmark-artifacts", "files": records}
     payload["manifest_sha256"] = hashlib.sha256(canonical_json(payload)).hexdigest()
-    _atomic_json(root / "artifact-manifest.json", payload, refuse=False)
+    _atomic_json(root / manifest_name, payload, refuse=False)
     return payload
 
 
@@ -819,7 +850,8 @@ def _run_bridge_benchmark(
         if not evaluator_probe.passed:
             raise BridgeBenchmarkError("pinned evaluator image failed its preflight")
         _atomic_json(
-            config.output_dir / "reference-scorer-preflight.json",
+            config.output_dir
+            / f"reference-scorer-preflight-{SCORING_ARTIFACT_SUFFIX}.json",
             _validate_reference_scoring(full, config.evaluator_image),
         )
     _seed_runtime(config.runtime.seed)
@@ -830,6 +862,7 @@ def _run_bridge_benchmark(
     all_reports: dict[str, Any] = {}
     for tier, samples in (("pilot", pilot), ("full", full)):
         tier_rows: dict[str, list[dict[str, Any]]] = {}
+        scored_tier_rows: dict[str, list[dict[str, Any]]] = {}
         for condition in ("base", "bridge"):
             handles = []
             telemetry = BridgeGenerationTelemetry() if condition == "bridge" else None
@@ -891,12 +924,17 @@ def _run_bridge_benchmark(
                                 total=len(samples),
                             )
                             last_heartbeat = time.monotonic()
-                    final_rows = rows
                     if config.scoring_mode == "docker-local":
                         assert config.evaluator_image is not None
-                        final_rows = _score_rows(rows, sample_lookup, config.evaluator_image)
-                    _write_jsonl_atomic(run_path, final_rows, replace=True)
-                    tier_rows[run_name] = final_rows
+                        scored = _score_rows(rows, sample_lookup, config.evaluator_image)
+                        _write_jsonl_atomic(
+                            config.output_dir
+                            / tier
+                            / f"{run_name}-scored-{SCORING_ARTIFACT_SUFFIX}.jsonl",
+                            scored,
+                        )
+                        scored_tier_rows[run_name] = scored
+                    tier_rows[run_name] = rows
             finally:
                 for handle in handles:
                     handle.remove()
@@ -908,7 +946,9 @@ def _run_bridge_benchmark(
         )
         paired = None
         if config.scoring_mode == "docker-local":
-            paired = _paired_report(tier_rows["base-a"], tier_rows["bridge-a"])
+            paired = _paired_report(
+                scored_tier_rows["base-a"], scored_tier_rows["bridge-a"]
+            )
         report = {
             "tier": tier,
             "base_determinism": base_determinism,
@@ -918,6 +958,7 @@ def _run_bridge_benchmark(
                 "complete" if config.scoring_mode == "docker-local" else "deferred"
             ),
             "pilot_score_controls_full_execution": False,
+            "completion_normalizer_version": COMPLETION_NORMALIZER_VERSION,
         }
         _atomic_json(config.output_dir / tier / "report.json", report)
         all_reports[tier] = report
@@ -1034,7 +1075,8 @@ def _score_bridge_benchmark(
     else:
         preflight = _validate_reference_scoring(full_samples, evaluator_image)
     _atomic_json(
-        config.output_dir / "reference-scorer-preflight.json",
+        config.output_dir
+        / f"reference-scorer-preflight-{SCORING_ARTIFACT_SUFFIX}.json",
         preflight,
     )
     reports: dict[str, Any] = {}
@@ -1054,6 +1096,7 @@ def _score_bridge_benchmark(
         }
         scored_runs: dict[str, list[dict[str, Any]]] = {}
         scored_row_counts: dict[str, int] = {}
+        normalization_change_counts: dict[str, int] = {}
         for condition in ("base", "bridge"):
             for repeat in ("a", "b"):
                 name = f"{condition}-{repeat}"
@@ -1070,10 +1113,17 @@ def _score_bridge_benchmark(
                 ]
                 scored = _score_rows(eligible_rows, eligible, evaluator_image)
                 _write_jsonl_atomic(
-                    config.output_dir / tier / f"{name}-scored.jsonl", scored
+                    config.output_dir
+                    / tier
+                    / f"{name}-scored-{SCORING_ARTIFACT_SUFFIX}.jsonl",
+                    scored,
                 )
                 scored_runs[name] = scored
                 scored_row_counts[name] = len(scored)
+                normalization_change_counts[name] = sum(
+                    bool(row["normalization_changed_from_stored_completion"])
+                    for row in scored
+                )
         report = {
             "tier": tier,
             "base_determinism": _validate_repeats(
@@ -1088,6 +1138,8 @@ def _score_bridge_benchmark(
             "scoring_status": "complete",
             "evaluator_image": evaluator_image,
             "pilot_score_controls_full_execution": False,
+            "completion_normalizer_version": COMPLETION_NORMALIZER_VERSION,
+            "normalization_changed_rows": normalization_change_counts,
             "exclusions": {
                 "excluded_sample_ids": sorted(excluded_ids),
                 "exclusion_manifest_sha256": exclusion_sha,
@@ -1099,7 +1151,12 @@ def _score_bridge_benchmark(
                 "coverage": summary["coverage"],
             },
         }
-        _atomic_json(config.output_dir / tier / "scored-report.json", report)
+        _atomic_json(
+            config.output_dir
+            / tier
+            / f"scored-report-{SCORING_ARTIFACT_SUFFIX}.json",
+            report,
+        )
         reports[tier] = report
     result = {
         "schema_version": 1,
@@ -1110,12 +1167,16 @@ def _score_bridge_benchmark(
         "generation_config_sha256": _sha256_file(config_path),
         "evaluator_image": evaluator_image,
         "exclusion_manifest_sha256": exclusion_sha,
+        "completion_normalizer_version": COMPLETION_NORMALIZER_VERSION,
         "reports": reports,
         "scientific_claim": "paired benchmark result; not causal proof",
     }
-    _atomic_json(config.output_dir / "scoring-report.json", result)
     _atomic_json(
-        config.output_dir / "scoring-state.json",
+        config.output_dir / f"scoring-report-{SCORING_ARTIFACT_SUFFIX}.json",
+        result,
+    )
+    _atomic_json(
+        config.output_dir / f"scoring-state-{SCORING_ARTIFACT_SUFFIX}.json",
         {
             "schema_version": 1,
             "run_id": config.run_id,
@@ -1126,9 +1187,10 @@ def _score_bridge_benchmark(
         },
         refuse=False,
     )
-    result["artifact_manifest"] = _freeze_artifact_hashes(config.output_dir)[
-        "manifest_sha256"
-    ]
+    result["artifact_manifest"] = _freeze_artifact_hashes(
+        config.output_dir,
+        manifest_name=f"artifact-manifest-{SCORING_ARTIFACT_SUFFIX}.json",
+    )["manifest_sha256"]
     return result
 
 
@@ -1138,7 +1200,7 @@ def score_bridge_benchmark(
     """Score an already-complete four-run bundle on a Docker-capable CPU host."""
     config = load_bridge_benchmark_config(config_path, allow_expired=True)
     _atomic_json(
-        config.output_dir / "scoring-state.json",
+        config.output_dir / f"scoring-state-{SCORING_ARTIFACT_SUFFIX}.json",
         {
             "schema_version": 1,
             "run_id": config.run_id,
@@ -1158,7 +1220,7 @@ def score_bridge_benchmark(
         )
     except Exception as error:
         _atomic_json(
-            config.output_dir / "scoring-state.json",
+            config.output_dir / f"scoring-state-{SCORING_ARTIFACT_SUFFIX}.json",
             {
                 "schema_version": 1,
                 "run_id": config.run_id,
