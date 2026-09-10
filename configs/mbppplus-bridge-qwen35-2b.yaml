@@ -1,0 +1,41 @@
+# Intentionally unlaunchable template. Fill paths, hashes, run ID, provider
+# rate, budget and deadline from the preserved bridge VM before execution.
+schema_version: 1
+run_id: REQUIRED_MBPP_BRIDGE_RUN_ID
+host_model: /absolute/path/to/Qwen3.5-2B
+host_revision: 15852e8c16360a2fea060d615a32b45270f8a8fc
+host_files_manifest: /absolute/path/to/host-files-manifest.json
+host_files_manifest_sha256: REQUIRED_HOST_FILES_MANIFEST_SHA256
+bridge_config: /absolute/path/to/bridge-config-pinned.yaml
+bridge_config_sha256: REQUIRED_BRIDGE_CONFIG_SHA256
+bridge_checkpoint: /absolute/path/to/bridge.safetensors
+bridge_checkpoint_sha256: REQUIRED_BRIDGE_CHECKPOINT_SHA256
+dataset:
+  archive: /absolute/path/to/MbppPlus-v0.2.0.jsonl.gz
+  archive_sha256: af43697e8791c4c149bdfd6b489d8b5412507551ac20e28a439f650b8225db63
+  version: v0.2.0
+  expected_tasks: 378
+  pilot_items: 50
+  selection_seed: 20260909
+runtime:
+  seed: 20260909
+  deterministic: true
+  batch_size: 1
+  max_input_tokens: 2048
+  direct_max_new_tokens: 512
+  thinking_max_new_tokens: 2048
+  heartbeat_seconds: 300
+evalplus:
+  revision: e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2
+  parallel_workers: 8
+  memory_gb: 16
+  cpus: 8
+  timeout_seconds_per_condition: 3600
+budget:
+  max_wall_hours: 6
+  max_cost_usd: 5
+  provider_rate_usd_per_hour: 0.1478
+  usable_fraction: 0.8
+  deadline_utc: "2000-01-01T00:00:00+00:00"
+output_dir: runs/mbpp-bridge/REQUIRED_MBPP_BRIDGE_RUN_ID
+proceed_full_regardless_of_pilot_score: true

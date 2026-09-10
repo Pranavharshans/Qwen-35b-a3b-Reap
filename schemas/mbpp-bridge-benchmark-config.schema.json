@@ -1,0 +1,274 @@
+{
+  "$defs": {
+    "BridgeBenchmarkBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline_utc": {
+          "format": "date-time",
+          "title": "Deadline Utc",
+          "type": "string"
+        },
+        "max_cost_usd": {
+          "exclusiveMinimum": 0,
+          "title": "Max Cost Usd",
+          "type": "number"
+        },
+        "max_wall_hours": {
+          "exclusiveMinimum": 0,
+          "title": "Max Wall Hours",
+          "type": "number"
+        },
+        "provider_rate_usd_per_hour": {
+          "exclusiveMinimum": 0,
+          "title": "Provider Rate Usd Per Hour",
+          "type": "number"
+        },
+        "usable_fraction": {
+          "const": 0.8,
+          "default": 0.8,
+          "title": "Usable Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_wall_hours",
+        "max_cost_usd",
+        "provider_rate_usd_per_hour",
+        "deadline_utc"
+      ],
+      "title": "BridgeBenchmarkBudget",
+      "type": "object"
+    },
+    "EvalPlusContract": {
+      "additionalProperties": false,
+      "properties": {
+        "cpus": {
+          "default": 8,
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Cpus",
+          "type": "integer"
+        },
+        "memory_gb": {
+          "default": 16,
+          "maximum": 64,
+          "minimum": 4,
+          "title": "Memory Gb",
+          "type": "integer"
+        },
+        "parallel_workers": {
+          "default": 8,
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Parallel Workers",
+          "type": "integer"
+        },
+        "revision": {
+          "const": "e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2",
+          "default": "e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2",
+          "title": "Revision",
+          "type": "string"
+        },
+        "timeout_seconds_per_condition": {
+          "default": 3600,
+          "maximum": 21600,
+          "minimum": 60,
+          "title": "Timeout Seconds Per Condition",
+          "type": "integer"
+        }
+      },
+      "title": "EvalPlusContract",
+      "type": "object"
+    },
+    "MbppDataset": {
+      "additionalProperties": false,
+      "properties": {
+        "archive": {
+          "format": "path",
+          "title": "Archive",
+          "type": "string"
+        },
+        "archive_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Archive Sha256",
+          "type": "string"
+        },
+        "expected_tasks": {
+          "const": 378,
+          "default": 378,
+          "title": "Expected Tasks",
+          "type": "integer"
+        },
+        "pilot_items": {
+          "default": 50,
+          "maximum": 378,
+          "minimum": 1,
+          "title": "Pilot Items",
+          "type": "integer"
+        },
+        "selection_seed": {
+          "default": 20260909,
+          "minimum": 0,
+          "title": "Selection Seed",
+          "type": "integer"
+        },
+        "version": {
+          "const": "v0.2.0",
+          "default": "v0.2.0",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "archive",
+        "archive_sha256"
+      ],
+      "title": "MbppDataset",
+      "type": "object"
+    },
+    "MbppRuntime": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_size": {
+          "const": 1,
+          "default": 1,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "deterministic": {
+          "const": true,
+          "default": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "direct_max_new_tokens": {
+          "default": 512,
+          "exclusiveMinimum": 0,
+          "title": "Direct Max New Tokens",
+          "type": "integer"
+        },
+        "heartbeat_seconds": {
+          "const": 300,
+          "default": 300,
+          "title": "Heartbeat Seconds",
+          "type": "integer"
+        },
+        "max_input_tokens": {
+          "default": 2048,
+          "exclusiveMinimum": 0,
+          "title": "Max Input Tokens",
+          "type": "integer"
+        },
+        "seed": {
+          "default": 20260909,
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "thinking_max_new_tokens": {
+          "default": 2048,
+          "exclusiveMinimum": 0,
+          "title": "Thinking Max New Tokens",
+          "type": "integer"
+        }
+      },
+      "title": "MbppRuntime",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bridge_checkpoint": {
+      "format": "path",
+      "title": "Bridge Checkpoint",
+      "type": "string"
+    },
+    "bridge_checkpoint_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Bridge Checkpoint Sha256",
+      "type": "string"
+    },
+    "bridge_config": {
+      "format": "path",
+      "title": "Bridge Config",
+      "type": "string"
+    },
+    "bridge_config_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Bridge Config Sha256",
+      "type": "string"
+    },
+    "budget": {
+      "$ref": "#/$defs/BridgeBenchmarkBudget"
+    },
+    "dataset": {
+      "$ref": "#/$defs/MbppDataset"
+    },
+    "evalplus": {
+      "$ref": "#/$defs/EvalPlusContract"
+    },
+    "host_files_manifest": {
+      "format": "path",
+      "title": "Host Files Manifest",
+      "type": "string"
+    },
+    "host_files_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Host Files Manifest Sha256",
+      "type": "string"
+    },
+    "host_model": {
+      "format": "path",
+      "title": "Host Model",
+      "type": "string"
+    },
+    "host_revision": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "title": "Host Revision",
+      "type": "string"
+    },
+    "output_dir": {
+      "format": "path",
+      "title": "Output Dir",
+      "type": "string"
+    },
+    "proceed_full_regardless_of_pilot_score": {
+      "const": true,
+      "default": true,
+      "title": "Proceed Full Regardless Of Pilot Score",
+      "type": "boolean"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime": {
+      "$ref": "#/$defs/MbppRuntime"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "host_model",
+    "host_revision",
+    "host_files_manifest",
+    "host_files_manifest_sha256",
+    "bridge_config",
+    "bridge_config_sha256",
+    "bridge_checkpoint",
+    "bridge_checkpoint_sha256",
+    "dataset",
+    "runtime",
+    "evalplus",
+    "budget",
+    "output_dir"
+  ],
+  "title": "MbppBridgeBenchmarkConfig",
+  "type": "object"
+}
