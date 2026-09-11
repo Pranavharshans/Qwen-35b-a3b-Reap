@@ -9,7 +9,9 @@ import subprocess
 from pathlib import Path
 
 EVALPLUS_REVISION = "e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2"
-HUMANEVAL_PLUS_VERSION = "v0.1.10"
+# Version and SHA are paired: e62f4130... is the official HumanEval+ v0.1.9
+# asset hash; the v0.1.10 asset has a different hash and cannot use this pin.
+HUMANEVAL_PLUS_VERSION = "v0.1.9"
 HUMANEVAL_PLUS_SHA256 = "e62f4130146963d969da64553f407a66e52d095adbfed4ee6733b4d59e14a3ed"
 HUMANEVAL_PLUS_PATH = "/opt/evalplus-data/HumanEvalPlus.jsonl.gz"
 BASE_TAG = "python:3.12-slim"

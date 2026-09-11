@@ -112,7 +112,7 @@ Build a digest-pinned official EvalPlus v0.3.1 image on a Docker-capable scorer:
 python scripts/prepare_evalplus_docker.py --output-dir /path/to/evalplus-image
 ```
 
-The image contains the official HumanEval+ v0.1.10 archive at
+The image contains the official HumanEval+ v0.1.9 archive at
 `/opt/evalplus-data/HumanEvalPlus.jsonl.gz`, pinned by SHA-256
 `e62f4130146963d969da64553f407a66e52d095adbfed4ee6733b4d59e14a3ed`. Image
 preparation and scoring both verify the OCI labels and the archive bytes before

@@ -3,7 +3,10 @@ FROM ${BASE_IMAGE}
 
 ARG EVALPLUS_REVISION
 RUN test -n "${EVALPLUS_REVISION}"
-ARG HUMANEVAL_PLUS_VERSION=v0.1.10
+# The pinned SHA-256 belongs to the official HumanEval+ v0.1.9 release asset
+# (verified against the release download). v0.1.10 is a different archive, so
+# version and hash must stay paired.
+ARG HUMANEVAL_PLUS_VERSION=v0.1.9
 ARG HUMANEVAL_PLUS_SHA256=e62f4130146963d969da64553f407a66e52d095adbfed4ee6733b4d59e14a3ed
 ENV HUMANEVAL_PLUS_PATH=/opt/evalplus-data/HumanEvalPlus.jsonl.gz
 RUN apt-get update \

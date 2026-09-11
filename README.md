@@ -199,7 +199,7 @@ reverse-reap score-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml \
 ```
 
 The report keeps MBPP base tests, MBPP+ extended tests, and thinking modes
-separate. The image embeds the official HumanEval+ v0.1.10 archive and its
+separate. The image embeds the official HumanEval+ v0.1.9 archive and its
 SHA-256 is verified both while preparing the image and before scoring. The
 scorer passes `HUMANEVAL_OVERRIDE_PATH` to the locked-down container because
 the pinned sanitizer loads HumanEval+ as well as MBPP+. It is a capability
