@@ -19,6 +19,10 @@ from reverse_reap.bridge_capture import (
     validate_target_handoff,
     validate_target_shard,
 )
+from reverse_reap.bridge_rescue import (
+    fit_linear_gate_manifest,
+    load_rescue_experiment_config,
+)
 from reverse_reap.bridge_training import (
     BridgeExpertMapping,
     capture_host_hidden_states,
@@ -211,6 +215,13 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_train = subparsers.add_parser("train-bridge")
     bridge_train.add_argument("config", type=Path)
     bridge_train.add_argument("--resume-checkpoint", type=Path)
+    rescue_validate = subparsers.add_parser("validate-bridge-rescue-config")
+    rescue_validate.add_argument("config", type=Path)
+    rescue_gate = subparsers.add_parser("fit-bridge-rescue-gate")
+    rescue_gate.add_argument("manifest", type=Path)
+    rescue_gate.add_argument("destination", type=Path)
+    rescue_gate.add_argument("--manifest-sha256", required=True)
+    rescue_gate.add_argument("--max-generated-tokens", type=int, required=True)
     bridge_benchmark = subparsers.add_parser("run-bridge-benchmark")
     bridge_benchmark.add_argument("config", type=Path)
     bridge_dataset = subparsers.add_parser("freeze-humanevalplus")
@@ -539,6 +550,31 @@ def main() -> int:
         output = train_bridge(args.config, resume_checkpoint=args.resume_checkpoint)
         emit_json(output)
         return 0 if output["status"] == "PASS" else 2
+    if args.command == "validate-bridge-rescue-config":
+        config = load_rescue_experiment_config(args.config)
+        emit_json(
+            {
+                "valid": True,
+                "run_id": config.run_id,
+                "experiment": config.experiment,
+                "split": config.split,
+                "expected_tasks": config.expected_tasks,
+                "thinking_enabled": config.thinking_enabled,
+                "policy_count": len(config.policies),
+                "fingerprint": config.fingerprint(),
+            }
+        )
+        return 0
+    if args.command == "fit-bridge-rescue-gate":
+        emit_json(
+            fit_linear_gate_manifest(
+                args.manifest,
+                args.destination,
+                expected_sha256=args.manifest_sha256,
+                max_generated_tokens=args.max_generated_tokens,
+            )
+        )
+        return 0
     if args.command == "run-bridge-benchmark":
         output = run_bridge_benchmark(args.config)
         emit_json(output)

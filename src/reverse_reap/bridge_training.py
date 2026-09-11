@@ -27,7 +27,7 @@ import random
 import shutil
 import tempfile
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1567,6 +1567,7 @@ def install_bridge_sidecars(
     mappings: Sequence[BridgeExpertMapping | Mapping[str, Any]],
     *,
     telemetry: Any | None = None,
+    residual_policy: Callable[[Any, Any, Any], Any] | None = None,
 ) -> list[Any]:
     """Attach frozen-host parallel sidecars at the configured MLP modules.
 
@@ -1615,6 +1616,13 @@ def install_bridge_sidecars(
                 _, _, _, residual, gate = bridge_model.components(flat, mapping.key)
                 telemetry.record(mapping.key, gate, residual)
             residual = residual.reshape_as(hidden).to(dtype=hidden.dtype)
+            if residual_policy is not None:
+                multiplier = residual_policy(mapping, hidden, residual)
+                if not isinstance(multiplier, (int, float)):
+                    raise BridgeTrainingError("residual policy multiplier must be numeric")
+                if not math.isfinite(float(multiplier)) or not 0 <= float(multiplier) <= 1:
+                    raise BridgeTrainingError("residual policy returned an invalid multiplier")
+                residual = residual * multiplier
             if isinstance(output, torch.Tensor):
                 return output + residual.to(dtype=output.dtype)
             if isinstance(output, tuple) and output and isinstance(output[0], torch.Tensor):
