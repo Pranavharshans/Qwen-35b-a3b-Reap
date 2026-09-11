@@ -21,7 +21,10 @@ from reverse_reap.bridge_capture import (
 )
 from reverse_reap.bridge_rescue import (
     fit_linear_gate_manifest,
+    freeze_mbpp_strength_screen,
     load_rescue_experiment_config,
+    run_strength_screen,
+    score_strength_screen,
 )
 from reverse_reap.bridge_training import (
     BridgeExpertMapping,
@@ -222,6 +225,14 @@ def build_parser() -> argparse.ArgumentParser:
     rescue_gate.add_argument("destination", type=Path)
     rescue_gate.add_argument("--manifest-sha256", required=True)
     rescue_gate.add_argument("--max-generated-tokens", type=int, required=True)
+    rescue_freeze = subparsers.add_parser("freeze-bridge-strength-screen")
+    rescue_freeze.add_argument("benchmark_config", type=Path)
+    rescue_freeze.add_argument("destination", type=Path)
+    rescue_run = subparsers.add_parser("run-bridge-strength-screen")
+    rescue_run.add_argument("config", type=Path)
+    rescue_score = subparsers.add_parser("score-bridge-strength-screen")
+    rescue_score.add_argument("config", type=Path)
+    rescue_score.add_argument("--evalplus-image", required=True)
     bridge_benchmark = subparsers.add_parser("run-bridge-benchmark")
     bridge_benchmark.add_argument("config", type=Path)
     bridge_dataset = subparsers.add_parser("freeze-humanevalplus")
@@ -575,6 +586,17 @@ def main() -> int:
             )
         )
         return 0
+    if args.command == "freeze-bridge-strength-screen":
+        emit_json(freeze_mbpp_strength_screen(args.benchmark_config, args.destination))
+        return 0
+    if args.command == "run-bridge-strength-screen":
+        output = run_strength_screen(args.config)
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
+    if args.command == "score-bridge-strength-screen":
+        output = score_strength_screen(args.config, evalplus_image=args.evalplus_image)
+        emit_json(output)
+        return 0 if output["status"] == "PASS" else 2
     if args.command == "run-bridge-benchmark":
         output = run_bridge_benchmark(args.config)
         emit_json(output)

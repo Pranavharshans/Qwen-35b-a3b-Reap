@@ -232,6 +232,16 @@ GPU generation still requires a separately frozen, officially scoreable fresh
 dataset adapter and an exact-checkpoint preflight; neither command authorizes a
 paid run.
 
+The first 12-task, thinking-enabled strength screen is implemented separately
+as a post-hoc exploratory funnel:
+
+```bash
+reverse-reap freeze-bridge-strength-screen pinned-mbpp.yaml strength-screen-12.jsonl
+reverse-reap run-bridge-strength-screen pinned-strength-screen.yaml
+reverse-reap score-bridge-strength-screen pinned-strength-screen.yaml \
+  --evalplus-image 'localhost:5000/reverse-reap-evalplus@sha256:<digest>'
+```
+
 ## SWE-bench scoring boundary
 
 Repository-repair responses are not treated as scoreable until the official SWE-bench

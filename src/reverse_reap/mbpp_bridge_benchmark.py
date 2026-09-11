@@ -432,6 +432,8 @@ def _generate_one(
     config: MbppBridgeBenchmarkConfig,
     *,
     condition: str,
+    logits_processor: Any | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     import torch
 
@@ -451,12 +453,16 @@ def _generate_one(
     )
     started = time.monotonic()
     with torch.inference_mode():
+        generate_kwargs = {}
+        if logits_processor is not None:
+            generate_kwargs["logits_processor"] = [logits_processor]
         output = model.generate(
             input_ids=input_ids,
             do_sample=False,
             max_new_tokens=max_new_tokens,
             use_cache=True,
             pad_token_id=tokenizer.eos_token_id,
+            **generate_kwargs,
         )
     elapsed = time.monotonic() - started
     generated_ids = output[0, input_ids.shape[1] :].detach().cpu().tolist()
@@ -477,7 +483,7 @@ def _generate_one(
     )
     return {
         "schema_version": 1,
-        "run_id": config.run_id,
+        "run_id": run_id or config.run_id,
         "task_id": task["task_id"],
         "solution": raw,
         "condition": condition,
