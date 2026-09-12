@@ -195,9 +195,32 @@ def _render_ids(tokenizer: Any, sample: NormalizedSample, enable_thinking: bool)
     if full.shape[1] < prompt.shape[1]:
         raise RuntimeCompatibilityError("full teacher-forced sequence is shorter than prompt")
     if not torch.equal(full[:, : prompt.shape[1]], prompt):
-        raise RuntimeCompatibilityError(
-            "teacher-forced sequence does not preserve the prompt prefix"
+        rendered_user = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=False,
+            return_tensors="pt",
+            enable_thinking=enable_thinking,
         )
+        if not isinstance(rendered_user, torch.Tensor):
+            rendered_user = rendered_user["input_ids"]
+        user = rendered_user.to(dtype=torch.long)
+        if (
+            user.shape[1] > min(prompt.shape[1], full.shape[1])
+            or not torch.equal(prompt[:, : user.shape[1]], user)
+            or not torch.equal(full[:, : user.shape[1]], user)
+        ):
+            raise RuntimeCompatibilityError(
+                "teacher-forced sequence does not preserve the user-message prefix"
+            )
+        shared = int(
+            torch.nonzero(prompt[0] != full[0, : prompt.shape[1]], as_tuple=False)[0].item()
+        )
+        if shared < user.shape[1]:
+            raise RuntimeCompatibilityError(
+                "teacher-forced sequence diverges inside the user-message prefix"
+            )
+        prompt = full[:, :shared]
     return prompt, full
 
 
