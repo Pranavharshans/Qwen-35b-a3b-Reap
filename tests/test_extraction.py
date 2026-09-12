@@ -105,3 +105,64 @@ def test_infers_qwen38_48_layer_tensor_prefix(tmp_path):
     assert architecture.num_layers == 48
     assert architecture.num_experts == 512
     assert architecture.experts_per_token == 10
+
+
+def test_infers_qwen38_fp8_per_expert_tensor_prefix(tmp_path):
+    prefix = "model.language_model.layers"
+    weight_map = {
+        f"{prefix}.{layer}.mlp.experts.0.gate_proj.weight": "shard.safetensors"
+        for layer in range(48)
+    }
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    architecture = architecture_from_weight_index(
+        tmp_path, "Qwen/Qwen3.8-Flash-Next-FP8"
+    )
+    assert architecture.num_layers == 48
+    assert architecture.state_prefix == prefix
+
+
+def test_fp8_extraction_preserves_weights_and_inverse_scales(tmp_path):
+    prefix = "model.language_model.layers"
+    stem = f"{prefix}.0.mlp.experts.2"
+    arrays = {
+        f"{stem}.gate_proj.weight": np.arange(8, dtype=np.uint8).reshape(2, 4),
+        f"{stem}.gate_proj.weight_scale_inv": np.ones((1, 1), dtype=np.float32),
+        f"{stem}.up_proj.weight": np.arange(8, dtype=np.uint8).reshape(2, 4),
+        f"{stem}.up_proj.weight_scale_inv": np.ones((1, 1), dtype=np.float32) * 2,
+        f"{stem}.down_proj.weight": np.arange(8, dtype=np.uint8).reshape(4, 2),
+        f"{stem}.down_proj.weight_scale_inv": np.ones((1, 1), dtype=np.float32) * 3,
+    }
+    save_file(arrays, tmp_path / "model-00001-of-00001.safetensors")
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    key: "model-00001-of-00001.safetensors" for key in arrays
+                }
+            }
+        )
+    )
+    architecture = Qwen35Architecture(
+        layers=(SimpleNamespace(),),
+        num_experts=3,
+        experts_per_token=2,
+        hidden_size=4,
+        expert_intermediate_size=2,
+        state_prefix=prefix,
+    )
+    destination = tmp_path / "extracted"
+    manifest = extract_experts(
+        tmp_path,
+        architecture,
+        [(0, 2)],
+        destination,
+        model_id="Qwen/Qwen3.8-Flash-Next-FP8",
+        model_revision="f" * 40,
+    )
+    assert len(manifest["tensors"]) == 6
+    assert all(item["verified"] for item in manifest["tensors"])
+    assert verify_extraction(destination, tmp_path) == {
+        "valid": True,
+        "tensor_count": 6,
+        "source_weight_index_hash_valid": True,
+    }

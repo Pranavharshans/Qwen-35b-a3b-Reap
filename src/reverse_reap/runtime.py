@@ -82,6 +82,14 @@ def validate_donor_contract(model: Any, architecture: Qwen35Architecture) -> dic
         candidates = [
             item for item in DONOR_CONTRACTS.values() if item.root_model_type == root_type
         ]
+        if len(candidates) > 1:
+            quantization = getattr(model_config, "quantization_config", None)
+            is_fp8 = isinstance(quantization, dict) and quantization.get("quant_method") == "fp8"
+            candidates = [
+                item
+                for item in candidates
+                if (item.source_precision == "fp8") == is_fp8
+            ]
         if len(candidates) != 1:
             raise RuntimeCompatibilityError(
                 f"unsupported donor model/type: {configured_id!r}/{root_type!r}"

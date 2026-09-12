@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 QWEN35_MODEL_ID = "Qwen/Qwen3.5-35B-A3B"
 QWEN38_MODEL_ID = "Qwen/Qwen3.8-Flash-Next"
+QWEN38_FP8_MODEL_ID = "Qwen/Qwen3.8-Flash-Next-FP8"
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,9 @@ class DonorContract:
     moe_intermediate_size: int
     shared_expert_intermediate_size: int
     dtype: str = "bfloat16"
+    source_precision: str = "bf16"
+    expert_weight_layout: str = "fused"
+    quantization_config: dict[str, object] | None = None
     expected_revision: str | None = None
 
     def expected_text_config(self) -> dict[str, object]:
@@ -65,6 +69,29 @@ DONOR_CONTRACTS = {
         moe_intermediate_size=640,
         shared_expert_intermediate_size=640,
         expected_revision="de4b8e4d43b917e7706784d8bb445c9af86a3540",
+    ),
+    QWEN38_FP8_MODEL_ID: DonorContract(
+        model_id=QWEN38_FP8_MODEL_ID,
+        slug="qwen38flashnextfp8",
+        root_model_type="qwen4_exp",
+        architecture="Qwen4ExpForConditionalGeneration",
+        text_model_type="qwen4_exp_text",
+        num_hidden_layers=48,
+        hidden_size=2560,
+        num_experts=512,
+        num_experts_per_tok=10,
+        moe_intermediate_size=640,
+        shared_expert_intermediate_size=640,
+        source_precision="fp8",
+        expert_weight_layout="per-expert-fp8",
+        quantization_config={
+            "quant_method": "fp8",
+            "activation_scheme": "dynamic",
+            "weight_per_tensor": False,
+            "act_per_tensor": False,
+            "weight_block_size": [128, 128],
+        },
+        expected_revision="236dfdf285828023ca3bcd3f37366c58a3469b13",
     ),
 }
 

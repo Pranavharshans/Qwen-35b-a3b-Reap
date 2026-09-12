@@ -38,7 +38,12 @@ def architecture_from_weight_index(
     """Infer the fused key prefix while enforcing an approved donor contract."""
     contract = donor_contract(model_id)
     weight_map = load_weight_map(model_dir)
-    pattern = re.compile(r"^(.*\.layers)\.(\d+)\.mlp\.experts\.gate_up_proj$")
+    if contract.expert_weight_layout == "per-expert-fp8":
+        pattern = re.compile(
+            r"^(.*\.layers)\.(\d+)\.mlp\.experts\.\d+\.gate_proj\.weight$"
+        )
+    else:
+        pattern = re.compile(r"^(.*\.layers)\.(\d+)\.mlp\.experts\.gate_up_proj$")
     matches = [match for key in weight_map if (match := pattern.match(key))]
     if not matches:
         raise ExtractionError("could not locate fused expert tensors in weight index")
@@ -137,17 +142,43 @@ def extract_experts(
     if destination.exists():
         raise ExtractionError(f"refusing to overwrite extraction destination: {destination}")
     weight_map = load_weight_map(model_dir)
+    try:
+        contract = donor_contract(model_id)
+    except ValueError:
+        contract = None
     tensors: dict[str, Any] = {}
     records: list[ExtractedTensor] = []
     for layer, expert in sorted(set(selected)):
-        spec = architecture.tensor_spec(layer, expert)
-        source_pairs = ((spec.gate_up_key, "gate_up_proj"), (spec.down_key, "down_proj"))
+        if contract is not None and contract.expert_weight_layout == "per-expert-fp8":
+            stem = f"{architecture.state_prefix}.{layer}.mlp.experts.{expert}"
+            source_pairs = tuple(
+                (f"{stem}.{suffix}", suffix)
+                for suffix in (
+                    "gate_proj.weight",
+                    "gate_proj.weight_scale_inv",
+                    "up_proj.weight",
+                    "up_proj.weight_scale_inv",
+                    "down_proj.weight",
+                    "down_proj.weight_scale_inv",
+                )
+            )
+        else:
+            spec = architecture.tensor_spec(layer, expert)
+            source_pairs = (
+                (spec.gate_up_key, "gate_up_proj"),
+                (spec.down_key, "down_proj"),
+            )
         for source_key, suffix in source_pairs:
-            fused = _read_tensor(model_dir, weight_map, source_key)
-            if fused.shape[0] != architecture.num_experts:
-                raise ExtractionError(f"unexpected expert axis for {source_key}: {fused.shape}")
+            source = _read_tensor(model_dir, weight_map, source_key)
             output_key = f"layers.{layer}.experts.{expert}.{suffix}"
-            value = _contiguous(fused[expert])
+            if contract is not None and contract.expert_weight_layout == "per-expert-fp8":
+                value = _contiguous(source)
+            else:
+                if source.shape[0] != architecture.num_experts:
+                    raise ExtractionError(
+                        f"unexpected expert axis for {source_key}: {source.shape}"
+                    )
+                value = _contiguous(source[expert])
             tensors[output_key] = value
             records.append(
                 ExtractedTensor(
@@ -206,7 +237,11 @@ def extract_experts(
         record.output_key: {
             "source_shard": record.source_shard,
             "source_key": record.source_key,
-            "source_expert_axis_index": int(record.output_key.split(".")[3]),
+            "source_expert_axis_index": (
+                None
+                if contract is not None and contract.expert_weight_layout == "per-expert-fp8"
+                else int(record.output_key.split(".")[3])
+            ),
         }
         for record in records
     }
@@ -240,10 +275,26 @@ def verify_extraction(destination: Path, model_dir: Path) -> dict[str, Any]:
     tensor_path = destination / manifest["tensor_file"]
     if hashlib.sha256(tensor_path.read_bytes()).hexdigest() != manifest["artifact_hash"]:
         raise ExtractionError("extracted safetensors file hash mismatch")
+    try:
+        contract = donor_contract(manifest["source_model_id"])
+    except ValueError:
+        contract = None
+    suffixes = (
+        (
+            "gate_proj.weight",
+            "gate_proj.weight_scale_inv",
+            "up_proj.weight",
+            "up_proj.weight_scale_inv",
+            "down_proj.weight",
+            "down_proj.weight_scale_inv",
+        )
+        if contract is not None and contract.expert_weight_layout == "per-expert-fp8"
+        else ("gate_up_proj", "down_proj")
+    )
     expected_keys = {
         f"layers.{item['layer']}.experts.{item['expert']}.{suffix}"
         for item in manifest["experts"]
-        for suffix in ("gate_up_proj", "down_proj")
+        for suffix in suffixes
     }
     manifest_keys = {item["output_key"] for item in manifest["tensors"]}
     if manifest_keys != expected_keys:
@@ -259,7 +310,10 @@ def verify_extraction(destination: Path, model_dir: Path) -> dict[str, Any]:
         for record in manifest["tensors"]:
             source = _read_tensor(model_dir, weight_map, record["source_key"])
             expert = int(record["output_key"].split(".")[3])
-            source_slice = _contiguous(source[expert])
+            if contract is not None and contract.expert_weight_layout == "per-expert-fp8":
+                source_slice = _contiguous(source)
+            else:
+                source_slice = _contiguous(source[expert])
             output = extracted.get_tensor(record["output_key"])
             if tensor_bytes(source_slice) != tensor_bytes(output):
                 raise ExtractionError(f"source bytes differ for {record['output_key']}")

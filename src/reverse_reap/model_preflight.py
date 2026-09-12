@@ -49,11 +49,56 @@ def validate_model_config(
     for key, expected in expected_text.items():
         if text.get(key) != expected:
             mismatches[f"text_config.{key}"] = {"expected": expected, "actual": text.get(key)}
+    if contract.quantization_config is not None:
+        quantization = payload.get("quantization_config") or {}
+        for key, expected in contract.quantization_config.items():
+            if quantization.get(key) != expected:
+                mismatches[f"quantization_config.{key}"] = {
+                    "expected": expected,
+                    "actual": quantization.get(key),
+                }
     if mismatches:
         raise ModelPreflightError(
             f"official donor metadata violates the approved contract: {mismatches}"
         )
     return {"compatible": True, "model_id": model_id, "text_config": expected_text}
+
+
+def validate_weight_index_layout(weight_map: dict[str, str], model_id: str) -> dict[str, Any]:
+    """Prove the source index contains every tensor needed for lossless expert extraction."""
+    contract = donor_contract(model_id)
+    if contract.expert_weight_layout != "per-expert-fp8":
+        return {"valid": True, "layout": contract.expert_weight_layout}
+    prefix = "model.language_model.layers"
+    suffixes = (
+        "gate_proj.weight",
+        "gate_proj.weight_scale_inv",
+        "up_proj.weight",
+        "up_proj.weight_scale_inv",
+        "down_proj.weight",
+        "down_proj.weight_scale_inv",
+    )
+    missing = []
+    for layer in range(contract.num_hidden_layers):
+        for expert in range(contract.num_experts):
+            stem = f"{prefix}.{layer}.mlp.experts.{expert}"
+            for suffix in suffixes:
+                key = f"{stem}.{suffix}"
+                if key not in weight_map:
+                    missing.append(key)
+                    if len(missing) >= 10:
+                        raise ModelPreflightError(
+                            f"FP8 expert weight index is incomplete; examples: {missing}"
+                        )
+    if missing:
+        raise ModelPreflightError(
+            f"FP8 expert weight index is incomplete; examples: {missing}"
+        )
+    return {
+        "valid": True,
+        "layout": contract.expert_weight_layout,
+        "expert_tensor_count": contract.num_hidden_layers * contract.num_experts * len(suffixes),
+    }
 
 
 def write_pinned_config(template: Path, destination: Path, revision: str) -> ExperimentConfig:
@@ -82,6 +127,12 @@ def preflight_model(
     )
     info = HfApi().model_info(template.model.id, files_metadata=True)
     revision = str(info.sha)
+    contract = donor_contract(template.model.id)
+    if contract.expected_revision is not None and revision != contract.expected_revision:
+        raise ModelPreflightError(
+            "official donor revision drifted: "
+            f"expected {contract.expected_revision}, got {revision}"
+        )
     metadata_names = (
         "config.json",
         "tokenizer_config.json",
@@ -116,7 +167,14 @@ def preflight_model(
     index_payload = json.loads(
         (metadata_dir / "model.safetensors.index.json").read_text(encoding="utf-8")
     )
-    expected_shards = set(index_payload.get("weight_map", {}).values())
+    weight_map = index_payload.get("weight_map", {})
+    if not isinstance(weight_map, dict):
+        raise ModelPreflightError("model weight index has no weight_map")
+    index_layout = validate_weight_index_layout(weight_map, template.model.id)
+    expected_shards = set(weight_map.values())
+    index_layout = validate_weight_index_layout(
+        index_payload.get("weight_map", {}), template.model.id
+    )
     actual_shards = {item["name"] for item in siblings}
     if (
         not expected_shards
@@ -134,6 +192,7 @@ def preflight_model(
         "model_id": template.model.id,
         "revision": revision,
         "architecture": architecture,
+        "weight_index_layout": index_layout,
         "metadata_files": files,
         "weight_shards": siblings,
         "total_weight_bytes": total_weight_bytes,

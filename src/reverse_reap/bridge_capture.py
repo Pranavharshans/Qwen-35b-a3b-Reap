@@ -26,7 +26,12 @@ from pydantic import Field, field_validator, model_validator
 
 from reverse_reap.config import StrictModel
 from reverse_reap.datasets import NormalizedSample, canonical_json, load_manifest, sha256
-from reverse_reap.donors import QWEN35_MODEL_ID, QWEN38_MODEL_ID, donor_contract
+from reverse_reap.donors import (
+    QWEN35_MODEL_ID,
+    QWEN38_FP8_MODEL_ID,
+    QWEN38_MODEL_ID,
+    donor_contract,
+)
 
 
 class BridgeCaptureError(ValueError):
@@ -56,7 +61,7 @@ class BridgeCaptureManifest(StrictModel):
     kind: Literal["bridge-target-capture"]
     run_id: str = Field(min_length=1)
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    model_id: Literal[QWEN35_MODEL_ID, QWEN38_MODEL_ID]
+    model_id: Literal[QWEN35_MODEL_ID, QWEN38_MODEL_ID, QWEN38_FP8_MODEL_ID]
     model_revision: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     tokenizer_fingerprint: str = Field(min_length=1)
     config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

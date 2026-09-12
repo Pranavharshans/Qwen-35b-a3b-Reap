@@ -28,6 +28,14 @@ def test_qwen38_flash_next_config_has_distinct_identity() -> None:
     assert "-qwen38flashnext-direct-" in run_id
 
 
+def test_qwen38_fp8_config_has_separate_precision_and_identity() -> None:
+    config = load_config(Path("configs/smoke-qwen38-flash-next-fp8.yaml"))
+    run_id = config.resolve_run_id("a" * 40, datetime(2026, 9, 12, tzinfo=UTC))
+    assert config.model.source_precision == "fp8"
+    assert config.model.execution_precision == "bf16"
+    assert "-qwen38flashnextfp8-direct-" in run_id
+
+
 def test_batch_size_allows_only_qualified_sizes() -> None:
     from pydantic import ValidationError
 

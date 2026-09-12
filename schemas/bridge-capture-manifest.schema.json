@@ -314,7 +314,8 @@
     "model_id": {
       "enum": [
         "Qwen/Qwen3.5-35B-A3B",
-        "Qwen/Qwen3.8-Flash-Next"
+        "Qwen/Qwen3.8-Flash-Next",
+        "Qwen/Qwen3.8-Flash-Next-FP8"
       ],
       "title": "Model Id",
       "type": "string"

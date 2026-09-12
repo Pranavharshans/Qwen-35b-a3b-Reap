@@ -59,6 +59,28 @@ The pinned config makes `preflight-model` refuse revision drift rather than sile
 it. Support is currently hardware-free and metadata/index validated; an exact-checkpoint Gate
 A probe is still required before calibration or an expert claim.
 
+### Official Qwen3.8 FP8 checkpoint
+
+`Qwen/Qwen3.8-Flash-Next-FP8` is a separate donor at immutable revision
+`236dfdf285828023ca3bcd3f37366c58a3469b13`. It uses dynamic activations and 128x128
+blockwise FP8 weights. Its per-expert gate/up/down weights and all three inverse-scale tensors
+are validated and extracted byte-for-byte; they are never cast, fused, or treated as BF16
+source tensors.
+
+Metadata-first preflight remains hardware-free and does not download the 131 weight shards:
+
+```bash
+uv run reverse-reap preflight-model \
+  configs/qwen38-flash-next-fp8.template.yaml \
+  configs/smoke-qwen38-flash-next-fp8.yaml \
+  /cluster/metadata/qwen38-fp8 runs/qwen38-fp8/model-preflight.json
+```
+
+Use `configs/qwen38-flash-next-fp8-full.yaml` for direct FAU execution,
+`configs/qwen38-flash-next-fp8-full-thinking.yaml` for the separate thinking condition, and
+`configs/qwen38-flash-next-fp8-bridge-capture.yaml` for pass-2 target capture. FP8 requires
+its own telemetry, candidates, causal validation, and replication; BF16 results do not transfer.
+
 ## FAU Alex Slurm execution
 
 The FAU path uses the same single-writer `run-all` controller and source plan as the regular

@@ -21,6 +21,12 @@ def materialize(
     through_task: str | None = None,
 ) -> None:
     payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    configured_model_id = "Qwen/Qwen3.8-Flash-Next"
+    configured_revision = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
+    if config.is_file():
+        config_payload = yaml.safe_load(config.read_text(encoding="utf-8"))
+        configured_model_id = str(config_payload["model"]["id"])
+        configured_revision = str(config_payload["model"]["revision"])
     if through_task is not None:
         task_ids = [task["task_id"] for task in payload["tasks"]]
         if through_task not in task_ids:
@@ -41,6 +47,8 @@ def materialize(
                 value.replace("four-RTX-3090", "eight-RTX-PRO-6000")
                 .replace("top-8", "top-10")
                 .replace("all 40 layers", "all 48 layers")
+                .replace("Qwen/Qwen3.8-Flash-Next", configured_model_id)
+                .replace("de4b8e4d43b917e7706784d8bb445c9af86a3540", configured_revision)
             )
         if isinstance(value, list):
             return [replace(item) for item in value]
