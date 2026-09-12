@@ -312,6 +312,9 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry = subparsers.add_parser("validate-telemetry")
     telemetry.add_argument("path", type=Path)
     telemetry.add_argument("--output", type=Path)
+    telemetry.add_argument("--num-layers", type=int, default=40)
+    telemetry.add_argument("--num-experts", type=int, default=256)
+    telemetry.add_argument("--top-k", type=int, default=8)
     model_preflight = subparsers.add_parser("preflight-model")
     model_preflight.add_argument("template_config", type=Path)
     model_preflight.add_argument("pinned_config", type=Path)
@@ -696,7 +699,12 @@ def main() -> int:
         emit_json(output)
         return 0
     if args.command == "validate-telemetry":
-        output = validate_telemetry(args.path)
+        output = validate_telemetry(
+            args.path,
+            num_layers=args.num_layers,
+            num_experts=args.num_experts,
+            top_k=args.top_k,
+        )
         emit_json(output, args.output)
         return 0
     if args.command == "preflight-model":
