@@ -11,13 +11,15 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from reverse_reap.donors import donor_contract
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class ModelConfig(StrictModel):
-    id: Literal["Qwen/Qwen3.5-35B-A3B"]
+    id: Literal["Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.8-Flash-Next"]
     revision: str = Field(min_length=40, max_length=64, pattern=r"^[0-9a-f]+$")
     source_precision: Literal["bf16"] = "bf16"
     execution_precision: Literal["bf16", "fp16"]
@@ -105,7 +107,8 @@ class ExperimentConfig(StrictModel):
         moment = now or datetime.now(UTC)
         condition = "think" if self.runtime.enable_thinking else "direct"
         stamp = moment.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-        return f"{stamp}-qwen35a3b-{condition}-{git_sha[:8]}-{self.fingerprint()[:8]}"
+        slug = donor_contract(self.model.id).slug
+        return f"{stamp}-{slug}-{condition}-{git_sha[:8]}-{self.fingerprint()[:8]}"
 
 
 def load_config(path: Path) -> ExperimentConfig:

@@ -20,7 +20,7 @@ dependencies = [
 gpu = [
   "accelerate>=1.7,<2",
   "datasets>=3.6,<5",
-  "torch==2.7.1",
+  "torch>=2.11,<2.12",
   "transformers>=5.5,<6",
 ]
 dev = [

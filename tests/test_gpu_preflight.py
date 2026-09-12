@@ -56,7 +56,7 @@ def test_pro6000_profile_accepts_qualified_host():
         ],
         "disk_free_bytes": 130 * 1024**3,
         "torch": "2.11.0+cu128",
-        "cuda_runtime": "12.8",
+        "cuda_runtime": "13.0",
     }
     assert module_.validate(value, profile="pro6000") == []
 
@@ -89,3 +89,23 @@ def test_pro6000_profile_rejects_old_torch_and_wrong_gpu():
 def test_default_profile_preserves_4x3090_contract():
     # Existing single-arg calls keep the legacy behavior.
     assert module().validate(report()) == []
+
+
+def test_alex_8x_pro6000_profile_accepts_full_node():
+    value = {
+        "cuda_available": True,
+        "gpu_count": 8,
+        "gpus": [
+            {
+                "index": index,
+                "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "total_memory_bytes": 96 * 1024**3,
+                "capability": [12, 0],
+            }
+            for index in range(8)
+        ],
+        "disk_free_bytes": 500 * 1024**3,
+        "torch": "2.11.0+cu128",
+        "cuda_runtime": "12.8",
+    }
+    assert module().validate(value, profile="alex-8x-pro6000") == []

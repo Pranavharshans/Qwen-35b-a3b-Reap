@@ -21,6 +21,13 @@ def test_run_id_separates_thinking_condition() -> None:
     assert direct.fingerprint() != thinking.fingerprint()
 
 
+def test_qwen38_flash_next_config_has_distinct_identity() -> None:
+    config = load_config(Path("configs/smoke-qwen38-flash-next-bf16.yaml"))
+    run_id = config.resolve_run_id("a" * 40, datetime(2026, 9, 12, tzinfo=UTC))
+    assert config.model.id == "Qwen/Qwen3.8-Flash-Next"
+    assert "-qwen38flashnext-direct-" in run_id
+
+
 def test_batch_size_allows_only_qualified_sizes() -> None:
     from pydantic import ValidationError
 

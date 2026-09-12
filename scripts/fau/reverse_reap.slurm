@@ -1,0 +1,44 @@
+#!/bin/bash -l
+#SBATCH --job-name=reverse-reap-q38
+#SBATCH --partition=rtxpro6k
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=256
+#SBATCH --gres=gpu:rtxpro6k:8
+#SBATCH --time=24:00:00
+#SBATCH --export=NONE
+#SBATCH --output=slurm-%x-%j.out
+#SBATCH --error=slurm-%x-%j.err
+
+set -euo pipefail
+unset SLURM_EXPORT_ENV
+
+if [[ $# -ne 5 ]]; then
+  echo "usage: reverse_reap.slurm REPO CONFIG SOURCE_PLAN MODEL_DIR STATE_DIR" >&2
+  exit 64
+fi
+
+repo_dir=$1
+config_path=$2
+source_plan=$3
+model_dir=$4
+state_dir=$5
+
+module purge
+module load cuda/12.8
+module load python
+
+cd "$repo_dir"
+export UV_CACHE_DIR="${TMPDIR:?FAU must provide TMPDIR}/reverse-reap-uv-cache"
+export HF_HOME="${TMPDIR}/reverse-reap-hf-cache"
+export TOKENIZERS_PARALLELISM=false
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$state_dir"
+
+materialized_plan="$state_dir/fau-materialized-plan.yaml"
+uv run --frozen --no-sync python scripts/fau/materialize_plan.py \
+  "$source_plan" "$materialized_plan" --config "$config_path" --model-dir "$model_dir"
+
+srun uv run --frozen --no-sync reverse-reap run-all \
+  "$config_path" "$materialized_plan" "$state_dir" \
+  --heartbeat-seconds 30 --stale-after-seconds 180
