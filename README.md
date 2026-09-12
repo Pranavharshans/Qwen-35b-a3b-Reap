@@ -83,6 +83,42 @@ The first command is a dry run. The second calls `sbatch` and must run on an FAU
 No job is submitted by setup or tests. The job materializes a run-specific plan with absolute
 cluster paths and the eight-GPU FAU preflight; it never mutates the source plan.
 
+### Qwen3.8 two-pass FAU workflow
+
+Scoring may remain on a separate VM. FAU produces immutable generation/capture artifacts and
+hash-bound handoffs; it does not execute generated code in this workflow.
+
+After freezing `datasets/manifests/full.jsonl`, dry-run the complete first pass (expert
+discovery, causal validation, replication, and both thinking conditions):
+
+```bash
+scripts/fau/submit_reverse_reap.sh \
+  --thinking-config configs/qwen38-flash-next-bf16-full-thinking.yaml \
+  configs/qwen38-flash-next-bf16-full.yaml configs/execution-plan-v0.yaml \
+  /absolute/cluster/path/Qwen3.8-Flash-Next runs/qwen38/pass1-state
+```
+
+Add `--submit` to that command only after reviewing the rendered command and run budget. When
+pass 1 has produced a passed, frozen Qwen3.8 Gate C artifact, copy it without modification to
+`runs/qwen38/inputs/candidate-manifest.json`. Then dry-run the second, independently identified
+teacher-forced capture pass:
+
+```bash
+scripts/fau/submit_reverse_reap.sh \
+  configs/qwen38-flash-next-bf16-bridge-capture.yaml \
+  configs/execution-plan-qwen38-bridge-capture.yaml \
+  /absolute/cluster/path/Qwen3.8-Flash-Next runs/qwen38/pass2-state
+```
+
+Again, add `--submit` only for the authorized launch. Pass 2 records selected-expert input,
+replayed output, weighted output, router identity/weight, token identity, and full provenance
+in resumable BF16 shards. It ends with a hash-verified handoff manifest. It does not score,
+train a bridge, publish weights, or reuse the pass-1 run ID.
+
+The checked-in Qwen3.8 full configurations use allocation-accounting placeholder rates and a
+future deadline. Review and pin the actual allocation budget, storage ceiling, deadline, and
+dataset hash before any real job; changing any of them creates a new run ID.
+
 ## CPU analysis engines
 
 The `analyze` stage has two engines with identical scientific semantics

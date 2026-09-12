@@ -312,7 +312,10 @@
       "type": "integer"
     },
     "model_id": {
-      "const": "Qwen/Qwen3.5-35B-A3B",
+      "enum": [
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.8-Flash-Next"
+      ],
       "title": "Model Id",
       "type": "string"
     },

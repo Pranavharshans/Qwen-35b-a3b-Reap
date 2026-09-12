@@ -12,8 +12,7 @@ from pathlib import Path
 from reverse_reap.bridge_capture import BridgeCaptureError, _candidate_manifest_metadata
 from reverse_reap.config import load_config
 from reverse_reap.datasets import load_manifest
-
-EXPECTED_OBSERVATIONAL_TARGETS = {(3, 26), (7, 18), (35, 239), (37, 5)}
+from reverse_reap.donors import donor_contract
 
 
 def main() -> int:
@@ -26,18 +25,24 @@ def main() -> int:
     args = parser.parse_args()
     try:
         config = load_config(args.config)
-        if args.require_full and args.source_manifest.name != "full-lengthmatched.jsonl":
-            raise BridgeCaptureError(
-                "bridge capture requires the full-lengthmatched source manifest"
-            )
         if not args.source_manifest.is_file():
             raise BridgeCaptureError(f"source manifest is unavailable: {args.source_manifest}")
         samples = load_manifest(args.source_manifest)
         candidate_hash, experts = _candidate_manifest_metadata(args.candidate_manifest)
-        if set(experts) != EXPECTED_OBSERVATIONAL_TARGETS:
+        contract = donor_contract(config.model.id)
+        invalid = [
+            (layer, expert)
+            for layer, expert in experts
+            if not (0 <= layer < contract.num_hidden_layers and 0 <= expert < contract.num_experts)
+        ]
+        if invalid:
             raise BridgeCaptureError(
-                "candidate manifest is not the frozen four-expert observational set"
+                f"candidate manifest contains experts outside {config.model.id}: {invalid}"
             )
+        if args.require_full and config.datasets.split != "full":
+            raise BridgeCaptureError("bridge capture requires a config with datasets.split=full")
+        if Path(config.datasets.manifest) != args.source_manifest:
+            raise BridgeCaptureError("config dataset manifest differs from the supplied source")
         source_hash = hashlib.sha256(args.source_manifest.read_bytes()).hexdigest()
         result = {
             "passed": True,

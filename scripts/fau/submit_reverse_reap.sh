@@ -2,12 +2,16 @@
 set -euo pipefail
 
 submit=false
-if [[ ${1:-} == "--submit" ]]; then
-  submit=true
-  shift
-fi
+thinking_config=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --submit) submit=true; shift ;;
+    --thinking-config) thinking_config=$(realpath "$2"); shift 2 ;;
+    *) break ;;
+  esac
+done
 if [[ $# -ne 4 ]]; then
-  echo "usage: $0 [--submit] CONFIG SOURCE_PLAN MODEL_DIR STATE_DIR" >&2
+  echo "usage: $0 [--submit] [--thinking-config PATH] CONFIG SOURCE_PLAN MODEL_DIR STATE_DIR" >&2
   exit 64
 fi
 
@@ -22,8 +26,15 @@ job_script="$repo_dir/scripts/fau/reverse_reap.slurm"
 for path in "$config_path" "$plan_path" "$model_dir" "$job_script"; do
   [[ -e "$path" ]] || { echo "missing required path: $path" >&2; exit 66; }
 done
+if [[ -n "$thinking_config" && ! -e "$thinking_config" ]]; then
+  echo "missing thinking config: $thinking_config" >&2
+  exit 66
+fi
 
 command=(sbatch "$job_script" "$repo_dir" "$config_path" "$plan_path" "$model_dir" "$state_dir")
+if [[ -n "$thinking_config" ]]; then
+  command+=("$thinking_config")
+fi
 printf 'FAU submission command:'
 printf ' %q' "${command[@]}"
 printf '\n'

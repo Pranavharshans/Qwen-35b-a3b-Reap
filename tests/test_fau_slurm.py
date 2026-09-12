@@ -30,6 +30,37 @@ def test_materializes_fau_plan_without_submitting(tmp_path):
     assert "/cluster/repo/configs/q38.yaml" in commands
 
 
+def test_materializes_full_qwen38_plan_with_separate_thinking_config(tmp_path):
+    destination = tmp_path / "full-plan.yaml"
+    module().materialize(
+        Path("configs/execution-plan-v0.yaml"),
+        destination,
+        config=Path("/cluster/repo/configs/q38-direct.yaml"),
+        thinking_config=Path("/cluster/repo/configs/q38-thinking.yaml"),
+        model_dir=Path("/cluster/models/q38"),
+    )
+    rendered = destination.read_text()
+    assert "configs/pinned-3090-bf16.yaml" not in rendered
+    assert "configs/pinned-thinking-3090-bf16.yaml" not in rendered
+    assert "/cluster/repo/configs/q38-direct.yaml" in rendered
+    assert "/cluster/repo/configs/q38-thinking.yaml" in rendered
+
+
+def test_materializes_qwen38_bridge_capture_placeholders(tmp_path):
+    destination = tmp_path / "capture-plan.yaml"
+    module().materialize(
+        Path("configs/execution-plan-qwen38-bridge-capture.yaml"),
+        destination,
+        config=Path("/cluster/repo/configs/q38-capture.yaml"),
+        model_dir=Path("/cluster/models/q38"),
+    )
+    rendered = destination.read_text()
+    assert "__EXPERIMENT_CONFIG__" not in rendered
+    assert "__MODEL_DIR__" not in rendered
+    assert "/cluster/repo/configs/q38-capture.yaml" in rendered
+    assert "/cluster/models/q38" in rendered
+
+
 def test_slurm_script_matches_fau_batch_contract():
     body = Path("scripts/fau/reverse_reap.slurm").read_text()
     assert body.startswith("#!/bin/bash -l")

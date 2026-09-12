@@ -1,0 +1,75 @@
+# FAU pass 2. Consumes a passed, frozen Qwen3.8 Gate C candidate manifest.
+# It records BF16 selected-expert inputs and outputs; it does not score or train.
+schema_version: 1
+tasks:
+  - task_id: verify-frozen-inputs
+    objective: Bind the full frozen dataset and passed Qwen3.8 candidate manifest before GPU work.
+    definition_of_done: Validation records exact donor, config, dataset, and candidate hashes and all candidates are in range.
+    command: [timeout, --kill-after=60, "900", python, scripts/validate_bridge_inputs.py, __EXPERIMENT_CONFIG__, datasets/manifests/full.jsonl, runs/qwen38/inputs/candidate-manifest.json, "runs/qwen38/bridge-capture/${RUN_ID}/input-validation.json", --require-full]
+    validation_command: [python, -c, "import json,sys; assert json.load(open(sys.argv[1]))['passed']", "runs/qwen38/bridge-capture/${RUN_ID}/input-validation.json"]
+    inputs: [__EXPERIMENT_CONFIG__, datasets/manifests/full.jsonl, runs/qwen38/inputs/candidate-manifest.json]
+    outputs: ["runs/qwen38/bridge-capture/${RUN_ID}/input-validation.json"]
+    dependencies: []
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.01
+    failure_behavior: terminal
+
+  - task_id: freeze-capture-manifest
+    objective: Freeze the deterministic teacher-forced coding and control token order for pass 2.
+    definition_of_done: The hash-bound manifest includes at least 200k analyzed tokens and a 350k hard ceiling.
+    command: [timeout, --kill-after=60, "1800", reverse-reap, freeze-bridge-manifest, datasets/manifests/full.jsonl, __MODEL_DIR__, "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json", --config, __EXPERIMENT_CONFIG__, --candidate-manifest, runs/qwen38/inputs/candidate-manifest.json, --model-revision, de4b8e4d43b917e7706784d8bb445c9af86a3540, --run-id, "${RUN_ID}", --target-tokens, "200000", --hard-token-ceiling, "350000", --max-input-tokens, "1024", --report, "runs/qwen38/bridge-capture/${RUN_ID}/manifest-freeze-report.json"]
+    validation_command: [python, -c, "import json,sys; x=json.load(open(sys.argv[1])); assert x['target_reached'] and x['analyzed_tokens'] >= 350000 and x['model_id']=='Qwen/Qwen3.8-Flash-Next'", "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json"]
+    inputs: [datasets/manifests/full.jsonl, runs/qwen38/inputs/candidate-manifest.json, __EXPERIMENT_CONFIG__]
+    outputs: ["runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/qwen38/bridge-capture/${RUN_ID}/manifest-freeze-report.json"]
+    dependencies: [verify-frozen-inputs]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
+
+  - task_id: gpu-preflight
+    objective: Verify one complete FAU rtxpro6k node and sufficient persistent storage before model load.
+    definition_of_done: Eight RTX PRO 6000 GPUs, CUDA compatibility, VRAM, and disk gates pass.
+    command: [timeout, --kill-after=60, "900", python, scripts/gpu_preflight.py, --profile, alex-8x-pro6000, --output, "runs/qwen38/bridge-capture/${RUN_ID}/gpu-preflight.json"]
+    validation_command: [python, -c, "import json,sys; assert json.load(open(sys.argv[1]))['passed']", "runs/qwen38/bridge-capture/${RUN_ID}/gpu-preflight.json"]
+    inputs: [__EXPERIMENT_CONFIG__]
+    outputs: ["runs/qwen38/bridge-capture/${RUN_ID}/gpu-preflight.json"]
+    dependencies: [freeze-capture-manifest]
+    estimated_gpu_hours: 0.02
+    estimated_storage_gb: 0.01
+    failure_behavior: terminal
+
+  - task_id: batch-probe
+    objective: Qualify the configured B4 capture batch without changing logits before bulk Qwen3.8 target capture.
+    definition_of_done: No-hook and capture-hook B4 logits are identical and reserved VRAM stays under the declared ceiling.
+    command: [timeout, --kill-after=60, "3600", python, scripts/probe_bridge_batches.py, __EXPERIMENT_CONFIG__, __MODEL_DIR__, "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/qwen38/bridge-capture/${RUN_ID}/batch-probe.json", --batches, "4"]
+    validation_command: [python, -c, "import json,sys; x=json.load(open(sys.argv[1])); assert x['passed'] and x['selected_batch_size'] == 4", "runs/qwen38/bridge-capture/${RUN_ID}/batch-probe.json"]
+    inputs: [__EXPERIMENT_CONFIG__, "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json"]
+    outputs: ["runs/qwen38/bridge-capture/${RUN_ID}/batch-probe.json"]
+    dependencies: [gpu-preflight]
+    estimated_gpu_hours: 0.5
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal
+
+  - task_id: capture-targets
+    objective: Record selected-route Qwen3.8 expert inputs and replayed outputs for later bridge supervision.
+    definition_of_done: Atomic BF16 shards and resumable state pass donor-sized shape, provenance, checksum, and coverage validation.
+    command: [timeout, --kill-after=60, "43200", reverse-reap, capture-targets, __EXPERIMENT_CONFIG__, __MODEL_DIR__, "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/qwen38/bridge-capture/${RUN_ID}/targets", --batch-size, "4", --shard-max-records, "4096", --run-id, "${RUN_ID}", --report, "runs/qwen38/bridge-capture/${RUN_ID}/capture-report.json"]
+    validation_command: [python, scripts/validate_bridge_capture.py, "runs/qwen38/bridge-capture/${RUN_ID}/targets", "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/qwen38/bridge-capture/${RUN_ID}/capture-validation.json"]
+    inputs: [__EXPERIMENT_CONFIG__, "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/qwen38/bridge-capture/${RUN_ID}/batch-probe.json"]
+    outputs: ["runs/qwen38/bridge-capture/${RUN_ID}/targets", "runs/qwen38/bridge-capture/${RUN_ID}/capture-report.json", "runs/qwen38/bridge-capture/${RUN_ID}/capture-validation.json"]
+    dependencies: [batch-probe]
+    estimated_gpu_hours: 8
+    estimated_storage_gb: 100
+    failure_behavior: retry
+
+  - task_id: build-handoff
+    objective: Freeze a portable hash inventory for the Qwen3.8 bridge-supervision capture.
+    definition_of_done: The handoff validates every listed file, size, hash, candidate identity, and capture outcome.
+    command: [timeout, --kill-after=60, "1800", reverse-reap, build-target-handoff, "runs/qwen38/bridge-capture/${RUN_ID}/targets", "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json", "runs/qwen38/bridge-capture/${RUN_ID}/handoff-manifest.json"]
+    validation_command: [reverse-reap, validate-target-handoff, "runs/qwen38/bridge-capture/${RUN_ID}/handoff-manifest.json"]
+    inputs: ["runs/qwen38/bridge-capture/${RUN_ID}/targets", "runs/qwen38/bridge-capture/${RUN_ID}/capture-manifest.json"]
+    outputs: ["runs/qwen38/bridge-capture/${RUN_ID}/handoff-manifest.json"]
+    dependencies: [capture-targets]
+    estimated_gpu_hours: 0
+    estimated_storage_gb: 0.1
+    failure_behavior: terminal

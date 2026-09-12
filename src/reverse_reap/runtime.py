@@ -292,6 +292,8 @@ def capture_targeted_manifest(
     the identity once and all records share it.
     """
     manifest = load_bridge_manifest(capture_manifest_path)
+    if config.model.id != manifest.model_id:
+        raise RuntimeCompatibilityError("capture manifest and config donor model IDs differ")
     if config.model.revision != manifest.model_revision:
         raise RuntimeCompatibilityError("capture manifest and config donor revisions differ")
     if config.runtime.enable_thinking or manifest.enable_thinking:

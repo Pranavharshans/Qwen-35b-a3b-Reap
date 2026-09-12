@@ -11,14 +11,25 @@ import yaml
 from reverse_reap.controller import ExecutionPlan
 
 
-def materialize(source: Path, destination: Path, *, config: Path, model_dir: Path) -> None:
+def materialize(
+    source: Path,
+    destination: Path,
+    *,
+    config: Path,
+    model_dir: Path,
+    thinking_config: Path | None = None,
+) -> None:
     payload = yaml.safe_load(source.read_text(encoding="utf-8"))
 
     def replace(value: object) -> object:
         if isinstance(value, str):
-            if value == "/models/qwen":
+            if value in {"/models/qwen", "__MODEL_DIR__"}:
                 return str(model_dir)
-            if value.endswith("configs/pinned-3090-bf16.yaml"):
+            if value.endswith("configs/pinned-thinking-3090-bf16.yaml"):
+                if thinking_config is None:
+                    raise ValueError("source plan requires --thinking-config")
+                return str(thinking_config)
+            if value == "__EXPERIMENT_CONFIG__" or value.endswith("configs/pinned-3090-bf16.yaml"):
                 return str(config)
             return (
                 value.replace("four-RTX-3090", "eight-RTX-PRO-6000")
@@ -48,8 +59,15 @@ def main() -> None:
     parser.add_argument("destination", type=Path)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-dir", type=Path, required=True)
+    parser.add_argument("--thinking-config", type=Path)
     args = parser.parse_args()
-    materialize(args.source, args.destination, config=args.config, model_dir=args.model_dir)
+    materialize(
+        args.source,
+        args.destination,
+        config=args.config,
+        model_dir=args.model_dir,
+        thinking_config=args.thinking_config,
+    )
 
 
 if __name__ == "__main__":
