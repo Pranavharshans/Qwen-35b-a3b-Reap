@@ -26,6 +26,12 @@ from pydantic import Field, field_validator, model_validator
 
 from reverse_reap.config import StrictModel
 from reverse_reap.datasets import NormalizedSample, canonical_json, load_manifest, sha256
+from reverse_reap.donors import (
+    QWEN35_MODEL_ID,
+    QWEN38_FP8_MODEL_ID,
+    QWEN38_MODEL_ID,
+    donor_contract,
+)
 
 
 class BridgeCaptureError(ValueError):
@@ -55,7 +61,7 @@ class BridgeCaptureManifest(StrictModel):
     kind: Literal["bridge-target-capture"]
     run_id: str = Field(min_length=1)
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    model_id: Literal["Qwen/Qwen3.5-35B-A3B"]
+    model_id: Literal[QWEN35_MODEL_ID, QWEN38_MODEL_ID, QWEN38_FP8_MODEL_ID]
     model_revision: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     tokenizer_fingerprint: str = Field(min_length=1)
     config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -411,7 +417,7 @@ def freeze_bridge_manifest(
     tokenizer: Any,
     destination: Path,
     *,
-    model_id: str = "Qwen/Qwen3.5-35B-A3B",
+    model_id: str = QWEN35_MODEL_ID,
     model_revision: str,
     tokenizer_fingerprint_value: str,
     config_sha256: str,
@@ -442,6 +448,19 @@ def freeze_bridge_manifest(
     if not re.fullmatch(r"[0-9a-f]{64}", config_sha256):
         raise BridgeCaptureError("config_sha256 must be a 64-character hex digest")
     candidate_hash, selected_experts = _candidate_manifest_metadata(candidate_manifest)
+    try:
+        contract = donor_contract(model_id)
+    except ValueError as error:
+        raise BridgeCaptureError(str(error)) from error
+    invalid_experts = [
+        (layer, expert)
+        for layer, expert in selected_experts
+        if not (0 <= layer < contract.num_hidden_layers and 0 <= expert < contract.num_experts)
+    ]
+    if invalid_experts:
+        raise BridgeCaptureError(
+            f"candidate manifest contains experts outside {model_id}: {invalid_experts}"
+        )
     source_bytes = full_manifest.read_bytes()
     source_hash = hashlib.sha256(source_bytes).hexdigest()
     samples = load_manifest(full_manifest)

@@ -82,6 +82,14 @@ def validate_donor_contract(model: Any, architecture: Qwen35Architecture) -> dic
         candidates = [
             item for item in DONOR_CONTRACTS.values() if item.root_model_type == root_type
         ]
+        if len(candidates) > 1:
+            quantization = getattr(model_config, "quantization_config", None)
+            is_fp8 = isinstance(quantization, dict) and quantization.get("quant_method") == "fp8"
+            candidates = [
+                item
+                for item in candidates
+                if (item.source_precision == "fp8") == is_fp8
+            ]
         if len(candidates) != 1:
             raise RuntimeCompatibilityError(
                 f"unsupported donor model/type: {configured_id!r}/{root_type!r}"
@@ -292,6 +300,8 @@ def capture_targeted_manifest(
     the identity once and all records share it.
     """
     manifest = load_bridge_manifest(capture_manifest_path)
+    if config.model.id != manifest.model_id:
+        raise RuntimeCompatibilityError("capture manifest and config donor model IDs differ")
     if config.model.revision != manifest.model_revision:
         raise RuntimeCompatibilityError("capture manifest and config donor revisions differ")
     if config.runtime.enable_thinking or manifest.enable_thinking:

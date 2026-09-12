@@ -11,19 +11,44 @@ import yaml
 from reverse_reap.controller import ExecutionPlan
 
 
-def materialize(source: Path, destination: Path, *, config: Path, model_dir: Path) -> None:
+def materialize(
+    source: Path,
+    destination: Path,
+    *,
+    config: Path,
+    model_dir: Path,
+    thinking_config: Path | None = None,
+    through_task: str | None = None,
+) -> None:
     payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    configured_model_id = "Qwen/Qwen3.8-Flash-Next"
+    configured_revision = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
+    if config.is_file():
+        config_payload = yaml.safe_load(config.read_text(encoding="utf-8"))
+        configured_model_id = str(config_payload["model"]["id"])
+        configured_revision = str(config_payload["model"]["revision"])
+    if through_task is not None:
+        task_ids = [task["task_id"] for task in payload["tasks"]]
+        if through_task not in task_ids:
+            raise ValueError(f"--through-task is not in source plan: {through_task}")
+        payload["tasks"] = payload["tasks"][: task_ids.index(through_task) + 1]
 
     def replace(value: object) -> object:
         if isinstance(value, str):
-            if value == "/models/qwen":
+            if value in {"/models/qwen", "__MODEL_DIR__"}:
                 return str(model_dir)
-            if value.endswith("configs/pinned-3090-bf16.yaml"):
+            if value.endswith("configs/pinned-thinking-3090-bf16.yaml"):
+                if thinking_config is None:
+                    raise ValueError("source plan requires --thinking-config")
+                return str(thinking_config)
+            if value == "__EXPERIMENT_CONFIG__" or value.endswith("configs/pinned-3090-bf16.yaml"):
                 return str(config)
             return (
                 value.replace("four-RTX-3090", "eight-RTX-PRO-6000")
                 .replace("top-8", "top-10")
                 .replace("all 40 layers", "all 48 layers")
+                .replace("Qwen/Qwen3.8-Flash-Next", configured_model_id)
+                .replace("de4b8e4d43b917e7706784d8bb445c9af86a3540", configured_revision)
             )
         if isinstance(value, list):
             return [replace(item) for item in value]
@@ -48,8 +73,17 @@ def main() -> None:
     parser.add_argument("destination", type=Path)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-dir", type=Path, required=True)
+    parser.add_argument("--thinking-config", type=Path)
+    parser.add_argument("--through-task")
     args = parser.parse_args()
-    materialize(args.source, args.destination, config=args.config, model_dir=args.model_dir)
+    materialize(
+        args.source,
+        args.destination,
+        config=args.config,
+        model_dir=args.model_dir,
+        thinking_config=args.thinking_config,
+        through_task=args.through_task,
+    )
 
 
 if __name__ == "__main__":

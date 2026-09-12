@@ -413,13 +413,17 @@ def main() -> int:
         tokenizer = AutoTokenizer.from_pretrained(
             str(args.tokenizer_path), local_files_only=True, trust_remote_code=False
         )
+        config = load_config(args.config)
+        if config.model.revision != args.model_revision:
+            raise SystemExit("--model-revision differs from the selected config")
         output = freeze_bridge_manifest(
             args.full_manifest,
             tokenizer,
             args.destination,
+            model_id=config.model.id,
             model_revision=args.model_revision,
             tokenizer_fingerprint_value=tokenizer_fingerprint(args.tokenizer_path),
-            config_sha256=load_config(args.config).fingerprint(),
+            config_sha256=config.fingerprint(),
             candidate_manifest=args.candidate_manifest,
             run_id=args.run_id,
             target_tokens=args.target_tokens,

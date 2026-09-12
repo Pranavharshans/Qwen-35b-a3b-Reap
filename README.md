@@ -59,6 +59,28 @@ The pinned config makes `preflight-model` refuse revision drift rather than sile
 it. Support is currently hardware-free and metadata/index validated; an exact-checkpoint Gate
 A probe is still required before calibration or an expert claim.
 
+### Official Qwen3.8 FP8 checkpoint
+
+`Qwen/Qwen3.8-Flash-Next-FP8` is a separate donor at immutable revision
+`236dfdf285828023ca3bcd3f37366c58a3469b13`. It uses dynamic activations and 128x128
+blockwise FP8 weights. Its per-expert gate/up/down weights and all three inverse-scale tensors
+are validated and extracted byte-for-byte; they are never cast, fused, or treated as BF16
+source tensors.
+
+Metadata-first preflight remains hardware-free and does not download the 131 weight shards:
+
+```bash
+uv run reverse-reap preflight-model \
+  configs/qwen38-flash-next-fp8.template.yaml \
+  configs/smoke-qwen38-flash-next-fp8.yaml \
+  /cluster/metadata/qwen38-fp8 runs/qwen38-fp8/model-preflight.json
+```
+
+Use `configs/qwen38-flash-next-fp8-full.yaml` for direct FAU execution,
+`configs/qwen38-flash-next-fp8-full-thinking.yaml` for the separate thinking condition, and
+`configs/qwen38-flash-next-fp8-bridge-capture.yaml` for pass-2 target capture. FP8 requires
+its own telemetry, candidates, causal validation, and replication; BF16 results do not transfer.
+
 ## FAU Alex Slurm execution
 
 The FAU path uses the same single-writer `run-all` controller and source plan as the regular
@@ -82,6 +104,43 @@ scripts/fau/submit_reverse_reap.sh --submit \
 The first command is a dry run. The second calls `sbatch` and must run on an FAU login node.
 No job is submitted by setup or tests. The job materializes a run-specific plan with absolute
 cluster paths and the eight-GPU FAU preflight; it never mutates the source plan.
+
+### Qwen3.8 two-pass FAU workflow
+
+Scoring may remain on a separate VM. FAU produces immutable generation/capture artifacts and
+hash-bound handoffs; it does not execute generated code in this workflow.
+
+After reviewing the dataset catalog, dry-run the first pass through frozen expert-candidate
+analysis. The cutoff prevents FAU from entering the downstream scoring/causal tasks:
+
+```bash
+scripts/fau/submit_reverse_reap.sh \
+  --through-task candidate-analysis \
+  configs/qwen38-flash-next-bf16-full.yaml configs/execution-plan-v0.yaml \
+  /absolute/cluster/path/Qwen3.8-Flash-Next runs/qwen38/pass1-state
+```
+
+Add `--submit` to that command only after reviewing the rendered command and run budget. When
+pass 1 has produced a passed, frozen Qwen3.8 Gate C artifact, transfer generation artifacts
+to the scoring VM as needed and copy the candidate artifact without modification to
+`runs/qwen38/inputs/candidate-manifest.json`. Then dry-run the second, independently identified
+teacher-forced capture pass:
+
+```bash
+scripts/fau/submit_reverse_reap.sh \
+  configs/qwen38-flash-next-bf16-bridge-capture.yaml \
+  configs/execution-plan-qwen38-bridge-capture.yaml \
+  /absolute/cluster/path/Qwen3.8-Flash-Next runs/qwen38/pass2-state
+```
+
+Again, add `--submit` only for the authorized launch. Pass 2 records selected-expert input,
+replayed output, weighted output, router identity/weight, token identity, and full provenance
+in resumable BF16 shards. It ends with a hash-verified handoff manifest. It does not score,
+train a bridge, publish weights, or reuse the pass-1 run ID.
+
+The checked-in Qwen3.8 full configurations use allocation-accounting placeholder rates and a
+future deadline. Review and pin the actual allocation budget, storage ceiling, deadline, and
+dataset hash before any real job; changing any of them creates a new run ID.
 
 ## CPU analysis engines
 

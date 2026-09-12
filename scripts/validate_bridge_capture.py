@@ -14,6 +14,7 @@ from reverse_reap.bridge_capture import (
     load_target_capture_state,
     validate_target_shard,
 )
+from reverse_reap.donors import donor_contract
 
 
 def main() -> int:
@@ -21,10 +22,11 @@ def main() -> int:
     parser.add_argument("capture_root", type=Path)
     parser.add_argument("capture_manifest", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--hidden-size", type=int, default=2048)
+    parser.add_argument("--hidden-size", type=int)
     args = parser.parse_args()
     try:
         manifest = load_bridge_manifest(args.capture_manifest)
+        hidden_size = args.hidden_size or donor_contract(manifest.model_id).hidden_size
         state_path = args.capture_root / "capture-state.json"
         if not state_path.is_file():
             raise BridgeCaptureError("capture-state.json is missing")
@@ -43,7 +45,7 @@ def main() -> int:
         if {path.name for path in shard_paths} != set(state.completed_shards):
             raise BridgeCaptureError("state and shard directory sets differ")
         reports = [
-            validate_target_shard(path, hidden_size=args.hidden_size) for path in shard_paths
+            validate_target_shard(path, hidden_size=hidden_size) for path in shard_paths
         ]
         target_experts = sorted((item.layer, item.expert) for item in manifest.experts)
         for path in shard_paths:

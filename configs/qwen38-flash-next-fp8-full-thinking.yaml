@@ -1,0 +1,30 @@
+schema_version: 1
+run_id: null
+model:
+  id: Qwen/Qwen3.8-Flash-Next-FP8
+  revision: 236dfdf285828023ca3bcd3f37366c58a3469b13
+  source_precision: fp8
+  execution_precision: bf16
+  text_only: true
+runtime:
+  seed: 20260903
+  deterministic: true
+  batch_size: 1
+  max_input_tokens: 1024
+  max_new_tokens: 4096
+  enable_thinking: true
+  use_cache: false
+  speculative_decoding: false
+budget:
+  max_gpu_hours: 168
+  max_cost_usd: 1
+  provider_rate_usd_per_hour: 0.001
+  storage_limit_gb: 350
+  deadline_utc: 2027-01-01T00:00:00Z
+datasets:
+  manifest: datasets/manifests/full.jsonl
+  split: full
+intervention:
+  mode: none
+  manifest: null
+  renormalize_router_weights: false

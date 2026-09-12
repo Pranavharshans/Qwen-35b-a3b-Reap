@@ -19,11 +19,24 @@ class StrictModel(BaseModel):
 
 
 class ModelConfig(StrictModel):
-    id: Literal["Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.8-Flash-Next"]
+    id: Literal[
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.8-Flash-Next",
+        "Qwen/Qwen3.8-Flash-Next-FP8",
+    ]
     revision: str = Field(min_length=40, max_length=64, pattern=r"^[0-9a-f]+$")
-    source_precision: Literal["bf16"] = "bf16"
+    source_precision: Literal["bf16", "fp8"] = "bf16"
     execution_precision: Literal["bf16", "fp16"]
     text_only: Literal[True] = True
+
+    @model_validator(mode="after")
+    def precision_matches_donor(self) -> ModelConfig:
+        expected = donor_contract(self.id).source_precision
+        if self.source_precision != expected:
+            raise ValueError(
+                f"{self.id} requires source_precision={expected}, got {self.source_precision}"
+            )
+        return self
 
 
 class RuntimeConfig(StrictModel):

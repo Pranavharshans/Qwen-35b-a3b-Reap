@@ -11,7 +11,7 @@ from pathlib import Path
 from reverse_reap.bridge_capture import load_bridge_manifest
 from reverse_reap.config import load_config
 from reverse_reap.instrumentation import instrument_qwen35_targeted
-from reverse_reap.qwen35 import inspect_qwen35_moe
+from reverse_reap.qwen35 import inspect_qwen_moe
 from reverse_reap.runtime import _render_ids, load_donor, pad_token_batch
 
 
@@ -59,7 +59,7 @@ def main() -> int:
         if config.run_id is not None and config.run_id != manifest.run_id:
             raise ValueError("config and capture manifest run IDs differ")
         model, tokenizer = load_donor(args.model_path, config)
-        architecture = inspect_qwen35_moe(model)
+        architecture = inspect_qwen_moe(model)
         targets = frozenset((item.layer, item.expert) for item in manifest.experts)
         rendered = [
             _render_ids(tokenizer, item.sample, manifest.enable_thinking)[1][0]

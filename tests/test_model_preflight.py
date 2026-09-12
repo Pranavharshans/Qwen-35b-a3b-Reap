@@ -4,11 +4,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from reverse_reap.donors import QWEN38_MODEL_ID, donor_contract
+from reverse_reap.donors import QWEN38_FP8_MODEL_ID, QWEN38_MODEL_ID, donor_contract
 from reverse_reap.model_preflight import (
     EXPECTED_TEXT_CONFIG,
     ModelPreflightError,
     validate_model_config,
+    validate_weight_index_layout,
     write_pinned_config,
 )
 
@@ -47,6 +48,28 @@ def test_validates_exact_qwen38_flash_next_metadata_contract():
 def test_qwen38_contract_rejects_qwen35_metadata():
     with pytest.raises(ModelPreflightError, match="approved contract"):
         validate_model_config(official_config(), QWEN38_MODEL_ID)
+
+
+def test_qwen38_fp8_contract_requires_exact_quantization_metadata():
+    contract = donor_contract(QWEN38_FP8_MODEL_ID)
+    payload = {
+        "model_type": contract.root_model_type,
+        "architectures": [contract.architecture],
+        "text_config": contract.expected_text_config(),
+        "quantization_config": dict(contract.quantization_config),
+    }
+    assert validate_model_config(payload, QWEN38_FP8_MODEL_ID)["compatible"]
+    payload["quantization_config"]["weight_block_size"] = [64, 64]
+    with pytest.raises(ModelPreflightError, match="weight_block_size"):
+        validate_model_config(payload, QWEN38_FP8_MODEL_ID)
+
+
+def test_qwen38_fp8_index_rejects_missing_expert_scales():
+    with pytest.raises(ModelPreflightError, match="index is incomplete"):
+        validate_weight_index_layout(
+            {"model.language_model.layers.0.mlp.experts.0.gate_proj.weight": "shard"},
+            QWEN38_FP8_MODEL_ID,
+        )
 
 
 def test_writes_revision_pinned_config_without_mutating_template(tmp_path):

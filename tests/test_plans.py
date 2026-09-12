@@ -43,6 +43,11 @@ BRIDGE_CAPTURE_PLAN = (
     / "configs"
     / "execution-plan-bridge-capture.yaml"
 )
+QWEN38_BRIDGE_CAPTURE_PLAN = (
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "execution-plan-qwen38-bridge-capture.yaml"
+)
 
 
 def test_checked_in_bridge_capture_plan_is_bounded_and_non_training():
@@ -53,6 +58,17 @@ def test_checked_in_bridge_capture_plan_is_bounded_and_non_training():
     assert "capture-targets" in commands
     assert " extract " in f" {commands} "
     assert all(term not in commands for term in ("train", "fine-tune", "merge-model"))
+    assert all("${RUN_ID}" in str(output) for task in plan.tasks for output in task.outputs)
+
+
+def test_qwen38_bridge_capture_plan_is_bounded_and_non_training():
+    plan = load_plan(QWEN38_BRIDGE_CAPTURE_PLAN)
+    assert len(plan.tasks) == 6
+    assert sum(task.estimated_gpu_hours for task in plan.tasks) <= 9
+    commands = " ".join(" ".join(task.command) for task in plan.tasks)
+    assert "capture-targets" in commands
+    assert "de4b8e4d43b917e7706784d8bb445c9af86a3540" in commands
+    assert all(term not in commands for term in ("train-bridge", "fine-tune", "merge-model"))
     assert all("${RUN_ID}" in str(output) for task in plan.tasks for output in task.outputs)
 
 

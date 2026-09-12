@@ -86,6 +86,52 @@ def test_bridge_manifest_freeze_is_deterministic_and_hash_checked(tmp_path):
         load_bridge_manifest(destination)
 
 
+def test_bridge_manifest_accepts_qwen38_and_rejects_out_of_range_candidates(tmp_path):
+    source = tmp_path / "source.jsonl"
+    freeze_manifest([_sample("a", "coding"), _sample("b", "control")], source)
+    candidate = tmp_path / "candidate.json"
+    candidate.write_text(
+        json.dumps({"gate_passed": True, "experts": [{"layer": 47, "expert": 511}]})
+    )
+    destination = tmp_path / "bridge.json"
+    payload = freeze_bridge_manifest(
+        source,
+        _Tokenizer(),
+        destination,
+        model_id="Qwen/Qwen3.8-Flash-Next",
+        model_revision="d" * 40,
+        tokenizer_fingerprint_value="q38-tokenizer",
+        config_sha256="c" * 64,
+        candidate_manifest=candidate,
+        run_id="q38-run",
+        target_tokens=1,
+        hard_token_ceiling=20,
+        max_input_tokens=100,
+        allowed_splits=("calibration", "selection", "validation", "replication"),
+    )
+    assert payload["model_id"] == "Qwen/Qwen3.8-Flash-Next"
+
+    candidate.write_text(
+        json.dumps({"gate_passed": True, "experts": [{"layer": 48, "expert": 0}]})
+    )
+    with pytest.raises(BridgeCaptureError, match="outside Qwen/Qwen3.8-Flash-Next"):
+        freeze_bridge_manifest(
+            source,
+            _Tokenizer(),
+            tmp_path / "bad.json",
+            model_id="Qwen/Qwen3.8-Flash-Next",
+            model_revision="d" * 40,
+            tokenizer_fingerprint_value="q38-tokenizer",
+            config_sha256="c" * 64,
+            candidate_manifest=candidate,
+            run_id="q38-run-bad",
+            target_tokens=1,
+            hard_token_ceiling=20,
+            max_input_tokens=100,
+            allowed_splits=("calibration", "selection", "validation", "replication"),
+        )
+
+
 def test_coverage_stops_only_after_both_domain_minima_or_hard_ceiling():
     tracker = CoverageTracker(
         frozenset({(3, 26)}),
