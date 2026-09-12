@@ -292,6 +292,12 @@ reverse-reap run-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml
 reverse-reap validate-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml
 ```
 
+After a failed pilot safety gate, a separately authorized fresh full run uses
+`execution_mode: exploratory_full_only` with explicit `full_only_reason` and
+`historical_pilot` provenance. It generates all 378 tasks from task 1, imports
+zero pilot rows, and never evaluates the pilot gate; see
+[`docs/mbppplus-bridge-benchmark.md`](docs/mbppplus-bridge-benchmark.md).
+
 Generated code is untrusted, so official scoring remains on a Docker-capable
 scorer. Build the revision-labelled, digest-pinned image with
 `scripts/prepare_evalplus_docker.py`, transfer the small run directory, and run:
@@ -302,7 +308,48 @@ reverse-reap score-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml \
 ```
 
 The report keeps MBPP base tests, MBPP+ extended tests, and thinking modes
-separate. It is a capability comparison, not causal evidence.
+separate. The image embeds the official HumanEval+ v0.1.9 archive and its
+SHA-256 is verified both while preparing the image and before scoring. The
+scorer passes `HUMANEVAL_OVERRIDE_PATH` to the locked-down container because
+the pinned sanitizer loads HumanEval+ as well as MBPP+. It is a capability
+comparison, not causal evidence.
+
+## Four-expert bridge rescue experiments
+
+The five thinking-enabled rescue experiments are specified in
+[`docs/bridge-rescue-experiments.md`](docs/bridge-rescue-experiments.md). Their
+shared runtime policy supports fixed strength, delayed/ramped activation,
+thinking-phase shutdown, exact expert/layer allowlists, and a hash-bound learned
+linear gate without mutating the trained bridge checkpoint. Validate one
+experiment identity with:
+
+```bash
+reverse-reap validate-bridge-rescue-config /path/to/pinned-rescue-config.yaml
+```
+
+Experiment 5 can fit its controller-only checkpoint from a separately frozen
+JSONL training manifest containing `token_fraction`, `repetition_rate`,
+`gate_mean`, `residual_ratio`, and binary `bridge_helpful` fields:
+
+```bash
+reverse-reap fit-bridge-rescue-gate training.jsonl controller.json \
+  --manifest-sha256 <sha256> --max-generated-tokens 4096
+```
+
+These commands provide the policy/configuration and controller-training layer.
+GPU generation still requires a separately frozen, officially scoreable fresh
+dataset adapter and an exact-checkpoint preflight; neither command authorizes a
+paid run.
+
+The first 12-task, thinking-enabled strength screen is implemented separately
+as a post-hoc exploratory funnel:
+
+```bash
+reverse-reap freeze-bridge-strength-screen pinned-mbpp.yaml strength-screen-12.jsonl
+reverse-reap run-bridge-strength-screen pinned-strength-screen.yaml
+reverse-reap score-bridge-strength-screen pinned-strength-screen.yaml \
+  --evalplus-image 'localhost:5000/reverse-reap-evalplus@sha256:<digest>'
+```
 
 ## SWE-bench scoring boundary
 
