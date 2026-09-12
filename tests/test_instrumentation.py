@@ -33,6 +33,20 @@ class TinyExperts(torch.nn.Module):
         return result
 
 
+class TinyQuantizedExperts(TinyExperts):
+    """CPU fixture that models the FP8Experts dispatcher and scale contract."""
+
+    def __init__(self):
+        super().__init__()
+        self.gate_up_proj_scale_inv = torch.nn.Parameter(torch.ones(3, 1, 1))
+        self.down_proj_scale_inv = torch.nn.Parameter(torch.ones(3, 1, 1))
+        self.linear_calls = []
+
+    def linear(self, inputs, weight, weight_scale_inv, activation_scale=None):
+        self.linear_calls.append((weight_scale_inv, activation_scale))
+        return torch.nn.functional.linear(inputs, weight) * weight_scale_inv.flatten()[0]
+
+
 def architecture(experts):
     layer = SimpleNamespace(mlp=SimpleNamespace(experts=experts))
     return Qwen35Architecture((layer,), 3, 2, 4, 2, "model.language_model.layers")
@@ -138,3 +152,30 @@ def test_targeted_observer_returns_only_selected_bf16_vectors_and_preserves_outp
         observed.weighted_replayed_expert_output,
         observed.replayed_expert_output * weights[[0, 1], 1, None],
     )
+
+
+@pytest.mark.parametrize("targeted", [False, True])
+def test_quantized_capture_replays_experts_through_native_linear_dispatch(targeted):
+    torch.manual_seed(41)
+    experts = TinyQuantizedExperts()
+    hidden = torch.randn(2, 4)
+    indices = torch.tensor([[0, 1], [2, 1]])
+    weights = torch.tensor([[0.7, 0.3], [0.4, 0.6]])
+    expected = experts(hidden, indices, weights)
+    experts.linear_calls.clear()
+
+    if targeted:
+        context = instrument_qwen35_targeted(
+            architecture(experts), frozenset({(0, 1)}), observer=lambda _: None
+        )
+        expected_calls = 2
+    else:
+        context = instrument_qwen35(architecture(experts))
+        expected_calls = 6
+
+    with torch.inference_mode(), context:
+        actual = experts(hidden, indices, weights)
+
+    assert torch.equal(actual, expected)
+    assert len(experts.linear_calls) == expected_calls
+    assert all(activation_scale is None for _, activation_scale in experts.linear_calls)

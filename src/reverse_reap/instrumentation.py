@@ -107,9 +107,23 @@ def instrument_qwen35_targeted(
                     if not route_tokens.numel():
                         continue
                     expert_input = hidden_states[route_tokens].detach()
-                    gate_up = F.linear(expert_input, this.gate_up_proj[expert])
-                    gate, up = gate_up.chunk(2, dim=-1)
-                    expert_output = F.linear(this.act_fn(gate) * up, this.down_proj[expert])
+                    gate_up = _expert_linear(
+                        this,
+                        expert_input,
+                        this.gate_up_proj[expert],
+                        expert,
+                        "gate_up_proj",
+                        F,
+                    )
+                    activated = _apply_expert_gate(this, gate_up, F)
+                    expert_output = _expert_linear(
+                        this,
+                        activated,
+                        this.down_proj[expert],
+                        expert,
+                        "down_proj",
+                        F,
+                    )
                     weights = top_k_weights[route_tokens, route_ranks].detach()
                     observer(
                         TargetedRouteObservation(
@@ -147,6 +161,44 @@ def _selected_output_norms(
         route_outputs.float(), dim=-1
     ).double()
     return result
+
+
+def _apply_expert_gate(experts: Any, gate_up: Any, functional: Any) -> Any:
+    if hasattr(experts, "_apply_gate"):
+        return experts._apply_gate(gate_up)
+    gate, up = gate_up.chunk(2, dim=-1)
+    return experts.act_fn(gate) * up
+
+
+def _expert_linear(
+    experts: Any,
+    inputs: Any,
+    weight: Any,
+    expert: int,
+    projection: str,
+    functional: Any,
+) -> Any:
+    """Replay one expert projection through its native precision path.
+
+    Transformers replaces pre-quantized MoE modules with ``FP8Experts``. Its
+    weights cannot be passed to ``F.linear`` with BF16 activations; the module's
+    ``linear`` dispatcher must receive the matching inverse scale (and optional
+    static activation scale). Unquantized expert modules do not expose that
+    dispatcher and retain the ordinary ``F.linear`` path.
+    """
+    scale_name = f"{projection}_scale_inv"
+    if hasattr(experts, "linear") and hasattr(experts, scale_name):
+        activation_scale = None
+        activation_scale_name = f"{projection}_activation_scale"
+        if hasattr(experts, activation_scale_name):
+            activation_scale = getattr(experts, activation_scale_name)[expert]
+        return experts.linear(
+            inputs,
+            weight,
+            getattr(experts, scale_name)[expert],
+            activation_scale=activation_scale,
+        )
+    return functional.linear(inputs, weight)
 
 
 @contextmanager
@@ -201,10 +253,23 @@ def instrument_qwen35(
                         expert_mask[expert_tensor]
                     )
                     current = hidden_states[token_indices]
-                    gate_up = F.linear(current, this.gate_up_proj[expert])
-                    gate, up = gate_up.chunk(2, dim=-1)
-                    current = this.act_fn(gate) * up
-                    current = F.linear(current, this.down_proj[expert])
+                    gate_up = _expert_linear(
+                        this,
+                        current,
+                        this.gate_up_proj[expert],
+                        expert,
+                        "gate_up_proj",
+                        F,
+                    )
+                    current = _apply_expert_gate(this, gate_up, F)
+                    current = _expert_linear(
+                        this,
+                        current,
+                        this.down_proj[expert],
+                        expert,
+                        "down_proj",
+                        F,
+                    )
                     norms[token_indices, rank_indices] = torch.linalg.vector_norm(
                         current.float(), dim=-1
                     ).double()
