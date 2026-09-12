@@ -10,12 +10,12 @@ class Tensor:
         self.shape = shape
 
 
-def model_with_shapes(gate=(256, 1024, 2048), down=(256, 2048, 512), layers=3):
+def model_with_shapes(gate=(256, 1024, 2048), down=(256, 2048, 512), layers=3, top_k=8):
     blocks = []
     for _ in range(layers):
         experts = SimpleNamespace(gate_up_proj=Tensor(gate), down_proj=Tensor(down))
         mlp = SimpleNamespace(
-            gate=SimpleNamespace(top_k=8),
+            gate=SimpleNamespace(top_k=top_k),
             experts=experts,
             shared_expert=object(),
             shared_expert_gate=object(),
@@ -46,3 +46,14 @@ def test_rejects_missing_sparse_moe_parts():
     del model.model.language_model.layers[0].mlp.shared_expert
     with pytest.raises(ArchitectureError, match="shared_expert"):
         inspect_qwen35_moe(model)
+
+
+def test_inspects_qwen38_shared_fused_layout():
+    architecture = inspect_qwen35_moe(
+        model_with_shapes(gate=(512, 1280, 2560), down=(512, 2560, 640), layers=48, top_k=10)
+    )
+    assert architecture.num_layers == 48
+    assert architecture.num_experts == 512
+    assert architecture.experts_per_token == 10
+    assert architecture.hidden_size == 2560
+    assert architecture.expert_intermediate_size == 640

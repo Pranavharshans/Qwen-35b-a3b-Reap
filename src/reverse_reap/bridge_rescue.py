@@ -5,6 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import subprocess
+import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,9 +68,11 @@ class RescueExperimentConfig(StrictModel):
     schema_version: Literal[1] = 1
     run_id: str = Field(min_length=1)
     experiment: Literal["strength", "late", "expert-ablation", "layer-timing", "learned"]
+    benchmark_config: Path
+    benchmark_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     dataset_manifest: Path
     dataset_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    split: Literal["development", "confirmation"]
+    split: Literal["screening", "selection", "confirmation"]
     expected_tasks: int
     thinking_enabled: Literal[True] = True
     policies: tuple[BridgeRuntimePolicy, ...]
@@ -74,7 +80,7 @@ class RescueExperimentConfig(StrictModel):
 
     @model_validator(mode="after")
     def governed_size(self) -> RescueExperimentConfig:
-        expected = 64 if self.split == "development" else 100
+        expected = {"screening": 12, "selection": 24, "confirmation": 100}[self.split]
         if self.expected_tasks != expected:
             raise ValueError(f"{self.split} split requires exactly {expected} tasks")
         names = [policy.name for policy in self.policies]
@@ -257,8 +263,10 @@ class BridgePolicyController:
 class GenerationPolicyTracker:
     """Transformers-compatible logits processor that advances one sample's policy state."""
 
-    def __init__(self, tokenizer: Any, state: BridgePolicyState, *, prompt_tokens: int) -> None:
-        if prompt_tokens < 1:
+    def __init__(
+        self, tokenizer: Any, state: BridgePolicyState, *, prompt_tokens: int | None = None
+    ) -> None:
+        if prompt_tokens is not None and prompt_tokens < 1:
             raise BridgeRescueError("prompt_tokens must be positive")
         self.tokenizer = tokenizer
         self.state = state
@@ -267,6 +275,8 @@ class GenerationPolicyTracker:
     def __call__(self, input_ids: Any, scores: Any) -> Any:
         if getattr(input_ids, "ndim", None) != 2 or input_ids.shape[0] != 1:
             raise BridgeRescueError("policy tracker requires deterministic batch size one")
+        if self.prompt_tokens is None:
+            self.prompt_tokens = int(input_ids.shape[1])
         generated = input_ids[0, self.prompt_tokens :].detach().cpu().tolist()
         text = self.tokenizer.decode(generated, skip_special_tokens=False)
         tail = generated[-64:]
@@ -329,3 +339,305 @@ def fit_linear_gate_manifest(
         "checkpoint": str(destination),
         "checkpoint_sha256": checkpoint_sha256,
     }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_jsonl_atomic(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(json.dumps(dict(row), sort_keys=True) + "\n" for row in rows)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def freeze_mbpp_strength_screen(benchmark_config: Path, destination: Path) -> Mapping[str, Any]:
+    """Freeze the first 12 hash-ordered MBPP+ tasks for post-hoc screening only."""
+    from reverse_reap.mbpp_bridge_benchmark import (
+        freeze_mbpp_tasks,
+        load_mbpp_bridge_config,
+    )
+
+    benchmark = load_mbpp_bridge_config(benchmark_config, allow_expired=True)
+    tasks, freeze = freeze_mbpp_tasks(benchmark)
+    selected = tasks[:12]
+    _write_jsonl_atomic(destination, selected)
+    return {
+        "status": "PASS",
+        "classification": "post-hoc-exploratory-screen-not-confirmation",
+        "tasks": len(selected),
+        "task_ids": [row["task_id"] for row in selected],
+        "manifest": str(destination),
+        "manifest_sha256": _sha256_file(destination),
+        "source_order_sha256": freeze["ordered_tasks_sha256"],
+    }
+
+
+def run_strength_screen(config_path: Path) -> Mapping[str, Any]:
+    """Run Experiment 1: base plus five thinking-enabled fixed bridge strengths."""
+    from reverse_reap.bridge_benchmark import (
+        BridgeGenerationTelemetry,
+        _load_bridge,
+        _load_host,
+        _seed_runtime,
+        _verify_host_files,
+    )
+    from reverse_reap.bridge_training import install_bridge_sidecars
+    from reverse_reap.mbpp_bridge_benchmark import (
+        _check_budget,
+        _generate_one,
+        _require_deterministic_cuda,
+        load_mbpp_bridge_config,
+    )
+
+    config = load_rescue_experiment_config(config_path)
+    if config.experiment != "strength" or config.split != "screening":
+        raise BridgeRescueError("strength screen requires experiment=strength and split=screening")
+    expected = {
+        "base": 0.0,
+        "current": 1.0,
+        "strength-0.025": 0.1,
+        "strength-0.05": 0.2,
+        "strength-0.10": 0.4,
+        "strength-0.15": 0.6,
+    }
+    expected_names = tuple(expected)
+    if tuple(policy.name for policy in config.policies) != expected_names:
+        raise BridgeRescueError(f"strength policies differ from frozen order: {expected_names}")
+    if any(
+        policy.mode != "fixed"
+        or policy.residual_multiplier != expected[policy.name]
+        or not policy.thinking_only
+        or policy.active_experts
+        or policy.active_host_layers
+        for policy in config.policies
+    ):
+        raise BridgeRescueError("strength screen policy definitions differ from frozen design")
+    if _sha256_file(config.benchmark_config) != config.benchmark_config_sha256:
+        raise BridgeRescueError("benchmark config hash mismatch")
+    if _sha256_file(config.dataset_manifest) != config.dataset_manifest_sha256:
+        raise BridgeRescueError("screening manifest hash mismatch")
+    tasks = [
+        json.loads(line)
+        for line in config.dataset_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if len(tasks) != 12 or len({row.get("task_id") for row in tasks}) != 12:
+        raise BridgeRescueError("screening manifest must contain 12 unique tasks")
+    benchmark = load_mbpp_bridge_config(config.benchmark_config)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    _seed_runtime(benchmark.runtime.seed)
+    _require_deterministic_cuda()
+    host_evidence = _verify_host_files(benchmark)
+    model, tokenizer = _load_host(benchmark)
+    bridge, mappings = _load_bridge(benchmark, next(model.parameters()).device)
+    results: dict[str, Any] = {}
+    for policy in config.policies:
+        _check_budget(benchmark, started)
+        condition = (
+            "base-thinking-on"
+            if policy.name == "base"
+            else f"bridge-{policy.name}-thinking-on"
+        )
+        destination = config.output_dir / "conditions" / f"{condition}.jsonl"
+        rows = []
+        if destination.is_file():
+            rows = [json.loads(line) for line in destination.read_text().splitlines() if line]
+            if [row.get("task_id") for row in rows] != [
+                row["task_id"] for row in tasks[: len(rows)]
+            ]:
+                raise BridgeRescueError(f"resume prefix differs for {condition}")
+        telemetry = BridgeGenerationTelemetry() if policy.name != "base" else None
+        for task in tasks[len(rows) :]:
+            _check_budget(benchmark, started)
+            state = BridgePolicyState()
+            controller = BridgePolicyController(policy, state)
+            tracker = GenerationPolicyTracker(tokenizer, state)
+            handles = (
+                install_bridge_sidecars(
+                    model,
+                    bridge,
+                    mappings,
+                    telemetry=telemetry,
+                    residual_policy=controller,
+                )
+                if policy.name != "base"
+                else []
+            )
+            try:
+                row = _generate_one(
+                    model,
+                    tokenizer,
+                    task,
+                    benchmark,
+                    condition=condition,
+                    logits_processor=tracker,
+                    run_id=config.run_id,
+                )
+            finally:
+                for handle in handles:
+                    handle.remove()
+            row["rescue_policy"] = policy.model_dump(mode="json")
+            row["rescue_policy_fingerprint"] = policy.fingerprint()
+            rows.append(row)
+            _write_jsonl_atomic(destination, rows)
+        results[condition] = {
+            "rows": len(rows),
+            "sha256": _sha256_file(destination),
+            "telemetry": telemetry.snapshot() if telemetry is not None else {},
+        }
+    if any(result["rows"] != 12 for result in results.values()):
+        raise BridgeRescueError("strength screen row reconciliation failed")
+    report = {
+        "status": "PASS",
+        "classification": "post-hoc-exploratory-screen-not-confirmation",
+        "run_id": config.run_id,
+        "experiment_fingerprint": config.fingerprint(),
+        "host": host_evidence,
+        "conditions": results,
+        "elapsed_seconds": time.monotonic() - started,
+        "next_permitted_action": "official scoring on a Docker-capable scorer",
+    }
+    report_path = config.output_dir / "generation-report.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
+
+
+def score_strength_screen(config_path: Path, *, evalplus_image: str) -> Mapping[str, Any]:
+    """Officially score every Experiment 1 condition on the same 12 task IDs."""
+    from reverse_reap.mbpp_bridge_benchmark import (
+        _docker_prefix,
+        _metric_pair,
+        _official_result_path,
+        _official_result_rows,
+        _verify_evalplus_image,
+        load_mbpp_bridge_config,
+    )
+
+    config = load_rescue_experiment_config(config_path)
+    benchmark = load_mbpp_bridge_config(config.benchmark_config, allow_expired=True)
+    _verify_evalplus_image(evalplus_image, benchmark.evalplus.revision)
+    tasks = [
+        json.loads(line)
+        for line in config.dataset_manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    task_ids = [row["task_id"] for row in tasks]
+    expected = set(task_ids)
+    scores_dir = config.output_dir / "official-evalplus"
+    scores_dir.mkdir(parents=True, exist_ok=True)
+    conditions = [
+        "base-thinking-on" if policy.name == "base" else f"bridge-{policy.name}-thinking-on"
+        for policy in config.policies
+    ]
+    scored: dict[str, dict[str, dict[str, bool]]] = {}
+    logs: dict[str, Any] = {}
+    for condition in conditions:
+        source = config.output_dir / "conditions" / f"{condition}.jsonl"
+        if not source.is_file():
+            raise BridgeRescueError(f"missing generated condition: {condition}")
+        rows = [json.loads(line) for line in source.read_text().splitlines() if line]
+        if [row.get("task_id") for row in rows] != task_ids:
+            raise BridgeRescueError(f"condition task universe differs: {condition}")
+        sanitized = scores_dir / f"{condition}-sanitized.jsonl"
+        if not sanitized.is_file():
+            prefix = _docker_prefix(benchmark, evalplus_image, work=config.output_dir.resolve())
+            relative = source.resolve().relative_to(config.output_dir.resolve())
+            command = prefix + [
+                "python",
+                "-m",
+                "evalplus.sanitize",
+                "--samples",
+                f"/work/{relative}",
+                "--mbpp_version",
+                benchmark.dataset.version,
+            ]
+            run = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=benchmark.evalplus.timeout_seconds_per_condition,
+            )
+            logs[f"{condition}-sanitize"] = {
+                "return_code": run.returncode,
+                "stdout": run.stdout[-4096:],
+                "stderr": run.stderr[-4096:],
+            }
+            produced = source.with_name(source.stem + "-sanitized.jsonl")
+            if run.returncode != 0 or not produced.is_file():
+                raise BridgeRescueError(f"official sanitizer failed: {condition}")
+            os.replace(produced, sanitized)
+        sanitized_rows = [
+            json.loads(line) for line in sanitized.read_text().splitlines() if line
+        ]
+        if [row.get("task_id") for row in sanitized_rows] != task_ids:
+            raise BridgeRescueError(f"sanitizer changed task universe: {condition}")
+        result_path = _official_result_path(sanitized)
+        if not result_path.is_file():
+            prefix = _docker_prefix(benchmark, evalplus_image, work=config.output_dir.resolve())
+            relative = sanitized.resolve().relative_to(config.output_dir.resolve())
+            command = prefix + [
+                "python",
+                "-m",
+                "evalplus.evaluate",
+                "--dataset",
+                "mbpp",
+                "--samples",
+                f"/work/{relative}",
+                "--parallel",
+                str(benchmark.evalplus.parallel_workers),
+                "--version",
+                benchmark.dataset.version,
+            ]
+            run = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=benchmark.evalplus.timeout_seconds_per_condition,
+            )
+            logs[f"{condition}-evaluate"] = {
+                "return_code": run.returncode,
+                "stdout": run.stdout[-4096:],
+                "stderr": run.stderr[-4096:],
+            }
+            if run.returncode != 0 or not result_path.is_file():
+                raise BridgeRescueError(f"official evaluation failed: {condition}")
+        scored[condition] = _official_result_rows(result_path, expected)
+    base = scored["base-thinking-on"]
+    comparisons = {
+        condition: {
+            metric: _metric_pair(base, values, task_ids, metric)
+            for metric in ("base", "plus")
+        }
+        for condition, values in scored.items()
+        if condition != "base-thinking-on"
+    }
+    report = {
+        "status": "PASS",
+        "classification": "post-hoc-exploratory-screen-not-confirmation",
+        "run_id": config.run_id,
+        "task_ids": task_ids,
+        "evalplus_image": evalplus_image,
+        "comparisons": comparisons,
+        "logs": logs,
+        "next_permitted_action": "human selection of at most two strengths",
+    }
+    destination = config.output_dir / "official-strength-screen-report.json"
+    destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    return report

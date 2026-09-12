@@ -11,22 +11,14 @@ from typing import Any
 import yaml
 
 from reverse_reap.config import ExperimentConfig
+from reverse_reap.donors import QWEN35_MODEL_ID, donor_contract
 
 
 class ModelPreflightError(RuntimeError):
     """Raised before weight download when the donor contract cannot be proven."""
 
 
-EXPECTED_TEXT_CONFIG = {
-    "model_type": "qwen3_5_moe_text",
-    "num_hidden_layers": 40,
-    "hidden_size": 2048,
-    "num_experts": 256,
-    "num_experts_per_tok": 8,
-    "moe_intermediate_size": 512,
-    "shared_expert_intermediate_size": 512,
-    "dtype": "bfloat16",
-}
+EXPECTED_TEXT_CONFIG = donor_contract(QWEN35_MODEL_ID).expected_text_config()
 
 
 def file_sha256(path: Path) -> str:
@@ -37,25 +29,31 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_model_config(payload: dict[str, Any]) -> dict[str, Any]:
+def validate_model_config(
+    payload: dict[str, Any], model_id: str = QWEN35_MODEL_ID
+) -> dict[str, Any]:
+    contract = donor_contract(model_id)
     mismatches = {}
-    if payload.get("model_type") != "qwen3_5_moe":
+    if payload.get("model_type") != contract.root_model_type:
         mismatches["model_type"] = {
-            "expected": "qwen3_5_moe",
+            "expected": contract.root_model_type,
             "actual": payload.get("model_type"),
         }
-    if payload.get("architectures") != ["Qwen3_5MoeForConditionalGeneration"]:
+    if payload.get("architectures") != [contract.architecture]:
         mismatches["architectures"] = {
-            "expected": ["Qwen3_5MoeForConditionalGeneration"],
+            "expected": [contract.architecture],
             "actual": payload.get("architectures"),
         }
     text = payload.get("text_config", {})
-    for key, expected in EXPECTED_TEXT_CONFIG.items():
+    expected_text = contract.expected_text_config()
+    for key, expected in expected_text.items():
         if text.get(key) != expected:
             mismatches[f"text_config.{key}"] = {"expected": expected, "actual": text.get(key)}
     if mismatches:
-        raise ModelPreflightError(f"official donor metadata violates the v0 contract: {mismatches}")
-    return {"compatible": True, "text_config": EXPECTED_TEXT_CONFIG}
+        raise ModelPreflightError(
+            f"official donor metadata violates the approved contract: {mismatches}"
+        )
+    return {"compatible": True, "model_id": model_id, "text_config": expected_text}
 
 
 def write_pinned_config(template: Path, destination: Path, revision: str) -> ExperimentConfig:
@@ -104,7 +102,7 @@ def preflight_model(
         )
         files[name] = {"bytes": downloaded.stat().st_size, "sha256": file_sha256(downloaded)}
     config_payload = json.loads((metadata_dir / "config.json").read_text(encoding="utf-8"))
-    architecture = validate_model_config(config_payload)
+    architecture = validate_model_config(config_payload, template.model.id)
     siblings = []
     total_weight_bytes = 0
     for sibling in info.siblings:
@@ -115,8 +113,20 @@ def preflight_model(
         siblings.append({"name": sibling.rfilename, "bytes": size, "sha256": sha})
         total_weight_bytes += size
     missing_hash = any(not item["sha256"] for item in siblings)
-    if len(siblings) != 14 or total_weight_bytes <= 0 or missing_hash:
-        raise ModelPreflightError("could not prove all 14 weight shard sizes and SHA-256 values")
+    index_payload = json.loads(
+        (metadata_dir / "model.safetensors.index.json").read_text(encoding="utf-8")
+    )
+    expected_shards = set(index_payload.get("weight_map", {}).values())
+    actual_shards = {item["name"] for item in siblings}
+    if (
+        not expected_shards
+        or actual_shards != expected_shards
+        or total_weight_bytes <= 0
+        or missing_hash
+    ):
+        raise ModelPreflightError(
+            "could not prove the complete indexed weight-shard set, sizes, and SHA-256 values"
+        )
     required_free_bytes = int(total_weight_bytes * 1.2)
     available_free_bytes = shutil.disk_usage(metadata_dir).free
     report = {

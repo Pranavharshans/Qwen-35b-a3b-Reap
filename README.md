@@ -1,9 +1,15 @@
-# Reverse-REAP for Qwen3.5-35B-A3B
+# Reverse-REAP for supported Qwen MoE donors
 
 This repository localizes, causally tests, and losslessly extracts coding-critical routed
 experts from the official `Qwen/Qwen3.5-35B-A3B` checkpoint. REAP and routing statistics
 produce candidates; only frozen ablations plus untouched replication can support the
 `coding-critical-v0` label.
+
+The original Qwen3.5 experiment and evidence remain immutable. A separately approved
+compatibility path supports the official BF16 `Qwen/Qwen3.8-Flash-Next` checkpoint at revision
+`de4b8e4d43b917e7706784d8bb445c9af86a3540`. Qwen3.5 candidates and conclusions do not transfer
+to Qwen3.8: it requires a new run ID, telemetry, candidates, controls, causal validation,
+replication, and extraction.
 
 The v0 scope ends at expert extraction. Extracted tensors are not a standalone model and
 cannot be inserted directly into a smaller host model without later representation-bridge
@@ -32,6 +38,50 @@ UV_CACHE_DIR=/tmp/reverse-reap-uv-cache uv run ruff check src tests scripts
 
 The Torch instrumentation module is skipped when the local environment has no Torch. A
 hardware-free pass therefore does not prove exact-checkpoint compatibility.
+
+## Qwen3.8-Flash-Next compatibility
+
+The Qwen3.8 path validates the official `qwen4_exp` text tower: 48 MoE layers, 512 routed
+experts per layer, top-10 routing, hidden size 2,560, routed/shared expert width 640, and the
+fused `gate_up_proj`/`down_proj` tensor layout. The metadata-first workflow remains the same:
+
+```bash
+uv run reverse-reap validate-config configs/smoke-qwen38-flash-next-bf16.yaml
+uv run reverse-reap preflight-model \
+  configs/qwen38-flash-next-bf16.template.yaml \
+  configs/smoke-qwen38-flash-next-bf16.yaml \
+  /path/to/qwen38-metadata runs/qwen38/model-preflight.json
+uv run reverse-reap download-weights \
+  runs/qwen38/model-preflight.json /path/to/Qwen3.8-Flash-Next
+```
+
+The pinned config makes `preflight-model` refuse revision drift rather than silently rewrite
+it. Support is currently hardware-free and metadata/index validated; an exact-checkpoint Gate
+A probe is still required before calibration or an expert claim.
+
+## FAU Alex Slurm execution
+
+The FAU path uses the same single-writer `run-all` controller and source plan as the regular
+path. It requests one complete `rtxpro6k` node (8 × RTX PRO 6000, 96 GiB each), loads CUDA
+12.8 and Python through environment modules, keeps caches on node-local `$TMPDIR`, and uses a
+clean exported environment. Prepare the environment and weights on Alex, then preview and
+submit:
+
+```bash
+UV_CACHE_DIR=/tmp/reverse-reap-uv-cache uv sync --frozen --extra gpu
+
+scripts/fau/submit_reverse_reap.sh \
+  configs/smoke-qwen38-flash-next-bf16.yaml configs/execution-plan-smoke.yaml \
+  /absolute/cluster/path/Qwen3.8-Flash-Next runs/qwen38/state
+
+scripts/fau/submit_reverse_reap.sh --submit \
+  configs/smoke-qwen38-flash-next-bf16.yaml configs/execution-plan-smoke.yaml \
+  /absolute/cluster/path/Qwen3.8-Flash-Next runs/qwen38/state
+```
+
+The first command is a dry run. The second calls `sbatch` and must run on an FAU login node.
+No job is submitted by setup or tests. The job materializes a run-specific plan with absolute
+cluster paths and the eight-GPU FAU preflight; it never mutates the source plan.
 
 ## CPU analysis engines
 
@@ -231,6 +281,16 @@ These commands provide the policy/configuration and controller-training layer.
 GPU generation still requires a separately frozen, officially scoreable fresh
 dataset adapter and an exact-checkpoint preflight; neither command authorizes a
 paid run.
+
+The first 12-task, thinking-enabled strength screen is implemented separately
+as a post-hoc exploratory funnel:
+
+```bash
+reverse-reap freeze-bridge-strength-screen pinned-mbpp.yaml strength-screen-12.jsonl
+reverse-reap run-bridge-strength-screen pinned-strength-screen.yaml
+reverse-reap score-bridge-strength-screen pinned-strength-screen.yaml \
+  --evalplus-image 'localhost:5000/reverse-reap-evalplus@sha256:<digest>'
+```
 
 ## SWE-bench scoring boundary
 

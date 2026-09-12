@@ -1,4 +1,4 @@
-"""Validated structural adapter for the Qwen3.5 A3B sparse-MoE text tower."""
+"""Validated structural adapter for supported fused Qwen sparse-MoE text towers."""
 
 from __future__ import annotations
 
@@ -58,7 +58,12 @@ def _resolve(root: Any, path: tuple[str, ...]) -> Any:
 
 
 def inspect_qwen35_moe(model: Any) -> Qwen35Architecture:
-    """Resolve and strictly validate the instrumentable sparse-MoE layer layout."""
+    """Resolve and strictly validate the shared fused Qwen sparse-MoE layout.
+
+    The historical name remains public for compatibility. Qwen3.5 and
+    Qwen3.8-Flash-Next expose the same routed-expert tensor/module interface;
+    the exact family dimensions are enforced separately by the donor contract.
+    """
     found: tuple[tuple[str, ...], Any] | None = None
     for path in _LAYER_PATHS:
         try:
@@ -69,7 +74,7 @@ def inspect_qwen35_moe(model: Any) -> Qwen35Architecture:
             found = (path, candidate)
             break
     if found is None:
-        raise ArchitectureError("could not locate the Qwen3.5 language-model decoder layers")
+        raise ArchitectureError("could not locate the supported Qwen language-model decoder layers")
 
     path, layer_list = found
     layers = tuple(layer_list)
@@ -117,3 +122,8 @@ def inspect_qwen35_moe(model: Any) -> Qwen35Architecture:
         expert_intermediate_size=intermediate,
         state_prefix=prefix,
     )
+
+
+# Model-neutral names for new code without breaking existing callers or artifacts.
+QwenMoEArchitecture = Qwen35Architecture
+inspect_qwen_moe = inspect_qwen35_moe

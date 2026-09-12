@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from reverse_reap.donors import QWEN38_MODEL_ID, donor_contract
 from reverse_reap.model_preflight import (
     EXPECTED_TEXT_CONFIG,
     ModelPreflightError,
@@ -29,6 +30,23 @@ def test_rejects_metadata_architecture_drift():
     value["text_config"]["num_experts"] = 255
     with pytest.raises(ModelPreflightError, match="num_experts"):
         validate_model_config(value)
+
+
+def test_validates_exact_qwen38_flash_next_metadata_contract():
+    contract = donor_contract(QWEN38_MODEL_ID)
+    payload = {
+        "model_type": contract.root_model_type,
+        "architectures": [contract.architecture],
+        "text_config": contract.expected_text_config(),
+    }
+    report = validate_model_config(payload, QWEN38_MODEL_ID)
+    assert report["compatible"]
+    assert report["text_config"]["num_experts"] == 512
+
+
+def test_qwen38_contract_rejects_qwen35_metadata():
+    with pytest.raises(ModelPreflightError, match="approved contract"):
+        validate_model_config(official_config(), QWEN38_MODEL_ID)
 
 
 def test_writes_revision_pinned_config_without_mutating_template(tmp_path):

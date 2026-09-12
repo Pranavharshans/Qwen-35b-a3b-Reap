@@ -1,0 +1,34 @@
+# Intentionally unlaunchable template. Pin every path/hash, run ID and deadline
+# in a run-scoped copy before GPU execution.
+schema_version: 1
+run_id: REPLACE
+experiment: strength
+benchmark_config: /absolute/path/to/fresh-pinned-mbpp-benchmark.yaml
+benchmark_config_sha256: REPLACE_WITH_64_HEX
+dataset_manifest: /absolute/path/to/strength-screen-12.jsonl
+dataset_manifest_sha256: REPLACE_WITH_64_HEX
+split: screening
+expected_tasks: 12
+thinking_enabled: true
+policies:
+  - name: base
+    mode: fixed
+    residual_multiplier: 0.0
+  - name: current
+    mode: fixed
+    residual_multiplier: 1.0
+  # The trained bridge gate cap is 0.25. These multipliers correspond to
+  # effective maximum caps 0.025, 0.05, 0.10 and 0.15 without editing weights.
+  - name: strength-0.025
+    mode: fixed
+    residual_multiplier: 0.1
+  - name: strength-0.05
+    mode: fixed
+    residual_multiplier: 0.2
+  - name: strength-0.10
+    mode: fixed
+    residual_multiplier: 0.4
+  - name: strength-0.15
+    mode: fixed
+    residual_multiplier: 0.6
+output_dir: /absolute/path/to/new/run/output

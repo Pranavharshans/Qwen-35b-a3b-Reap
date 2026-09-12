@@ -134,7 +134,10 @@
       "type": "string"
     },
     "source_model_id": {
-      "const": "Qwen/Qwen3.5-35B-A3B",
+      "enum": [
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.8-Flash-Next"
+      ],
       "title": "Source Model Id",
       "type": "string"
     },
