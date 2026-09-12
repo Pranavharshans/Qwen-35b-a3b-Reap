@@ -66,7 +66,7 @@ class ExtractionManifest(ArtifactModel):
     schema_version: Literal[1]
     label: Literal["extracted"]
     run_id: str = Field(min_length=1)
-    source_model_id: Literal["Qwen/Qwen3.5-35B-A3B"]
+    source_model_id: Literal["Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.8-Flash-Next"]
     source_revision: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     source_weight_index_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     selection_status: Literal[
@@ -81,4 +81,3 @@ class ExtractionManifest(ArtifactModel):
     tensor_file: str = Field(min_length=1)
     artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     total_parameter_bytes: int = Field(gt=0)
-

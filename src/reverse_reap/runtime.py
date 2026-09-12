@@ -1,4 +1,4 @@
-"""Pinned Qwen3.5 loading, architecture preflight, and teacher-forced telemetry."""
+"""Pinned Qwen donor loading, architecture preflight, and teacher-forced telemetry."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from reverse_reap.bridge_capture import (
 )
 from reverse_reap.config import ExperimentConfig
 from reverse_reap.datasets import NormalizedSample, balanced_subset, load_manifest
+from reverse_reap.donors import DONOR_CONTRACTS, donor_contract
 from reverse_reap.instrumentation import (
     CaptureState,
     TargetedRouteObservation,
@@ -70,7 +71,22 @@ def load_donor(model_path: Path, config: ExperimentConfig) -> tuple[Any, Any]:
 
 
 def validate_donor_contract(model: Any, architecture: Qwen35Architecture) -> dict[str, Any]:
-    model_config = model.config
+    model_id = getattr(model, "name_or_path", None)
+    configured_id = getattr(model_config := model.config, "_name_or_path", None)
+    if configured_id in (None, ""):
+        configured_id = model_id
+    try:
+        contract = donor_contract(str(configured_id))
+    except ValueError as error:
+        root_type = getattr(model_config, "model_type", None)
+        candidates = [
+            item for item in DONOR_CONTRACTS.values() if item.root_model_type == root_type
+        ]
+        if len(candidates) != 1:
+            raise RuntimeCompatibilityError(
+                f"unsupported donor model/type: {configured_id!r}/{root_type!r}"
+            ) from error
+        contract = candidates[0]
     text_config = getattr(model_config, "text_config", model_config)
     actual = {
         "model_type": getattr(model_config, "model_type", None),
@@ -85,11 +101,11 @@ def validate_donor_contract(model: Any, architecture: Qwen35Architecture) -> dic
         ),
     }
     expected = {
-        "num_layers": 40,
-        "hidden_size": 2048,
-        "num_experts": 256,
-        "experts_per_token": 8,
-        "expert_intermediate_size": 512,
+        "num_layers": contract.num_hidden_layers,
+        "hidden_size": contract.hidden_size,
+        "num_experts": contract.num_experts,
+        "experts_per_token": contract.num_experts_per_tok,
+        "expert_intermediate_size": contract.moe_intermediate_size,
         "shared_expert_present": True,
     }
     mismatches = {
@@ -97,7 +113,7 @@ def validate_donor_contract(model: Any, architecture: Qwen35Architecture) -> dic
         for key, value in expected.items()
         if actual[key] != value
     }
-    accepted_types = {"qwen3_5_moe", "qwen3_5_moe_text"}
+    accepted_types = {contract.root_model_type, contract.text_model_type}
     if (
         actual["model_type"] not in accepted_types
         and actual["text_model_type"] not in accepted_types
@@ -246,8 +262,9 @@ def _run_targeted_batch(
     attention_mask = attention_mask.to(device)
     import torch
 
-    with torch.inference_mode(), instrument_qwen35_targeted(
-        architecture, targets, observer=observer
+    with (
+        torch.inference_mode(),
+        instrument_qwen35_targeted(architecture, targets, observer=observer),
     ):
         model(
             input_ids=input_ids,
@@ -292,9 +309,7 @@ def capture_targeted_manifest(
     if manifest.config_sha256 != config.fingerprint():
         raise RuntimeCompatibilityError("capture manifest and config hashes differ")
     targets = frozenset((item.layer, item.expert) for item in manifest.experts)
-    sample_ordinals = {
-        item.sample.sample_id: item.sample_ordinal for item in manifest.samples
-    }
+    sample_ordinals = {item.sample.sample_id: item.sample_ordinal for item in manifest.samples}
     model, tokenizer = load_donor(model_path, config)
     try:
         architecture = inspect_qwen35_moe(model)
@@ -327,9 +342,7 @@ def capture_targeted_manifest(
 
     destination.mkdir(parents=True, exist_ok=True)
     checkpoint_path = destination / "capture-state.json"
-    existing_shards = sorted(
-        path for path in destination.glob("shard-*") if path.is_dir()
-    )
+    existing_shards = sorted(path for path in destination.glob("shard-*") if path.is_dir())
     checkpoint = load_target_capture_state(
         checkpoint_path,
         run_id=effective_run_id,
@@ -348,8 +361,7 @@ def capture_targeted_manifest(
             or metadata.get("model_revision") != manifest.model_revision
             or metadata.get("tokenizer_fingerprint") != manifest.tokenizer_fingerprint
             or metadata.get("config_sha256") != manifest.config_sha256
-            or metadata.get("candidate_manifest_sha256")
-            != manifest.candidate_manifest_sha256
+            or metadata.get("candidate_manifest_sha256") != manifest.candidate_manifest_sha256
         ):
             raise BridgeCaptureError(
                 f"existing target shard does not match this capture: {shard_path}"
@@ -357,9 +369,7 @@ def capture_targeted_manifest(
     if checkpoint is not None:
         existing_names = {path.name for path in existing_shards}
         if set(checkpoint.completed_shards) != existing_names:
-            raise BridgeCaptureError(
-                "capture checkpoint and completed target shards disagree"
-            )
+            raise BridgeCaptureError("capture checkpoint and completed target shards disagree")
     coverage = CoverageTracker(
         targets,
         min_coding_events=manifest.min_coding_events_per_expert,
@@ -396,9 +406,7 @@ def capture_targeted_manifest(
     if checkpoint is None:
         persist_checkpoint(next_sample_index=0, next_batch_number=0, complete=False)
     elif checkpoint.complete and not shard_dirs:
-        raise BridgeCaptureError(
-            "completed target capture checkpoint has no completed shards"
-        )
+        raise BridgeCaptureError("completed target capture checkpoint has no completed shards")
     elif checkpoint.complete:
         return {
             "run_id": effective_run_id,
@@ -744,8 +752,7 @@ def probe_instrumentation(
         "maximum_logit_difference": maximum_difference,
         "routed_records": routed,
         "passed": exact
-        and routed
-        == ids.numel() * architecture.num_layers * architecture.experts_per_token,
+        and routed == ids.numel() * architecture.num_layers * architecture.experts_per_token,
     }
 
 
@@ -792,9 +799,7 @@ def probe_single_expert_intervention(
         routed_count = int(capture.accumulators[target[0]].count[target[1]])
         if not routed_count:
             continue
-        with torch.inference_mode(), instrument_qwen35(
-            architecture, masked=frozenset({target})
-        ):
+        with torch.inference_mode(), instrument_qwen35(architecture, masked=frozenset({target})):
             masked = model(input_ids=ids, attention_mask=attention_mask, use_cache=False).logits
         maximum_difference = float((baseline.float() - masked.float()).abs().max().item())
         return {

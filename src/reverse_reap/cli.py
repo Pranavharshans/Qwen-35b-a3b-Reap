@@ -639,7 +639,7 @@ def main() -> int:
         selected = [(int(item["layer"]), int(item["expert"])) for item in candidates["experts"]]
         output = extract_experts(
             args.model_path,
-            architecture_from_weight_index(args.model_path),
+            architecture_from_weight_index(args.model_path, config.model.id),
             selected,
             args.destination,
             model_id=config.model.id,

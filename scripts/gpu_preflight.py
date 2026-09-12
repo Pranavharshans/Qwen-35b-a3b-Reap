@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fail-closed hardware/runtime check for the approved 4x3090 environment."""
+"""Fail-closed hardware/runtime checks for approved execution profiles."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -48,15 +49,19 @@ def validate(report: dict, profile: str = "4x3090") -> list[str]:
     errors = []
     if not report["cuda_available"]:
         errors.append("CUDA is unavailable")
-    if profile == "pro6000":
+    if profile in ("pro6000", "alex-8x-pro6000"):
         # Single RTX PRO 6000 Blackwell 96 GB (sm_120) hosting the B8-qualified
         # causal-generation run. Torch <2.11 (cu126, sm<=90) cannot execute a
         # single CUDA op on sm_120, so the stack version is gated here, not
         # merely recorded; the empirical gates (diagnostic, noop-equiv)
         # re-validate the stack on the host before any intervention
         # generation.
-        if report["gpu_count"] != 1:
-            errors.append(f"expected exactly 1 GPU, found {report['gpu_count']}")
+        expected_count = 8 if profile == "alex-8x-pro6000" else 1
+        if report["gpu_count"] != expected_count:
+            errors.append(
+                f"expected exactly {expected_count} GPU{'s' if expected_count != 1 else ''}, "
+                f"found {report['gpu_count']}"
+            )
         for gpu in report["gpus"]:
             if "PRO 6000" not in gpu["name"]:
                 errors.append(f"GPU {gpu['index']} is not an RTX PRO 6000: {gpu['name']}")
@@ -68,8 +73,9 @@ def validate(report: dict, profile: str = "4x3090") -> list[str]:
         if not torch_version.startswith("2.11."):
             errors.append(f"PRO 6000 sm_120 requires torch 2.11.x+cu128, found {torch_version}")
         cuda_runtime = str(report.get("cuda_runtime", ""))
-        if "12.8" not in cuda_runtime:
-            errors.append(f"torch 2.11+cu128 requires CUDA runtime 12.8, found {cuda_runtime}")
+        match = re.match(r"^(\d+)\.(\d+)", cuda_runtime)
+        if match is None or tuple(map(int, match.groups())) < (12, 8):
+            errors.append(f"RTX PRO 6000 requires CUDA runtime 12.8 or newer, found {cuda_runtime}")
         # Disk gate is sized for a run with weights PRE-STAGED and verified:
         # 71.9 GB weights + ~15 GB venv live outside the run's own footprint,
         # and the run itself (150 baseline/intervention/control generations,
@@ -77,8 +83,9 @@ def validate(report: dict, profile: str = "4x3090") -> list[str]:
         # that need. (A 120 GiB gate is unsatisfiable on the approved ~150 GB
         # allocation once weights are staged, and would only fit a flow that
         # downloads weights inside the run.)
-        if report["disk_free_bytes"] < 20 * 1024**3:
-            errors.append("less than 20 GiB disk is free")
+        minimum_disk_gib = 450 if profile == "alex-8x-pro6000" else 20
+        if report["disk_free_bytes"] < minimum_disk_gib * 1024**3:
+            errors.append(f"less than {minimum_disk_gib} GiB disk is free")
     elif profile == "4x3090":
         if report["gpu_count"] != 4:
             errors.append(f"expected exactly 4 GPUs, found {report['gpu_count']}")
@@ -99,7 +106,11 @@ def validate(report: dict, profile: str = "4x3090") -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--profile", choices=["4x3090", "pro6000"], default="4x3090")
+    parser.add_argument(
+        "--profile",
+        choices=["4x3090", "pro6000", "alex-8x-pro6000"],
+        default="4x3090",
+    )
     args = parser.parse_args()
     report = collect()
     errors = validate(report, profile=args.profile)

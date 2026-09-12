@@ -87,12 +87,21 @@ def test_refuses_to_overwrite_extraction(tmp_path):
 def test_infers_approved_40_layer_tensor_prefix(tmp_path):
     prefix = "model.language_model.layers"
     weight_map = {
-        f"{prefix}.{layer}.mlp.experts.gate_up_proj": "shard.safetensors"
-        for layer in range(40)
+        f"{prefix}.{layer}.mlp.experts.gate_up_proj": "shard.safetensors" for layer in range(40)
     }
-    (tmp_path / "model.safetensors.index.json").write_text(
-        json.dumps({"weight_map": weight_map})
-    )
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
     architecture = architecture_from_weight_index(tmp_path)
     assert architecture.num_layers == 40
     assert architecture.state_prefix == prefix
+
+
+def test_infers_qwen38_48_layer_tensor_prefix(tmp_path):
+    prefix = "model.language_model.layers"
+    weight_map = {
+        f"{prefix}.{layer}.mlp.experts.gate_up_proj": "shard.safetensors" for layer in range(48)
+    }
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    architecture = architecture_from_weight_index(tmp_path, "Qwen/Qwen3.8-Flash-Next")
+    assert architecture.num_layers == 48
+    assert architecture.num_experts == 512
+    assert architecture.experts_per_token == 10

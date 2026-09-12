@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 from safetensors import safe_open
 
+from reverse_reap.donors import QWEN35_MODEL_ID, donor_contract
 from reverse_reap.qwen35 import Qwen35Architecture
 
 
@@ -31,8 +32,11 @@ class ExtractedTensor:
     content_sha256: str
 
 
-def architecture_from_weight_index(model_dir: Path) -> Qwen35Architecture:
-    """Infer the exact fused key prefix while enforcing the approved donor dimensions."""
+def architecture_from_weight_index(
+    model_dir: Path, model_id: str = QWEN35_MODEL_ID
+) -> Qwen35Architecture:
+    """Infer the fused key prefix while enforcing an approved donor contract."""
+    contract = donor_contract(model_id)
     weight_map = load_weight_map(model_dir)
     pattern = re.compile(r"^(.*\.layers)\.(\d+)\.mlp\.experts\.gate_up_proj$")
     matches = [match for key in weight_map if (match := pattern.match(key))]
@@ -40,16 +44,17 @@ def architecture_from_weight_index(model_dir: Path) -> Qwen35Architecture:
         raise ExtractionError("could not locate fused expert tensors in weight index")
     prefixes = {match.group(1) for match in matches}
     layers = {int(match.group(2)) for match in matches}
-    if len(prefixes) != 1 or layers != set(range(40)):
+    if len(prefixes) != 1 or layers != set(range(contract.num_hidden_layers)):
         raise ExtractionError(
-            f"expected one 40-layer fused expert prefix, got prefixes={prefixes}, layers={layers}"
+            f"expected one {contract.num_hidden_layers}-layer fused expert prefix, "
+            f"got prefixes={prefixes}, layers={layers}"
         )
     return Qwen35Architecture(
-        layers=tuple(None for _ in range(40)),
-        num_experts=256,
-        experts_per_token=8,
-        hidden_size=2048,
-        expert_intermediate_size=512,
+        layers=tuple(None for _ in range(contract.num_hidden_layers)),
+        num_experts=contract.num_experts,
+        experts_per_token=contract.num_experts_per_tok,
+        hidden_size=contract.hidden_size,
+        expert_intermediate_size=contract.moe_intermediate_size,
         state_prefix=prefixes.pop(),
     )
 
@@ -157,9 +162,7 @@ def extract_experts(
             )
     destination.mkdir(parents=True)
     tensor_path = destination / "experts.safetensors"
-    _save_tensors(
-        tensors, tensor_path, metadata={"model_id": model_id, "revision": model_revision}
-    )
+    _save_tensors(tensors, tensor_path, metadata={"model_id": model_id, "revision": model_revision})
 
     verified = []
     framework = "pt" if hasattr(next(iter(tensors.values())), "detach") else "numpy"

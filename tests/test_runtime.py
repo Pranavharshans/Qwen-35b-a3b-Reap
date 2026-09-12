@@ -36,6 +36,15 @@ def test_donor_contract_fails_closed_on_architecture_drift():
         validate_donor_contract(model, architecture(num_layers=39))
 
 
+def test_qwen38_runtime_contract_accepts_exact_shape():
+    layers = tuple(SimpleNamespace(mlp=SimpleNamespace(shared_expert=object())) for _ in range(48))
+    qwen38_architecture = Qwen35Architecture(
+        layers, 512, 10, 2560, 640, "model.language_model.layers"
+    )
+    model = SimpleNamespace(config=SimpleNamespace(model_type="qwen4_exp"))
+    assert validate_donor_contract(model, qwen38_architecture)["compatible"]
+
+
 def test_segment_subtraction_recovers_completion_only_statistics():
     prompt = CaptureState(1, 3)
     full = CaptureState(1, 3)
