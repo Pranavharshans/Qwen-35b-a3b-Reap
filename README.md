@@ -103,7 +103,11 @@ scripts/fau/submit_reverse_reap.sh --submit \
 
 The first command is a dry run. The second calls `sbatch` and must run on an FAU login node.
 No job is submitted by setup or tests. The job materializes a run-specific plan with absolute
-cluster paths and the eight-GPU FAU preflight; it never mutates the source plan.
+cluster paths and the six-GPU RTX PRO 6000 preflight; it never mutates the source plan. The
+GPU extra pins the tested fine-grained FP8 kernel package and exact Transformers revision.
+The batch job loads the staged model offline, reserves 84 GiB per GPU for placement, keeps
+Hugging Face and uv caches on node-local `$TMPDIR`, and uses FAU's compute-node proxy for the
+dataset-freeze task.
 
 ### Qwen3.8 two-pass FAU workflow
 

@@ -49,14 +49,18 @@ def validate(report: dict, profile: str = "4x3090") -> list[str]:
     errors = []
     if not report["cuda_available"]:
         errors.append("CUDA is unavailable")
-    if profile in ("pro6000", "alex-8x-pro6000"):
+    if profile in ("pro6000", "alex-6x-pro6000", "alex-8x-pro6000"):
         # Single RTX PRO 6000 Blackwell 96 GB (sm_120) hosting the B8-qualified
         # causal-generation run. Torch <2.11 (cu126, sm<=90) cannot execute a
         # single CUDA op on sm_120, so the stack version is gated here, not
         # merely recorded; the empirical gates (diagnostic, noop-equiv)
         # re-validate the stack on the host before any intervention
         # generation.
-        expected_count = 8 if profile == "alex-8x-pro6000" else 1
+        expected_count = {
+            "pro6000": 1,
+            "alex-6x-pro6000": 6,
+            "alex-8x-pro6000": 8,
+        }[profile]
         if report["gpu_count"] != expected_count:
             errors.append(
                 f"expected exactly {expected_count} GPU{'s' if expected_count != 1 else ''}, "
@@ -83,7 +87,7 @@ def validate(report: dict, profile: str = "4x3090") -> list[str]:
         # that need. (A 120 GiB gate is unsatisfiable on the approved ~150 GB
         # allocation once weights are staged, and would only fit a flow that
         # downloads weights inside the run.)
-        minimum_disk_gib = 450 if profile == "alex-8x-pro6000" else 20
+        minimum_disk_gib = 450 if profile.startswith("alex-") else 20
         if report["disk_free_bytes"] < minimum_disk_gib * 1024**3:
             errors.append(f"less than {minimum_disk_gib} GiB disk is free")
     elif profile == "4x3090":
@@ -108,7 +112,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--profile",
-        choices=["4x3090", "pro6000", "alex-8x-pro6000"],
+        choices=["4x3090", "pro6000", "alex-6x-pro6000", "alex-8x-pro6000"],
         default="4x3090",
     )
     args = parser.parse_args()
