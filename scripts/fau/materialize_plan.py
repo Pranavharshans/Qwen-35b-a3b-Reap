@@ -44,7 +44,7 @@ def materialize(
             if value == "__EXPERIMENT_CONFIG__" or value.endswith("configs/pinned-3090-bf16.yaml"):
                 return str(config)
             return (
-                value.replace("four-RTX-3090", "eight-RTX-PRO-6000")
+                value.replace("four-RTX-3090", "six-RTX-PRO-6000")
                 .replace("top-8", "top-10")
                 .replace("all 40 layers", "all 48 layers")
                 .replace("Qwen/Qwen3.8-Flash-Next", configured_model_id)
@@ -61,7 +61,7 @@ def materialize(
         if task["task_id"] == "gpu-preflight":
             command = task["command"]
             if "--profile" not in command:
-                command.extend(["--profile", "alex-8x-pro6000"])
+                command.extend(["--profile", "alex-6x-pro6000"])
     ExecutionPlan.model_validate(rendered)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(yaml.safe_dump(rendered, sort_keys=False), encoding="utf-8")
