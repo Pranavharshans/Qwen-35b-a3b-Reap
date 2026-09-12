@@ -88,18 +88,19 @@ cluster paths and the eight-GPU FAU preflight; it never mutates the source plan.
 Scoring may remain on a separate VM. FAU produces immutable generation/capture artifacts and
 hash-bound handoffs; it does not execute generated code in this workflow.
 
-After freezing `datasets/manifests/full.jsonl`, dry-run the complete first pass (expert
-discovery, causal validation, replication, and both thinking conditions):
+After reviewing the dataset catalog, dry-run the first pass through frozen expert-candidate
+analysis. The cutoff prevents FAU from entering the downstream scoring/causal tasks:
 
 ```bash
 scripts/fau/submit_reverse_reap.sh \
-  --thinking-config configs/qwen38-flash-next-bf16-full-thinking.yaml \
+  --through-task candidate-analysis \
   configs/qwen38-flash-next-bf16-full.yaml configs/execution-plan-v0.yaml \
   /absolute/cluster/path/Qwen3.8-Flash-Next runs/qwen38/pass1-state
 ```
 
 Add `--submit` to that command only after reviewing the rendered command and run budget. When
-pass 1 has produced a passed, frozen Qwen3.8 Gate C artifact, copy it without modification to
+pass 1 has produced a passed, frozen Qwen3.8 Gate C artifact, transfer generation artifacts
+to the scoring VM as needed and copy the candidate artifact without modification to
 `runs/qwen38/inputs/candidate-manifest.json`. Then dry-run the second, independently identified
 teacher-forced capture pass:
 

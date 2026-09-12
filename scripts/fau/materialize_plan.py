@@ -18,8 +18,14 @@ def materialize(
     config: Path,
     model_dir: Path,
     thinking_config: Path | None = None,
+    through_task: str | None = None,
 ) -> None:
     payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if through_task is not None:
+        task_ids = [task["task_id"] for task in payload["tasks"]]
+        if through_task not in task_ids:
+            raise ValueError(f"--through-task is not in source plan: {through_task}")
+        payload["tasks"] = payload["tasks"][: task_ids.index(through_task) + 1]
 
     def replace(value: object) -> object:
         if isinstance(value, str):
@@ -60,6 +66,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--thinking-config", type=Path)
+    parser.add_argument("--through-task")
     args = parser.parse_args()
     materialize(
         args.source,
@@ -67,6 +74,7 @@ def main() -> None:
         config=args.config,
         model_dir=args.model_dir,
         thinking_config=args.thinking_config,
+        through_task=args.through_task,
     )
 
 

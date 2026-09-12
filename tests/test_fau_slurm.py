@@ -46,6 +46,21 @@ def test_materializes_full_qwen38_plan_with_separate_thinking_config(tmp_path):
     assert "/cluster/repo/configs/q38-thinking.yaml" in rendered
 
 
+def test_materializes_generation_pass_only_through_candidate_analysis(tmp_path):
+    destination = tmp_path / "generation-plan.yaml"
+    module().materialize(
+        Path("configs/execution-plan-v0.yaml"),
+        destination,
+        config=Path("/cluster/repo/configs/q38-direct.yaml"),
+        model_dir=Path("/cluster/models/q38"),
+        through_task="candidate-analysis",
+    )
+    task_ids = [task["task_id"] for task in yaml.safe_load(destination.read_text())["tasks"]]
+    assert task_ids[-1] == "candidate-analysis"
+    assert "baseline-validation-a" not in task_ids
+    assert "causal-report" not in task_ids
+
+
 def test_materializes_qwen38_bridge_capture_placeholders(tmp_path):
     destination = tmp_path / "capture-plan.yaml"
     module().materialize(
