@@ -109,3 +109,23 @@ def test_alex_8x_pro6000_profile_accepts_full_node():
         "cuda_runtime": "12.8",
     }
     assert module().validate(value, profile="alex-8x-pro6000") == []
+
+
+def test_glm_direct_profile_accepts_any_vendor_with_aggregate_memory():
+    value = {
+        "cuda_available": True,
+        "gpu_count": 8,
+        "gpus": [
+            {
+                "index": index,
+                "name": "Other CUDA GPU",
+                "total_memory_bytes": 96 * 1024**3,
+                "capability": [9, 0],
+            }
+            for index in range(8)
+        ],
+        "disk_free_bytes": 200 * 1024**3,
+        "torch": "2.11.0+cu128",
+        "cuda_runtime": "12.8",
+    }
+    assert module().validate(value, profile="glm53-direct") == []

@@ -28,6 +28,27 @@ def test_materializes_fau_plan_without_submitting(tmp_path):
     assert "/cluster/models/q38" in commands
     assert "configs/pinned-3090-bf16.yaml" not in commands
     assert "/cluster/repo/configs/q38.yaml" in commands
+    assert "runs/smoke/${RUN_ID}" in destination.read_text()
+
+
+def test_materializes_glm_plan_for_direct_mode_without_qwen_or_qwen38_assumptions(tmp_path):
+    destination = tmp_path / "glm-plan.yaml"
+    module().materialize(
+        Path("configs/execution-plan-smoke.yaml"),
+        destination,
+        config=Path("configs/smoke-glm53-flash-bf16.yaml"),
+        model_dir=Path("/cloud/models/glm53"),
+        execution_mode="direct",
+        run_root=Path("/runs/glm53/direct-test"),
+    )
+    rendered = destination.read_text()
+    assert "/models/qwen" not in rendered.lower()
+    assert "configs/pinned-3090-bf16.yaml" not in rendered
+    assert "zai-org/GLM-5.3-Flash-BF16" in rendered
+    assert "top-8" in rendered
+    assert "42 sparse MoE layers (absolute layers 3-44)" in rendered
+    assert "--profile" in rendered and "glm53-direct" in rendered
+    assert "/runs/glm53/direct-test/outputs" in rendered
 
 
 def test_materializes_full_qwen38_plan_with_separate_thinking_config(tmp_path):

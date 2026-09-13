@@ -13,8 +13,8 @@
 set -euo pipefail
 unset SLURM_EXPORT_ENV
 
-if [[ $# -lt 5 || $# -gt 7 ]]; then
-  echo "usage: reverse_reap.slurm REPO CONFIG SOURCE_PLAN MODEL_DIR STATE_DIR [THINKING_CONFIG] [THROUGH_TASK]" >&2
+if [[ $# -lt 5 || $# -gt 8 ]]; then
+  echo "usage: reverse_reap.slurm REPO CONFIG SOURCE_PLAN MODEL_DIR STATE_DIR [THINKING_CONFIG] [THROUGH_TASK] [RUN_ROOT]" >&2
   exit 64
 fi
 
@@ -25,6 +25,7 @@ model_dir=$4
 state_dir=$5
 thinking_config=${6:-}
 through_task=${7:-}
+run_root=${8:-}
 
 module purge
 module load cuda/12.8
@@ -39,12 +40,16 @@ mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$state_dir"
 
 materialized_plan="$state_dir/fau-materialized-plan.yaml"
 materialize=(uv run --frozen --no-sync python scripts/fau/materialize_plan.py
-  "$source_plan" "$materialized_plan" --config "$config_path" --model-dir "$model_dir")
+  "$source_plan" "$materialized_plan" --config "$config_path" --model-dir "$model_dir"
+  --execution-mode fau-slurm)
 if [[ -n "$thinking_config" ]]; then
   materialize+=(--thinking-config "$thinking_config")
 fi
 if [[ -n "$through_task" ]]; then
   materialize+=(--through-task "$through_task")
+fi
+if [[ -n "$run_root" ]]; then
+  materialize+=(--run-root "$run_root")
 fi
 "${materialize[@]}"
 
