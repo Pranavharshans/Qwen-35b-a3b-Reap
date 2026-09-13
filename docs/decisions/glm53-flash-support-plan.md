@@ -12,7 +12,7 @@ The two supported modes are:
 
 - `direct`: a cloud or other CUDA host, with the generic `glm53-direct` aggregate-VRAM
   preflight; it never requires or invokes `sbatch`.
-- `fau-slurm`: the existing FAU Alex contract, one `rtxpro6k` node with eight RTX PRO
+- `fau-slurm`: the existing FAU Alex contract, one `rtxpro6k` node with six RTX PRO
   6000 GPUs, routed through the existing submission helper; preview never invokes
   `sbatch`.
 
@@ -110,14 +110,14 @@ input files and hashes:
 
 - `configs/execution-plan-smoke.yaml` — SHA-256 `32ada0f1c610fe8af9618ea66aa6a751d0988416e1ae80f2f3b25caa074b5b62`
 - `scripts/launch_glm53.py` — SHA-256 `b7b3e80f7ffe722cc4ce418d0c7fd213e205287afa81e5d382c43bff2f19c7a1`
-- `src/reverse_reap/plan_materializer.py` — SHA-256 `e318f0ed32c7a4ff77e6e7560a31fd5ea1b9767dcbe59e17896a2c624bb673c6`
+- `src/reverse_reap/plan_materializer.py` — SHA-256 `284bbeb5c9fe1cd8875b5e262d38538e3d413f182b6e88d30d4fec75b77358d9`
 - `scripts/fau/materialize_plan.py` — SHA-256 `5021476185dd8d60f8633462271ab1c358ee57d745c3eb6fb730edee3521ece2`
 - `scripts/fau/submit_reverse_reap.sh` — SHA-256 `f5ca01537e81d9222c7da1bb8b63dfd02e1d41cd7d8bedf8772205a2643adc04`
-- `scripts/fau/reverse_reap.slurm` — SHA-256 `3c7bf94be500932f7885d2c4e1a08312f16ffb5ea7e996de49517108afa85157`
-- `scripts/gpu_preflight.py` — SHA-256 `2e896623b1660845e597f7a6610b014ea86d518cc8e866c3b33115e2b70d7694`
+- `scripts/fau/reverse_reap.slurm` — SHA-256 `afe396058e0879ac79a42ec143f4e218f84b0ab921b830cdb985453a88bb109d`
+- `scripts/gpu_preflight.py` — SHA-256 `386ef010a63dfb11cd8a8a3f4e5c01b0bc0bab95d254b02dbcb603e16238cf32`
 - `tests/test_glm53_launcher.py` — SHA-256 `e9d5f6ffc30a6d647ee64d049bf54dd0e97ac75837a77a226c62d2e89495e6fe`
-- `tests/test_fau_slurm.py` — SHA-256 `7109848ce3e6cb872952ef7ef7dc471a6a2a9fbe17f7a8e54efdc2510306b30f`
-- `tests/test_gpu_preflight.py` — SHA-256 `27827e564675fa5095e971da46151eedcf655ec744a2efb364adc8fcf53e85ad`
+- `tests/test_fau_slurm.py` — SHA-256 `fce5e9b74a79583e60ed03a8bb2ece63af5a886ff21ebedc50e8480815a642d8`
+- `tests/test_gpu_preflight.py` — SHA-256 `75853af8811157a6ef4ab3b576dc454023f074ed7e08d6abae812fdf384d7bcc`
 
 expected outputs: A render-only launcher boundary, run-specific GLM config/plan
 materialization on explicit execution, unchanged Qwen default materialization, FAU

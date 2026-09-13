@@ -129,3 +129,23 @@ def test_glm_direct_profile_accepts_any_vendor_with_aggregate_memory():
         "cuda_runtime": "12.8",
     }
     assert module().validate(value, profile="glm53-direct") == []
+
+
+def test_alex_6x_pro6000_profile_accepts_partial_node_allocation():
+    value = {
+        "cuda_available": True,
+        "gpu_count": 6,
+        "gpus": [
+            {
+                "index": index,
+                "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "total_memory_bytes": 96 * 1024**3,
+                "capability": [12, 0],
+            }
+            for index in range(6)
+        ],
+        "disk_free_bytes": 500 * 1024**3,
+        "torch": "2.11.0+cu130",
+        "cuda_runtime": "13.0",
+    }
+    assert module().validate(value, profile="alex-6x-pro6000") == []

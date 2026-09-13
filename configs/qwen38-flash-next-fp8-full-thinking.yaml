@@ -10,8 +10,8 @@ runtime:
   seed: 20260903
   deterministic: true
   batch_size: 1
-  max_input_tokens: 1024
-  max_new_tokens: 4096
+  max_input_tokens: 24576
+  max_new_tokens: 8192
   enable_thinking: true
   use_cache: false
   speculative_decoding: false
@@ -19,7 +19,7 @@ budget:
   max_gpu_hours: 168
   max_cost_usd: 1
   provider_rate_usd_per_hour: 0.001
-  storage_limit_gb: 350
+  storage_limit_gb: 500
   deadline_utc: 2027-01-01T00:00:00Z
 datasets:
   manifest: datasets/manifests/full.jsonl

@@ -13,7 +13,7 @@ The launcher has exactly two modes and previews by default:
 
 - `direct` runs the normal `reverse-reap run-all` controller on a cloud or other CUDA host;
   it does not require or call Slurm.
-- `fau-slurm` uses the existing FAU Alex batch contract: one `rtxpro6k` node with eight RTX
+- `fau-slurm` uses the existing FAU Alex batch contract: one `rtxpro6k` node with six RTX
   PRO 6000 GPUs. Preview does not call `sbatch`.
 
 `--execute` is the state-change gate. An execution also requires `--run-id` (or a config whose
@@ -36,7 +36,7 @@ CUDA 12.8+, PyTorch 2.11+, at least 700 GiB aggregate GPU memory, and at least 1
 the run filesystem. This is a conservative feasibility floor for the roughly 640 GB of raw
 BF16 parameters plus runtime overhead, not proof that a particular topology will load. The
 model directory may live on separately provisioned storage. Alex uses the stricter checked-in
-eight-RTX-PRO-6000 profile.
+six-RTX-PRO-6000 profile with bounded CPU offload.
 
 ## Metadata first, weights second
 

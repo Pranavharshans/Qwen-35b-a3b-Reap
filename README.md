@@ -113,7 +113,7 @@ its own telemetry, candidates, causal validation, and replication; BF16 results 
 ## FAU Alex Slurm execution
 
 The FAU path uses the same single-writer `run-all` controller and source plan as the regular
-path. It requests one complete `rtxpro6k` node (8 × RTX PRO 6000, 96 GiB each), loads CUDA
+path. It requests six RTX PRO 6000 GPUs (96 GiB each) on one `rtxpro6k` node, loads CUDA
 12.8 and Python through environment modules, keeps caches on node-local `$TMPDIR`, and uses a
 clean exported environment. Prepare the environment and weights on Alex, then preview and
 submit:
@@ -132,7 +132,11 @@ scripts/fau/submit_reverse_reap.sh --submit \
 
 The first command is a dry run. The second calls `sbatch` and must run on an FAU login node.
 No job is submitted by setup or tests. The job materializes a run-specific plan with absolute
-cluster paths and the eight-GPU FAU preflight; it never mutates the source plan.
+cluster paths and the six-GPU RTX PRO 6000 preflight; it never mutates the source plan. The
+GPU extra pins the tested fine-grained FP8 kernel package and exact Transformers revision.
+The batch job loads the staged model offline, reserves 84 GiB per GPU for placement, keeps
+Hugging Face and uv caches on node-local `$TMPDIR`, and uses FAU's compute-node proxy for the
+dataset-freeze task.
 
 ### Qwen3.8 two-pass FAU workflow
 
@@ -321,6 +325,12 @@ reverse-reap run-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml
 reverse-reap validate-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml
 ```
 
+After a failed pilot safety gate, a separately authorized fresh full run uses
+`execution_mode: exploratory_full_only` with explicit `full_only_reason` and
+`historical_pilot` provenance. It generates all 378 tasks from task 1, imports
+zero pilot rows, and never evaluates the pilot gate; see
+[`docs/mbppplus-bridge-benchmark.md`](docs/mbppplus-bridge-benchmark.md).
+
 Generated code is untrusted, so official scoring remains on a Docker-capable
 scorer. Build the revision-labelled, digest-pinned image with
 `scripts/prepare_evalplus_docker.py`, transfer the small run directory, and run:
@@ -331,7 +341,48 @@ reverse-reap score-mbpp-bridge-benchmark /path/to/pinned-mbpp-benchmark.yaml \
 ```
 
 The report keeps MBPP base tests, MBPP+ extended tests, and thinking modes
-separate. It is a capability comparison, not causal evidence.
+separate. The image embeds the official HumanEval+ v0.1.9 archive and its
+SHA-256 is verified both while preparing the image and before scoring. The
+scorer passes `HUMANEVAL_OVERRIDE_PATH` to the locked-down container because
+the pinned sanitizer loads HumanEval+ as well as MBPP+. It is a capability
+comparison, not causal evidence.
+
+## Four-expert bridge rescue experiments
+
+The five thinking-enabled rescue experiments are specified in
+[`docs/bridge-rescue-experiments.md`](docs/bridge-rescue-experiments.md). Their
+shared runtime policy supports fixed strength, delayed/ramped activation,
+thinking-phase shutdown, exact expert/layer allowlists, and a hash-bound learned
+linear gate without mutating the trained bridge checkpoint. Validate one
+experiment identity with:
+
+```bash
+reverse-reap validate-bridge-rescue-config /path/to/pinned-rescue-config.yaml
+```
+
+Experiment 5 can fit its controller-only checkpoint from a separately frozen
+JSONL training manifest containing `token_fraction`, `repetition_rate`,
+`gate_mean`, `residual_ratio`, and binary `bridge_helpful` fields:
+
+```bash
+reverse-reap fit-bridge-rescue-gate training.jsonl controller.json \
+  --manifest-sha256 <sha256> --max-generated-tokens 4096
+```
+
+These commands provide the policy/configuration and controller-training layer.
+GPU generation still requires a separately frozen, officially scoreable fresh
+dataset adapter and an exact-checkpoint preflight; neither command authorizes a
+paid run.
+
+The first 12-task, thinking-enabled strength screen is implemented separately
+as a post-hoc exploratory funnel:
+
+```bash
+reverse-reap freeze-bridge-strength-screen pinned-mbpp.yaml strength-screen-12.jsonl
+reverse-reap run-bridge-strength-screen pinned-strength-screen.yaml
+reverse-reap score-bridge-strength-screen pinned-strength-screen.yaml \
+  --evalplus-image 'localhost:5000/reverse-reap-evalplus@sha256:<digest>'
+```
 
 ## SWE-bench scoring boundary
 

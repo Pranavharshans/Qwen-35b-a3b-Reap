@@ -39,6 +39,26 @@ class RuntimeCompatibilityError(RuntimeError):
     """Raised when the pinned runtime cannot satisfy the donor contract."""
 
 
+def _loader_max_memory(gpu_count: int) -> dict[int | str, str] | None:
+    """Build an opt-in Accelerate memory map with deterministic GPU headroom."""
+    raw_gpu = os.environ.get("REVERSE_REAP_GPU_MAX_MEMORY_GIB")
+    if raw_gpu is None:
+        return None
+    try:
+        gpu_gib = int(raw_gpu)
+        cpu_gib = int(os.environ.get("REVERSE_REAP_CPU_MAX_MEMORY_GIB", "512"))
+    except ValueError as error:
+        raise RuntimeCompatibilityError(
+            "loader memory limits must be integer GiB values"
+        ) from error
+    if gpu_count < 1 or gpu_gib < 1 or cpu_gib < 1:
+        raise RuntimeCompatibilityError("loader memory limits and GPU count must be positive")
+    return {
+        **{index: f"{gpu_gib}GiB" for index in range(gpu_count)},
+        "cpu": f"{cpu_gib}GiB",
+    }
+
+
 def load_donor(model_path: Path, config: ExperimentConfig) -> tuple[Any, Any]:
     import torch
     from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoTokenizer
@@ -51,6 +71,9 @@ def load_donor(model_path: Path, config: ExperimentConfig) -> tuple[Any, Any]:
         "device_map": "balanced",
         "trust_remote_code": False,
     }
+    max_memory = _loader_max_memory(torch.cuda.device_count())
+    if max_memory is not None:
+        common["max_memory"] = max_memory
     errors = []
     for loader in (AutoModelForImageTextToText, AutoModelForCausalLM):
         try:

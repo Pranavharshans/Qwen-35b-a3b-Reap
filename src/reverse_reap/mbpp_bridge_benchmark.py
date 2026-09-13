@@ -11,6 +11,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -37,6 +38,12 @@ OFFICIAL_MBPP_VERSION = "v0.2.0"
 OFFICIAL_MBPP_TASKS = 378
 OFFICIAL_MBPP_ARCHIVE_SHA256 = "af43697e8791c4c149bdfd6b489d8b5412507551ac20e28a439f650b8225db63"
 OFFICIAL_EVALPLUS_REVISION = "e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2"
+# Pinned hash identifies the official HumanEval+ v0.1.9 release asset.
+OFFICIAL_HUMANEVAL_PLUS_VERSION = "v0.1.9"
+OFFICIAL_HUMANEVAL_PLUS_SHA256 = (
+    "e62f4130146963d969da64553f407a66e52d095adbfed4ee6733b4d59e14a3ed"
+)
+HUMANEVAL_OVERRIDE_PATH = "/opt/evalplus-data/HumanEvalPlus.jsonl.gz"
 INSTRUCTION_PREFIX = (
     "Please provide a self-contained Python script that solves the following problem "
     "in a markdown code block:"
@@ -76,9 +83,44 @@ class EvalPlusContract(StrictModel):
     timeout_seconds_per_condition: int = Field(default=3600, ge=60, le=21600)
 
 
+class PilotSafetyGateConfig(StrictModel):
+    """Pre-registered aggregate pilot gate for the MBPP+ bridge benchmark.
+
+    Values are literal-pinned so a run cannot silently relax them. Item-level
+    structural failures (cap hit, unclosed reasoning, missing final answer,
+    unsanitizable output) never abort generation and never leave the
+    denominator; the gate only decides whether the 50-task pilot is
+    representative enough to continue to the full 378-task set. The gate is
+    never evaluated in ``exploratory_full_only`` execution mode.
+    """
+
+    max_cap_hit_rate: Literal[0.05] = 0.05
+    max_structurally_invalid_rate: Literal[0.05] = 0.05
+    require_zero_missing_rows: Literal[True] = True
+    require_zero_duplicate_rows: Literal[True] = True
+    require_no_oom_nan_inf: Literal[True] = True
+    require_exact_task_order_and_hashes: Literal[True] = True
+    require_full_bridge_engagement: Literal[True] = True
+
+
+class HistoricalPilotConfig(StrictModel):
+    """Preserved provenance for a failed pilot that motivates a full-only run.
+
+    Historical evidence only. A full-only run imports zero rows from it and
+    the historical safety gate is never re-evaluated or relaxed.
+    """
+
+    run_id: str = Field(min_length=1)
+    outcome: Literal["pilot-safety-gate-failed"] = "pilot-safety-gate-failed"
+    reused_rows: Literal[0] = 0
+
+
 class MbppBridgeBenchmarkConfig(StrictModel):
     schema_version: Literal[1]
     run_id: str = Field(min_length=1)
+    execution_mode: Literal["pilot_then_full", "exploratory_full_only"] = "pilot_then_full"
+    full_only_reason: str | None = Field(default=None, min_length=1)
+    historical_pilot: HistoricalPilotConfig | None = None
     host_model: Path
     host_revision: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     host_files_manifest: Path
@@ -90,6 +132,7 @@ class MbppBridgeBenchmarkConfig(StrictModel):
     dataset: MbppDataset
     runtime: MbppRuntime
     evalplus: EvalPlusContract
+    pilot_safety_gate: PilotSafetyGateConfig = Field(default_factory=PilotSafetyGateConfig)
     budget: BridgeBenchmarkBudget
     output_dir: Path
     proceed_full_regardless_of_pilot_score: Literal[True] = True
@@ -98,13 +141,54 @@ class MbppBridgeBenchmarkConfig(StrictModel):
     def immutable_upstream_artifacts(self) -> MbppBridgeBenchmarkConfig:
         if self.dataset.archive_sha256 != OFFICIAL_MBPP_ARCHIVE_SHA256:
             raise ValueError("MBPP+ archive SHA-256 differs from the approved v0.2.0 release")
+        if self.execution_mode == "exploratory_full_only":
+            if not self.full_only_reason:
+                raise ValueError(
+                    "exploratory_full_only requires full_only_reason authorization text"
+                )
+            if self.historical_pilot is None:
+                raise ValueError(
+                    "exploratory_full_only requires historical_pilot provenance"
+                )
         return self
 
     def fingerprint(self) -> str:
         return hashlib.sha256(canonical_json(self.model_dump(mode="json"))).hexdigest()
 
 
+def planned_tiers(
+    config: MbppBridgeBenchmarkConfig, task_count: int
+) -> tuple[tuple[str, int], ...]:
+    """Return the generation tiers for this run.
+
+    ``exploratory_full_only`` has exactly one tier: all tasks from task 1, no
+    pilot generation stage and no pilot safety gate. ``pilot_then_full`` keeps
+    the historical pilot-first behaviour unchanged.
+    """
+    if config.execution_mode == "exploratory_full_only":
+        return (("full", task_count),)
+    return (("pilot", config.dataset.pilot_items), ("full", task_count))
+
+
+def expected_generation_totals(config: MbppBridgeBenchmarkConfig) -> dict[str, int]:
+    """Expected row totals for the frozen run identity."""
+    tasks = int(config.dataset.expected_tasks)
+    return {
+        "conditions": len(CONDITIONS),
+        "rows_per_condition": tasks,
+        "total_rows": len(CONDITIONS) * tasks,
+    }
+
+
 DETERMINISTIC_CUBLAS_WORKSPACE_VALUES = (":4096:8", ":16:8")
+
+
+class PilotSafetyGateError(BridgeBenchmarkError):
+    """Raised when the pre-registered pilot safety gate fails.
+
+    This is a feasibility stop, not a generation-integrity failure: item-level
+    truncated outputs never raise by themselves.
+    """
 
 
 def _require_deterministic_cuda() -> None:
@@ -279,6 +363,65 @@ def _render_prompt(tokenizer: Any, task_prompt: str, *, enable_thinking: bool) -
     return rendered, ids
 
 
+def _classify_output(
+    raw: str,
+    *,
+    thinking: bool,
+    entry_point: str,
+    cap_hit: bool,
+    sanitize_func: Any,
+) -> dict[str, Any]:
+    """Classify one generated output without ever discarding it.
+
+    A cap hit, unclosed reasoning block, missing final answer or unsanitizable
+    output is an item-level benchmark failure recorded on the row. The row is
+    still returned, still written, still scored if a valid executable was
+    recovered, and never regenerated or excluded from the denominator.
+    """
+    reasoning_opened = bool(thinking) or "<think>" in raw
+    reasoning_closed = (not reasoning_opened) or ("</think>" in raw)
+    if reasoning_opened:
+        if reasoning_closed:
+            final_answer_present = bool(raw.rsplit("</think>", 1)[-1].strip())
+        else:
+            final_answer_present = False
+    else:
+        final_answer_present = bool(raw.strip())
+    sanitized = ""
+    sanitize_error: str | None = None
+    try:
+        sanitized = str(sanitize_func(raw, entry_point) or "")
+        compile(sanitized, "<sanitized-output>", "exec")
+    except SyntaxError as error:
+        sanitize_error = f"SyntaxError: {error}"
+    except Exception as error:  # noqa: BLE001 - recorded as an item-level failure
+        sanitize_error = f"{type(error).__name__}: {error}"
+    sanitizable = bool(sanitized.strip()) and sanitize_error is None
+    if not sanitizable:
+        failure_reason: str | None = "sanitization_failure"
+    elif reasoning_opened and not reasoning_closed:
+        failure_reason = "unclosed_reasoning"
+    elif not final_answer_present:
+        failure_reason = "missing_final_answer"
+    elif cap_hit:
+        failure_reason = "cap_hit"
+    else:
+        failure_reason = None
+    return {
+        "cap_hit": bool(cap_hit),
+        "reasoning_opened": reasoning_opened,
+        "reasoning_closed": reasoning_closed,
+        "final_answer_present": final_answer_present,
+        "sanitizable": sanitizable,
+        "score_eligible": sanitizable,
+        "failure_reason": failure_reason,
+        "structurally_invalid": failure_reason is not None,
+        "sanitized_solution": sanitized if sanitizable else "",
+        "sanitized_solution_sha256": hashlib.sha256(sanitized.encode()).hexdigest(),
+        "sanitize_error": sanitize_error,
+    }
+
+
 def _generate_one(
     model: Any,
     tokenizer: Any,
@@ -286,6 +429,8 @@ def _generate_one(
     config: MbppBridgeBenchmarkConfig,
     *,
     condition: str,
+    logits_processor: Any | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     import torch
 
@@ -305,18 +450,37 @@ def _generate_one(
     )
     started = time.monotonic()
     with torch.inference_mode():
+        generate_kwargs = {}
+        if logits_processor is not None:
+            generate_kwargs["logits_processor"] = [logits_processor]
         output = model.generate(
             input_ids=input_ids,
             do_sample=False,
             max_new_tokens=max_new_tokens,
             use_cache=True,
             pad_token_id=tokenizer.eos_token_id,
+            **generate_kwargs,
         )
     elapsed = time.monotonic() - started
     generated_ids = output[0, input_ids.shape[1] :].detach().cpu().tolist()
     raw = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    try:
+        from evalplus.sanitize import sanitize as official_sanitize
+    except ImportError as error:  # pragma: no cover - generation requires the pinned sanitizer
+        raise BridgeBenchmarkError(
+            "official evalplus sanitizer is required to classify generated outputs"
+        ) from error
+    cap_hit = len(generated_ids) == max_new_tokens
+    classification = _classify_output(
+        raw,
+        thinking=thinking,
+        entry_point=task["entry_point"],
+        cap_hit=cap_hit,
+        sanitize_func=official_sanitize,
+    )
     return {
         "schema_version": 1,
+        "run_id": run_id or config.run_id,
         "task_id": task["task_id"],
         "solution": raw,
         "condition": condition,
@@ -328,9 +492,10 @@ def _generate_one(
         "generated_token_ids": generated_ids,
         "input_tokens": int(input_ids.shape[1]),
         "generated_tokens": len(generated_ids),
-        "hit_max_new_tokens": len(generated_ids) == max_new_tokens,
+        "hit_max_new_tokens": cap_hit,
         "generation_seconds": elapsed,
         "raw_solution_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+        **classification,
     }
 
 
@@ -494,6 +659,132 @@ def _validate_bridge_engagement(
     return normalized
 
 
+def condition_output_statistics(
+    rows: list[dict[str, Any]], expected_ids: list[str], *, condition: str
+) -> dict[str, Any]:
+    """Per-condition structural rates over the complete frozen denominator.
+
+    Truncated and otherwise structurally failed items stay in ``rows``; this
+    function only counts them. Missing, extra, reordered or duplicated task IDs
+    are reported explicitly so the pilot gate can reject them.
+    """
+    ids = [row.get("task_id") for row in rows]
+    counts = Counter(ids)
+    duplicates = sorted(task_id for task_id, count in counts.items() if count > 1)
+    missing = [task_id for task_id in expected_ids if task_id not in counts]
+    extra = [task_id for task_id in ids if task_id not in set(expected_ids)]
+    total = len(rows)
+    cap_hits = sum(1 for row in rows if bool(row.get("cap_hit")))
+    unclosed = sum(
+        1
+        for row in rows
+        if bool(row.get("reasoning_opened")) and not bool(row.get("reasoning_closed"))
+    )
+    missing_final_answer = sum(1 for row in rows if not bool(row.get("final_answer_present")))
+    sanitization_failures = sum(1 for row in rows if not bool(row.get("sanitizable")))
+    structurally_invalid = sum(1 for row in rows if row.get("failure_reason") is not None)
+    score_ineligible = sum(1 for row in rows if not bool(row.get("score_eligible")))
+
+    def rate(count: int) -> float:
+        return count / total if total else 0.0
+
+    return {
+        "condition": condition,
+        "denominator": total,
+        "expected_rows": len(expected_ids),
+        "order_matches": ids == expected_ids,
+        "missing_ids": missing,
+        "extra_ids": extra,
+        "duplicate_ids": duplicates,
+        "cap_hit_count": cap_hits,
+        "cap_hit_rate": rate(cap_hits),
+        "unclosed_reasoning_count": unclosed,
+        "unclosed_reasoning_rate": rate(unclosed),
+        "missing_final_answer_count": missing_final_answer,
+        "missing_final_answer_rate": rate(missing_final_answer),
+        "sanitization_failure_count": sanitization_failures,
+        "sanitization_failure_rate": rate(sanitization_failures),
+        "structurally_invalid_count": structurally_invalid,
+        "structurally_invalid_rate": rate(structurally_invalid),
+        "score_ineligible_count": score_ineligible,
+    }
+
+
+def evaluate_pilot_safety_gate(
+    config: MbppBridgeBenchmarkConfig,
+    rows_by_condition: Mapping[str, list[dict[str, Any]]],
+    expected_ids: list[str],
+    *,
+    bridge_engagement: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Pre-registered pilot safety gate.
+
+    Cap hits and structurally invalid outputs are item-level benchmark
+    failures, never pipeline abort reasons by themselves. This gate decides
+    whether the 50-task pilot is representative enough to continue: per
+    condition cap-hit and structurally-invalid rates must not exceed 5%, rows
+    must be complete and unique in exact frozen order, telemetry must be finite,
+    and both bridge conditions must show full sidecar engagement. Any OOM
+    aborts the run before this gate; completing generation proves OOM-free
+    execution.
+    """
+    gate = config.pilot_safety_gate
+    condition_reports: dict[str, Any] = {}
+    violations: list[str] = []
+    for condition in CONDITIONS:
+        rows = list(rows_by_condition.get(condition, []))
+        statistics = condition_output_statistics(rows, expected_ids, condition=condition)
+        problems: list[str] = []
+        if gate.require_exact_task_order_and_hashes and (
+            statistics["missing_ids"] or statistics["extra_ids"] or not statistics["order_matches"]
+        ):
+            problems.append("missing_extra_or_reordered_rows")
+        if gate.require_zero_missing_rows and statistics["missing_ids"]:
+            problems.append("missing_rows")
+        if gate.require_zero_duplicate_rows and statistics["duplicate_ids"]:
+            problems.append("duplicate_rows")
+        if statistics["cap_hit_rate"] > gate.max_cap_hit_rate:
+            problems.append("cap_hit_rate_exceeded")
+        if statistics["structurally_invalid_rate"] > gate.max_structurally_invalid_rate:
+            problems.append("structurally_invalid_rate_exceeded")
+        if condition.startswith("bridge-"):
+            snapshot = (bridge_engagement or {}).get(condition)
+            if not snapshot:
+                problems.append("missing_bridge_engagement")
+            else:
+                for key, sidecar in snapshot.items():
+                    for field in ("gate_mean", "residual_l2_mean"):
+                        value = sidecar.get(field)
+                        if (
+                            not isinstance(value, (int, float))
+                            or not math.isfinite(value)
+                            or value <= 0
+                        ):
+                            problems.append(f"non_finite_bridge_telemetry:{key}:{field}")
+        condition_reports[condition] = {"statistics": statistics, "problems": sorted(set(problems))}
+        violations.extend(f"{condition}:{problem}" for problem in sorted(set(problems)))
+    return {
+        "schema_version": 1,
+        "kind": "mbppplus-pilot-safety-gate",
+        "run_id": config.run_id,
+        "config_fingerprint": config.fingerprint(),
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "passed": not violations,
+        "violations": violations,
+        "thresholds": {
+            "max_cap_hit_rate": gate.max_cap_hit_rate,
+            "max_structurally_invalid_rate": gate.max_structurally_invalid_rate,
+            "require_zero_missing_rows": gate.require_zero_missing_rows,
+            "require_zero_duplicate_rows": gate.require_zero_duplicate_rows,
+            "require_no_oom_nan_inf": gate.require_no_oom_nan_inf,
+            "require_exact_task_order_and_hashes": gate.require_exact_task_order_and_hashes,
+            "require_full_bridge_engagement": gate.require_full_bridge_engagement,
+        },
+        "oom_free_by_construction": True,
+        "conditions": condition_reports,
+    }
+
+
 def validate_mbpp_generation(
     config: MbppBridgeBenchmarkConfig, *, expected_items: int | None = None
 ) -> dict[str, Any]:
@@ -588,7 +879,8 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
             raise BridgeBenchmarkError("host tokenizer ignored the thinking-mode switch")
         _write_state(config, "RUNNING", "four-condition-generation")
         engagement: dict[str, dict[str, Any]] = {}
-        tiers = (("pilot", config.dataset.pilot_items), ("full", len(tasks)))
+        tier_statistics: dict[str, Any] = {}
+        tiers = planned_tiers(config, len(tasks))
         for tier, boundary in tiers:
             for condition in CONDITIONS:
                 _check_budget(config, started)
@@ -602,6 +894,28 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                         task["task_id"] for task in tasks[: len(rows)]
                     ]:
                         raise BridgeBenchmarkError(f"resume prefix differs for {condition}")
+                    for row, task in zip(rows, tasks, strict=False):
+                        if row.get("run_id") != config.run_id:
+                            raise BridgeBenchmarkError(
+                                f"condition file contains rows from another run: {condition}"
+                            )
+                        if row.get("condition") != condition:
+                            raise BridgeBenchmarkError(
+                                f"condition identity differs in resume prefix: {condition}"
+                            )
+                        if row.get("source_row_sha256") != task["source_row_sha256"]:
+                            raise BridgeBenchmarkError(
+                                f"resume row source hash differs for {condition}: "
+                                f"{row.get('task_id')}"
+                            )
+                        raw = str(row.get("solution", ""))
+                        if hashlib.sha256(raw.encode()).hexdigest() != row.get(
+                            "raw_solution_sha256"
+                        ):
+                            raise BridgeBenchmarkError(
+                                f"resume row output hash differs for {condition}: "
+                                f"{row.get('task_id')}"
+                            )
                 telemetry = BridgeGenerationTelemetry() if condition.startswith("bridge-") else None
                 handles = (
                     install_bridge_sidecars(model, bridge, mappings, telemetry=telemetry)
@@ -636,6 +950,22 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                     engagement.setdefault(condition, {})[tier] = verified_engagement
                     _atomic_json(engagement_path, verified_engagement)
             tier_validation = validate_mbpp_generation(config, expected_items=boundary)
+            expected_ids = [task["task_id"] for task in tasks[:boundary]]
+            tier_rows = {
+                condition: [
+                    json.loads(line)
+                    for line in (
+                        config.output_dir / "conditions" / f"{condition}.jsonl"
+                    ).read_text(encoding="utf-8").splitlines()
+                ][:boundary]
+                for condition in CONDITIONS
+            }
+            tier_statistics = {
+                condition: condition_output_statistics(
+                    tier_rows[condition], expected_ids, condition=condition
+                )
+                for condition in CONDITIONS
+            }
             _atomic_json(
                 config.output_dir / f"{tier}-generation-report.json",
                 {
@@ -644,21 +974,56 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
                     "tier": tier,
                     "status": "PASS",
                     "run_id": config.run_id,
+                    "execution_mode": config.execution_mode,
                     "validation": tier_validation,
+                    "output_statistics": tier_statistics,
                     "proceed_full_regardless_of_pilot_score": True,
                 },
             )
+            if tier == "pilot":
+                pilot_bridge_engagement = {
+                    condition: engagement.get(condition, {}).get("pilot", {})
+                    for condition in CONDITIONS
+                    if condition.startswith("bridge-")
+                }
+                gate_report = evaluate_pilot_safety_gate(
+                    config,
+                    tier_rows,
+                    expected_ids,
+                    bridge_engagement=pilot_bridge_engagement,
+                )
+                _atomic_json(config.output_dir / "pilot-safety-gate.json", gate_report)
+                if not gate_report["passed"]:
+                    message = "pilot safety gate exceeded: " + "; ".join(
+                        gate_report["violations"]
+                    )
+                    _write_state(config, "FAILED_TERMINAL", "pilot-safety-gate", message)
+                    raise PilotSafetyGateError(message)
         validation = validate_mbpp_generation(config)
         elapsed = time.monotonic() - started
+        full_only = config.execution_mode == "exploratory_full_only"
         report = {
             "schema_version": 1,
             "kind": "mbppplus-four-condition-generation",
             "status": "PASS",
-            "classification": "generation-complete-official-scoring-deferred",
+            "classification": (
+                "exploratory-full-after-failed-pilot-safety-gate"
+                if full_only
+                else "generation-complete-official-scoring-deferred"
+            ),
             "run_id": config.run_id,
+            "execution_mode": config.execution_mode,
+            "pilot_rows_reused": 0 if full_only else None,
+            "historical_pilot": (
+                config.historical_pilot.model_dump(mode="json")
+                if config.historical_pilot is not None
+                else None
+            ),
+            "expected_totals": expected_generation_totals(config),
             "config_fingerprint": config.fingerprint(),
             "conditions": list(CONDITIONS),
             "validation": validation,
+            "output_statistics": tier_statistics,
             "bridge_engagement": engagement,
             "elapsed_seconds": elapsed,
             "estimated_compute_cost_usd": (
@@ -670,7 +1035,8 @@ def run_mbpp_bridge_benchmark(config_path: Path) -> dict[str, Any]:
         _write_state(config, "COMPLETE", "generation-complete")
         return report
     except Exception as error:
-        _write_state(config, "FAILED_TERMINAL", "generation", f"{type(error).__name__}: {error}")
+        stage = "pilot-safety-gate" if isinstance(error, PilotSafetyGateError) else "generation"
+        _write_state(config, "FAILED_TERMINAL", stage, f"{type(error).__name__}: {error}")
         raise
 
 
@@ -694,6 +1060,8 @@ def _docker_prefix(config: MbppBridgeBenchmarkConfig, image: str, *, work: Path)
         "--env",
         "MBPP_OVERRIDE_PATH=/dataset/MbppPlus.jsonl.gz",
         "--env",
+        f"HUMANEVAL_OVERRIDE_PATH={HUMANEVAL_OVERRIDE_PATH}",
+        "--env",
         "HOME=/tmp",
         image,
     ]
@@ -708,25 +1076,76 @@ def _verify_evalplus_image(image: str, revision: str) -> None:
             "image",
             "inspect",
             "--format",
-            '{{index .Config.Labels "org.opencontainers.image.revision"}}',
+            "{{json .Config.Labels}}",
             image,
         ],
         capture_output=True,
         text=True,
         check=False,
     )
-    if result.returncode != 0 or result.stdout.strip() != revision:
-        raise BridgeBenchmarkError("EvalPlus image revision label differs from pinned config")
+    if result.returncode != 0:
+        raise BridgeBenchmarkError("EvalPlus image metadata inspection failed")
+    try:
+        labels = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise BridgeBenchmarkError("EvalPlus image metadata labels are not valid JSON") from error
+    expected_labels = {
+        "org.opencontainers.image.revision": revision,
+        "org.opencontainers.image.humanevalplus.version": OFFICIAL_HUMANEVAL_PLUS_VERSION,
+        "org.opencontainers.image.humanevalplus.path": HUMANEVAL_OVERRIDE_PATH,
+        "org.opencontainers.image.humanevalplus.sha256": OFFICIAL_HUMANEVAL_PLUS_SHA256,
+    }
+    labels_match = isinstance(labels, dict) and all(
+        labels.get(key) == value for key, value in expected_labels.items()
+    )
+    if not labels_match:
+        raise BridgeBenchmarkError("EvalPlus image labels differ from the pinned scoring contract")
+    content = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network=none",
+            "--read-only",
+            image,
+            "sha256sum",
+            HUMANEVAL_OVERRIDE_PATH,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    actual = content.stdout.strip().split(maxsplit=1)[0] if content.stdout.strip() else ""
+    if content.returncode != 0 or actual != OFFICIAL_HUMANEVAL_PLUS_SHA256:
+        raise BridgeBenchmarkError("EvalPlus image HumanEval+ artifact hash differs from pin")
+
+
+def _official_result_path(samples: Path) -> Path:
+    """Return EvalPlus's result path for a JSONL sample file.
+
+    EvalPlus e5d0ed0 has no supported output-file CLI flag. Its deterministic
+    file mode is ``samples.replace('.jsonl', '_eval_results.json')``; keep the
+    suffix check here so a changed sample path cannot silently select another
+    output convention.
+    """
+    if samples.suffix != ".jsonl":
+        raise BridgeBenchmarkError("official EvalPlus samples path must end in .jsonl")
+    return samples.with_name(f"{samples.stem}_eval_results.json")
 
 
 def _official_result_rows(path: Path, expected_ids: set[str]) -> dict[str, dict[str, bool]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BridgeBenchmarkError("official EvalPlus result is not valid JSON") from error
+    if not isinstance(payload, dict):
+        raise BridgeBenchmarkError("official EvalPlus result is not a JSON object")
     evaluated = payload.get("eval")
     if not isinstance(evaluated, dict) or set(evaluated) != expected_ids:
         raise BridgeBenchmarkError("official EvalPlus result task universe differs")
     rows = {}
     for task_id, values in evaluated.items():
-        if not isinstance(values, list) or len(values) != 1:
+        if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
             raise BridgeBenchmarkError("official EvalPlus result is not pass@1")
         row = values[0]
         base = row.get("base_status") == "pass"
@@ -757,11 +1176,16 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
     scores_dir.mkdir(parents=True, exist_ok=True)
     all_rows = {}
     logs = {}
+    sanitization_stats: dict[str, Any] = {}
     for condition in CONDITIONS:
         source = config.output_dir / "conditions" / f"{condition}.jsonl"
         relative_source = source.resolve().relative_to(config.output_dir.resolve())
         sanitized = scores_dir / f"{condition}-sanitized.jsonl"
-        result_path = scores_dir / f"{condition}.eval_results.json"
+        result_path = _official_result_path(sanitized)
+        # The pre-fix scorer attempted to direct EvalPlus to this unsupported
+        # path. Refuse to mistake that stale artifact for the official CLI's
+        # deterministic ``*_eval_results.json`` output.
+        legacy_result_path = scores_dir / f"{condition}.eval_results.json"
         prefix = _docker_prefix(config, evalplus_image, work=config.output_dir.resolve())
         if not sanitized.is_file():
             command = prefix + [
@@ -770,6 +1194,8 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
                 "evalplus.sanitize",
                 "--samples",
                 f"/work/{relative_source}",
+                "--mbpp_version",
+                config.dataset.version,
             ]
             run = subprocess.run(
                 command,
@@ -787,7 +1213,32 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
             if run.returncode != 0 or not produced.is_file():
                 raise BridgeBenchmarkError(f"official EvalPlus sanitize failed: {condition}")
             os.replace(produced, sanitized)
+        sanitized_rows = [
+            json.loads(line) for line in sanitized.read_text(encoding="utf-8").splitlines()
+        ]
+        frozen_ids = [task["task_id"] for task in tasks]
+        if [row.get("task_id") for row in sanitized_rows] != frozen_ids:
+            raise BridgeBenchmarkError(
+                f"official EvalPlus sanitize dropped, added or reordered rows: {condition}"
+            )
+        unrecoverable = [
+            str(row["task_id"])
+            for row in sanitized_rows
+            if not str(row.get("solution", "")).strip()
+        ]
+        sanitization_stats[condition] = {
+            "rows": len(sanitized_rows),
+            "unrecoverable_items": unrecoverable,
+            "unrecoverable_rate": (
+                len(unrecoverable) / len(sanitized_rows) if sanitized_rows else 0.0
+            ),
+        }
         if not result_path.is_file():
+            if legacy_result_path.is_file():
+                raise BridgeBenchmarkError(
+                    "legacy EvalPlus result path exists without the official result path: "
+                    f"{legacy_result_path.name}"
+                )
             command = prefix + [
                 "python",
                 "-m",
@@ -800,8 +1251,6 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
                 str(config.evalplus.parallel_workers),
                 "--version",
                 config.dataset.version,
-                "--output-file",
-                f"/work/{result_path.resolve().relative_to(config.output_dir.resolve())}",
             ]
             run = subprocess.run(
                 command,
@@ -832,7 +1281,7 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
         path.name: {"sha256": _sha256_file(path), "bytes": path.stat().st_size}
         for path in sorted(scores_dir.iterdir())
         if path.is_file()
-        and (path.name.endswith("-sanitized.jsonl") or path.name.endswith(".eval_results.json"))
+        and (path.name.endswith("-sanitized.jsonl") or path.name.endswith("_eval_results.json"))
     }
     report = {
         "schema_version": 1,
@@ -844,12 +1293,15 @@ def _score_mbpp_bridge_benchmark(config_path: Path, *, evalplus_image: str) -> d
         "dataset_version": config.dataset.version,
         "dataset_archive_sha256": config.dataset.archive_sha256,
         "generation_validation": validation,
+        "sanitization_statistics": sanitization_stats,
         "official_artifacts": official_artifacts,
         "comparisons": comparisons,
         "logs": logs,
         "limitations": [
             "observational bridge comparison; not causal proof",
             "thinking-enabled and thinking-disabled results are separate experiments",
+            "cap hits, unclosed reasoning, missing final answers and sanitization failures "
+            "are item-level benchmark failures retained in the denominator and reported separately",
         ],
     }
     _atomic_json(config.output_dir / "official-evalplus-report.json", report)

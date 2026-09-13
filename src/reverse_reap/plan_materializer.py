@@ -59,7 +59,7 @@ def _replace_text(
     rendered = rendered.replace("Qwen/Qwen3.8-Flash-Next", model_id)
     rendered = rendered.replace("de4b8e4d43b917e7706784d8bb445c9af86a3540", revision)
     if model_id == QWEN38_MODEL_ID:
-        rendered = rendered.replace("four-RTX-3090", "eight-RTX-PRO-6000")
+        rendered = rendered.replace("four-RTX-3090", "six-RTX-PRO-6000")
         rendered = rendered.replace("top-8", "top-10")
         rendered = rendered.replace("all 40 layers", "all 48 layers")
     elif model_id == GLM53_BF16_MODEL_ID:
@@ -67,7 +67,7 @@ def _replace_text(
             "four-RTX-3090",
             "GLM direct aggregate-VRAM GPU profile"
             if execution_mode == "direct"
-            else "eight-RTX-PRO-6000",
+            else "six-RTX-PRO-6000",
         )
         rendered = rendered.replace(
             "all 40 layers",
@@ -122,7 +122,7 @@ def render_plan(
 
     rendered = replace(payload)
     assert isinstance(rendered, dict)
-    profile = "alex-8x-pro6000" if execution_mode == "fau-slurm" else "glm53-direct"
+    profile = "alex-6x-pro6000" if execution_mode == "fau-slurm" else "glm53-direct"
     for task in rendered["tasks"]:
         if task["task_id"] != "gpu-preflight":
             continue

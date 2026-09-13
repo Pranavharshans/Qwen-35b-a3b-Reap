@@ -10,11 +10,23 @@ from reverse_reap.routing import RouterBatch
 from reverse_reap.runtime import (
     RuntimeCompatibilityError,
     _chat_ids,
+    _loader_max_memory,
     _render_ids,
     _segment_rows,
     pad_token_batch,
     validate_donor_contract,
 )
+
+
+def test_loader_max_memory_is_opt_in(monkeypatch):
+    monkeypatch.delenv("REVERSE_REAP_GPU_MAX_MEMORY_GIB", raising=False)
+    assert _loader_max_memory(6) is None
+
+
+def test_loader_max_memory_reserves_per_gpu_headroom(monkeypatch):
+    monkeypatch.setenv("REVERSE_REAP_GPU_MAX_MEMORY_GIB", "84")
+    monkeypatch.setenv("REVERSE_REAP_CPU_MAX_MEMORY_GIB", "512")
+    assert _loader_max_memory(2) == {0: "84GiB", 1: "84GiB", "cpu": "512GiB"}
 
 
 def architecture(num_layers=40):

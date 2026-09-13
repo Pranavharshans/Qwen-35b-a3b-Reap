@@ -22,7 +22,7 @@ def test_materializes_fau_plan_without_submitting(tmp_path):
     )
     payload = yaml.safe_load(destination.read_text())
     preflight = next(task for task in payload["tasks"] if task["task_id"] == "gpu-preflight")
-    assert preflight["command"][-2:] == ["--profile", "alex-8x-pro6000"]
+    assert preflight["command"][-2:] == ["--profile", "alex-6x-pro6000"]
     commands = [part for task in payload["tasks"] for part in task["command"]]
     assert "/models/qwen" not in commands
     assert "/cluster/models/q38" in commands
@@ -101,8 +101,11 @@ def test_slurm_script_matches_fau_batch_contract():
     body = Path("scripts/fau/reverse_reap.slurm").read_text()
     assert body.startswith("#!/bin/bash -l")
     assert "#SBATCH --partition=rtxpro6k" in body
-    assert "#SBATCH --gres=gpu:rtxpro6k:8" in body
+    assert "#SBATCH --gres=gpu:rtxpro6k:6" in body
     assert "#SBATCH --export=NONE" in body
     assert "unset SLURM_EXPORT_ENV" in body
     assert "module load cuda/12.8" in body
+    assert "REVERSE_REAP_GPU_MAX_MEMORY_GIB=84" in body
+    assert "TRANSFORMERS_OFFLINE=1" in body
+    assert "http_proxy=http://proxy.nhr.fau.de:80" in body
     assert "srun uv run --frozen --no-sync reverse-reap run-all" in body
