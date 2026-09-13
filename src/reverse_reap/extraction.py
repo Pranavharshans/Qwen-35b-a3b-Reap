@@ -38,7 +38,7 @@ def architecture_from_weight_index(
     """Infer the fused key prefix while enforcing an approved donor contract."""
     contract = donor_contract(model_id)
     weight_map = load_weight_map(model_dir)
-    if contract.expert_weight_layout == "per-expert-fp8":
+    if contract.expert_weight_layout.startswith("per-expert"):
         pattern = re.compile(
             r"^(.*\.layers)\.(\d+)\.mlp\.experts\.\d+\.gate_proj\.weight$"
         )
@@ -49,18 +49,19 @@ def architecture_from_weight_index(
         raise ExtractionError("could not locate fused expert tensors in weight index")
     prefixes = {match.group(1) for match in matches}
     layers = {int(match.group(2)) for match in matches}
-    if len(prefixes) != 1 or layers != set(range(contract.num_hidden_layers)):
+    if len(prefixes) != 1 or layers != set(contract.moe_layer_indices):
         raise ExtractionError(
-            f"expected one {contract.num_hidden_layers}-layer fused expert prefix, "
+            f"expected one {len(contract.moe_layer_indices)}-layer expert prefix, "
             f"got prefixes={prefixes}, layers={layers}"
         )
     return Qwen35Architecture(
-        layers=tuple(None for _ in range(contract.num_hidden_layers)),
+        layers=tuple(None for _ in contract.moe_layer_indices),
         num_experts=contract.num_experts,
         experts_per_token=contract.num_experts_per_tok,
         hidden_size=contract.hidden_size,
         expert_intermediate_size=contract.moe_intermediate_size,
         state_prefix=prefixes.pop(),
+        layer_indices=contract.moe_layer_indices,
     )
 
 
@@ -149,19 +150,12 @@ def extract_experts(
     tensors: dict[str, Any] = {}
     records: list[ExtractedTensor] = []
     for layer, expert in sorted(set(selected)):
-        if contract is not None and contract.expert_weight_layout == "per-expert-fp8":
+        if contract is not None and contract.expert_weight_layout.startswith("per-expert"):
             stem = f"{architecture.state_prefix}.{layer}.mlp.experts.{expert}"
-            source_pairs = tuple(
-                (f"{stem}.{suffix}", suffix)
-                for suffix in (
-                    "gate_proj.weight",
-                    "gate_proj.weight_scale_inv",
-                    "up_proj.weight",
-                    "up_proj.weight_scale_inv",
-                    "down_proj.weight",
-                    "down_proj.weight_scale_inv",
-                )
-            )
+            suffixes = ["gate_proj.weight", "up_proj.weight", "down_proj.weight"]
+            if contract.expert_weight_layout == "per-expert-fp8":
+                suffixes = [item for suffix in suffixes for item in (suffix, f"{suffix}_scale_inv")]
+            source_pairs = tuple((f"{stem}.{suffix}", suffix) for suffix in suffixes)
         else:
             spec = architecture.tensor_spec(layer, expert)
             source_pairs = (
@@ -171,7 +165,7 @@ def extract_experts(
         for source_key, suffix in source_pairs:
             source = _read_tensor(model_dir, weight_map, source_key)
             output_key = f"layers.{layer}.experts.{expert}.{suffix}"
-            if contract is not None and contract.expert_weight_layout == "per-expert-fp8":
+            if contract is not None and contract.expert_weight_layout.startswith("per-expert"):
                 value = _contiguous(source)
             else:
                 if source.shape[0] != architecture.num_experts:
@@ -239,7 +233,7 @@ def extract_experts(
             "source_key": record.source_key,
             "source_expert_axis_index": (
                 None
-                if contract is not None and contract.expert_weight_layout == "per-expert-fp8"
+                if contract is not None and contract.expert_weight_layout.startswith("per-expert")
                 else int(record.output_key.split(".")[3])
             ),
         }

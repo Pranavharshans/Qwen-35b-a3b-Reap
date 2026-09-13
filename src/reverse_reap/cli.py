@@ -176,9 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_repair_raw.add_argument("--min-samples-per-cell", type=int, default=1)
     bridge_repair_raw.add_argument("--min-events-per-cell", type=int, default=32)
     bridge_repair_raw.add_argument("--max-rows-per-sample", type=int, default=128)
-    bridge_repair_raw.add_argument(
-        "--allow-observational-coverage-incomplete", action="store_true"
-    )
+    bridge_repair_raw.add_argument("--allow-observational-coverage-incomplete", action="store_true")
     host_capture = subparsers.add_parser("capture-host-states")
     host_capture.add_argument("host_model", type=Path)
     host_capture.add_argument("tokenizer", type=Path)
@@ -187,9 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     host_capture.add_argument("destination", type=Path)
     host_capture.add_argument("--host-revision", required=True)
     host_capture.add_argument("--run-id", required=True)
-    host_capture.add_argument(
-        "--allow-observational-coverage-incomplete", action="store_true"
-    )
+    host_capture.add_argument("--allow-observational-coverage-incomplete", action="store_true")
     host_capture.add_argument(
         "--mapping",
         action="append",
@@ -487,9 +483,7 @@ def main() -> int:
             min_samples_per_cell=args.min_samples_per_cell,
             min_events_per_cell=args.min_events_per_cell,
             max_rows_per_sample=args.max_rows_per_sample,
-            allow_observational_coverage_incomplete=(
-                args.allow_observational_coverage_incomplete
-            ),
+            allow_observational_coverage_incomplete=(args.allow_observational_coverage_incomplete),
         )
         emit_json(output)
         return 0
@@ -517,9 +511,7 @@ def main() -> int:
             mappings=mappings,
             host_revision=args.host_revision,
             run_id=args.run_id,
-            allow_observational_coverage_incomplete=(
-                args.allow_observational_coverage_incomplete
-            ),
+            allow_observational_coverage_incomplete=(args.allow_observational_coverage_incomplete),
         )
         emit_json(output)
         return 0
@@ -569,15 +561,11 @@ def main() -> int:
         emit_json(output)
         return 0 if output["status"] == "PASS" else 2
     if args.command == "validate-mbpp-bridge-benchmark":
-        output = validate_mbpp_generation(
-            load_mbpp_bridge_config(args.config, allow_expired=True)
-        )
+        output = validate_mbpp_generation(load_mbpp_bridge_config(args.config, allow_expired=True))
         emit_json(output)
         return 0 if output["passed"] else 2
     if args.command == "score-mbpp-bridge-benchmark":
-        output = score_mbpp_bridge_benchmark(
-            args.config, evalplus_image=args.evalplus_image
-        )
+        output = score_mbpp_bridge_benchmark(args.config, evalplus_image=args.evalplus_image)
         emit_json(output)
         return 0 if output["status"] == "PASS" else 2
     if args.command == "probe":
@@ -722,11 +710,7 @@ def main() -> int:
         emit_json(output, args.output)
         return 0 if output["passed"] else 2
     if args.command == "export-swebench":
-        emit_json(
-            export_predictions(
-                args.evaluation, args.destination, model_name=args.model_name
-            )
-        )
+        emit_json(export_predictions(args.evaluation, args.destination, model_name=args.model_name))
         return 0
     if args.command == "merge-swebench":
         output = merge_report(args.evaluation, args.report, args.destination)

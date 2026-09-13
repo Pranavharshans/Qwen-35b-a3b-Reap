@@ -100,16 +100,19 @@ def validate_donor_contract(model: Any, architecture: Qwen35Architecture) -> dic
         "model_type": getattr(model_config, "model_type", None),
         "text_model_type": getattr(text_config, "model_type", None),
         "num_layers": architecture.num_layers,
+        "num_moe_layers": architecture.num_moe_layers,
         "hidden_size": architecture.hidden_size,
         "num_experts": architecture.num_experts,
         "experts_per_token": architecture.experts_per_token,
         "expert_intermediate_size": architecture.expert_intermediate_size,
         "shared_expert_present": all(
-            hasattr(layer.mlp, "shared_expert") for layer in architecture.layers
+            hasattr(layer.mlp, "shared_expert") or hasattr(layer.mlp, "shared_experts")
+            for layer in architecture.layers
         ),
     }
     expected = {
         "num_layers": contract.num_hidden_layers,
+        "num_moe_layers": len(contract.moe_layer_indices),
         "hidden_size": contract.hidden_size,
         "num_experts": contract.num_experts,
         "experts_per_token": contract.num_experts_per_tok,
@@ -751,10 +754,10 @@ def capture_manifest(
         "routing_rows": count,
         "analysed_tokens": analysed_tokens,
         "expected_routing_rows": (
-            analysed_tokens * architecture.num_layers * architecture.experts_per_token
+            analysed_tokens * architecture.num_moe_layers * architecture.experts_per_token
         ),
         "row_count_valid": count
-        == analysed_tokens * architecture.num_layers * architecture.experts_per_token,
+        == analysed_tokens * architecture.num_moe_layers * architecture.experts_per_token,
         "samples": len(samples),
         "telemetry_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
         "architecture": architecture_report,
@@ -785,7 +788,7 @@ def probe_instrumentation(
         "maximum_logit_difference": maximum_difference,
         "routed_records": routed,
         "passed": exact
-        and routed == ids.numel() * architecture.num_layers * architecture.experts_per_token,
+        and routed == ids.numel() * architecture.num_moe_layers * architecture.experts_per_token,
     }
 
 

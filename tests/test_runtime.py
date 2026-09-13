@@ -45,6 +45,23 @@ def test_qwen38_runtime_contract_accepts_exact_shape():
     assert validate_donor_contract(model, qwen38_architecture)["compatible"]
 
 
+def test_glm53_runtime_contract_accepts_sparse_layers_and_plural_shared_experts():
+    layers = tuple(SimpleNamespace(mlp=SimpleNamespace(shared_experts=object())) for _ in range(42))
+    glm_architecture = Qwen35Architecture(
+        layers,
+        288,
+        8,
+        4096,
+        2048,
+        "model.language_model.layers",
+        layer_indices=tuple(range(3, 45)),
+    )
+    model = SimpleNamespace(config=SimpleNamespace(model_type="glm5_next"))
+    report = validate_donor_contract(model, glm_architecture)
+    assert report["compatible"]
+    assert report["actual"]["num_moe_layers"] == 42
+
+
 def test_segment_subtraction_recovers_completion_only_statistics():
     prompt = CaptureState(1, 3)
     full = CaptureState(1, 3)

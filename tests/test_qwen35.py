@@ -41,11 +41,10 @@ def test_rejects_inconsistent_expert_layout():
         inspect_qwen35_moe(model_with_shapes(down=(256, 2048, 511)))
 
 
-def test_rejects_missing_sparse_moe_parts():
+def test_runtime_inspector_leaves_shared_path_validation_to_donor_contract():
     model = model_with_shapes()
     del model.model.language_model.layers[0].mlp.shared_expert
-    with pytest.raises(ArchitectureError, match="shared_expert"):
-        inspect_qwen35_moe(model)
+    assert inspect_qwen35_moe(model).num_moe_layers == 3
 
 
 def test_inspects_qwen38_shared_fused_layout():
@@ -57,3 +56,20 @@ def test_inspects_qwen38_shared_fused_layout():
     assert architecture.experts_per_token == 10
     assert architecture.hidden_size == 2560
     assert architecture.expert_intermediate_size == 640
+
+
+def test_inspects_glm_sparse_layers_with_absolute_layer_indices():
+    model = model_with_shapes(
+        gate=(288, 4096, 4096), down=(288, 4096, 2048), layers=45, top_k=8
+    )
+    for layer in model.model.language_model.layers[:3]:
+        layer.mlp = SimpleNamespace(gate_proj=object(), up_proj=object(), down_proj=object())
+    architecture = inspect_qwen35_moe(model)
+    assert architecture.num_layers == 45
+    assert architecture.num_moe_layers == 42
+    assert architecture.layer_indices == tuple(range(3, 45))
+    assert architecture.tensor_spec(3, 17).gate_up_key.endswith(
+        "layers.3.mlp.experts.gate_up_proj"
+    )
+    with pytest.raises(IndexError, match="not a routed MoE layer"):
+        architecture.tensor_spec(2, 17)
