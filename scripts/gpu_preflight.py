@@ -102,6 +102,40 @@ def validate(report: dict, profile: str = "4x3090") -> list[str]:
                 errors.append(f"GPU {gpu['index']} compute capability is below 8.6")
         if report["disk_free_bytes"] < 100 * 1024**3:
             errors.append("less than 100 GiB disk is free")
+    elif profile == "glm53-direct":
+        # Direct/cloud execution deliberately does not assert a vendor or GPU
+        # count.  The BF16 checkpoint still needs a conservative aggregate
+        # memory and run-filesystem floor before the normal controller is
+        # allowed to load it.  The 700 GiB floor is a feasibility guard for
+        # the roughly 640 GiB raw BF16 checkpoint plus runtime overhead, not
+        # proof that the exact model will fit. FAU Alex uses its separate
+        # six-GPU profile with bounded CPU offload.
+        if report["gpu_count"] < 1:
+            errors.append("at least one CUDA GPU is required")
+        aggregate_memory = sum(
+            int(gpu.get("total_memory_bytes", 0)) for gpu in report.get("gpus", [])
+        )
+        if aggregate_memory < 700 * 1024**3:
+            errors.append("aggregate GPU memory is below the 700 GiB GLM BF16 feasibility floor")
+        if report["disk_free_bytes"] < 120 * 1024**3:
+            errors.append(
+                "less than 120 GiB run-filesystem space is free for GLM artifacts "
+                "(the model directory may be pre-staged separately)"
+            )
+        torch_version = str(report.get("torch", ""))
+        torch_match = re.match(r"^(\d+)\.(\d+)", torch_version)
+        if torch_match is None or tuple(map(int, torch_match.groups())) < (2, 11):
+            errors.append(
+                "GLM direct execution requires torch 2.11.x or newer, "
+                f"found {torch_version}"
+            )
+        cuda_runtime = str(report.get("cuda_runtime", ""))
+        cuda_match = re.match(r"^(\d+)\.(\d+)", cuda_runtime)
+        if cuda_match is None or tuple(map(int, cuda_match.groups())) < (12, 8):
+            errors.append(
+                "GLM direct execution requires CUDA runtime 12.8 or newer, "
+                f"found {cuda_runtime}"
+            )
     else:
         errors.append(f"unknown preflight profile: {profile}")
     return errors
@@ -112,7 +146,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--profile",
-        choices=["4x3090", "pro6000", "alex-6x-pro6000", "alex-8x-pro6000"],
+        choices=[
+            "4x3090",
+            "pro6000",
+            "alex-6x-pro6000",
+            "alex-8x-pro6000",
+            "glm53-direct",
+        ],
         default="4x3090",
     )
     args = parser.parse_args()

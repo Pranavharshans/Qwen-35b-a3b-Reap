@@ -210,10 +210,7 @@ def _require_deterministic_cuda() -> None:
         return
     if not torch.are_deterministic_algorithms_enabled():
         return
-    if (
-        os.environ.get("CUBLAS_WORKSPACE_CONFIG")
-        not in DETERMINISTIC_CUBLAS_WORKSPACE_VALUES
-    ):
+    if os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in DETERMINISTIC_CUBLAS_WORKSPACE_VALUES:
         raise BridgeBenchmarkError(
             "deterministic CUDA requested but CUBLAS_WORKSPACE_CONFIG is missing "
             "or invalid; set CUBLAS_WORKSPACE_CONFIG=:4096:8 before launching"

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 QWEN35_MODEL_ID = "Qwen/Qwen3.5-35B-A3B"
 QWEN38_MODEL_ID = "Qwen/Qwen3.8-Flash-Next"
 QWEN38_FP8_MODEL_ID = "Qwen/Qwen3.8-Flash-Next-FP8"
+GLM53_BF16_MODEL_ID = "zai-org/GLM-5.3-Flash-BF16"
 
 
 @dataclass(frozen=True)
@@ -27,9 +28,11 @@ class DonorContract:
     expert_weight_layout: str = "fused"
     quantization_config: dict[str, object] | None = None
     expected_revision: str | None = None
+    first_moe_layer: int = 0
+    text_config_fields: tuple[tuple[str, str], ...] = ()
 
     def expected_text_config(self) -> dict[str, object]:
-        return {
+        canonical = {
             "model_type": self.text_model_type,
             "num_hidden_layers": self.num_hidden_layers,
             "hidden_size": self.hidden_size,
@@ -39,6 +42,12 @@ class DonorContract:
             "shared_expert_intermediate_size": self.shared_expert_intermediate_size,
             "dtype": self.dtype,
         }
+        aliases = dict(self.text_config_fields)
+        return {aliases.get(key, key): value for key, value in canonical.items()}
+
+    @property
+    def moe_layer_indices(self) -> tuple[int, ...]:
+        return tuple(range(self.first_moe_layer, self.num_hidden_layers))
 
 
 DONOR_CONTRACTS = {
@@ -92,6 +101,26 @@ DONOR_CONTRACTS = {
             "weight_block_size": [128, 128],
         },
         expected_revision="236dfdf285828023ca3bcd3f37366c58a3469b13",
+    ),
+    GLM53_BF16_MODEL_ID: DonorContract(
+        model_id=GLM53_BF16_MODEL_ID,
+        slug="glm53flashbf16",
+        root_model_type="glm5_next",
+        architecture="Glm5NextForConditionalGeneration",
+        text_model_type="glm5_next_text",
+        num_hidden_layers=45,
+        hidden_size=4096,
+        num_experts=288,
+        num_experts_per_tok=8,
+        moe_intermediate_size=2048,
+        shared_expert_intermediate_size=2048,
+        expert_weight_layout="per-expert",
+        expected_revision="a5b45eb41df6402735dedc900be14a42e8d5e538",
+        first_moe_layer=3,
+        text_config_fields=(
+            ("num_experts", "n_routed_experts"),
+            ("shared_expert_intermediate_size", "moe_intermediate_size"),
+        ),
     ),
 }
 

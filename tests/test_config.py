@@ -36,6 +36,14 @@ def test_qwen38_fp8_config_has_separate_precision_and_identity() -> None:
     assert "-qwen38flashnextfp8-direct-" in run_id
 
 
+def test_glm53_flash_config_has_distinct_identity_and_pinned_revision() -> None:
+    config = load_config(Path("configs/smoke-glm53-flash-bf16.yaml"))
+    run_id = config.resolve_run_id("a" * 40, datetime(2026, 9, 12, tzinfo=UTC))
+    assert config.model.id == "zai-org/GLM-5.3-Flash-BF16"
+    assert config.model.revision == "a5b45eb41df6402735dedc900be14a42e8d5e538"
+    assert "-glm53flashbf16-direct-" in run_id
+
+
 def test_batch_size_allows_only_qualified_sizes() -> None:
     from pydantic import ValidationError
 

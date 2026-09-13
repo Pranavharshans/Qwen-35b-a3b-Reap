@@ -26,14 +26,28 @@ class Qwen35Architecture:
     hidden_size: int
     expert_intermediate_size: int
     state_prefix: str
+    layer_indices: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        indices = self.layer_indices
+        if indices is None:
+            object.__setattr__(self, "layer_indices", tuple(range(len(self.layers))))
+        elif len(indices) != len(self.layers) or len(set(indices)) != len(indices):
+            raise ArchitectureError("layer_indices must uniquely identify every MoE layer")
 
     @property
     def num_layers(self) -> int:
+        assert self.layer_indices is not None
+        return max(self.layer_indices, default=-1) + 1
+
+    @property
+    def num_moe_layers(self) -> int:
         return len(self.layers)
 
     def tensor_spec(self, layer: int, expert: int) -> ExpertTensorSpec:
-        if not 0 <= layer < self.num_layers:
-            raise IndexError(f"layer {layer} outside [0, {self.num_layers})")
+        assert self.layer_indices is not None
+        if layer not in self.layer_indices:
+            raise IndexError(f"layer {layer} is not a routed MoE layer")
         if not 0 <= expert < self.num_experts:
             raise IndexError(f"expert {expert} outside [0, {self.num_experts})")
         stem = f"{self.state_prefix}.{layer}.mlp.experts"
@@ -77,9 +91,17 @@ def inspect_qwen35_moe(model: Any) -> Qwen35Architecture:
         raise ArchitectureError("could not locate the supported Qwen language-model decoder layers")
 
     path, layer_list = found
-    layers = tuple(layer_list)
+    all_layers = tuple(layer_list)
+    sparse = tuple(
+        (index, layer) for index, layer in enumerate(all_layers)
+        if hasattr(getattr(layer, "mlp", None), "experts")
+    )
+    if not sparse:
+        raise ArchitectureError("decoder contains no instrumentable sparse-MoE blocks")
+    layer_indices = tuple(index for index, _ in sparse)
+    layers = tuple(layer for _, layer in sparse)
     first = layers[0].mlp
-    required = ("gate", "experts", "shared_expert", "shared_expert_gate")
+    required = ("gate", "experts")
     missing = [name for name in required if not hasattr(first, name)]
     if missing:
         raise ArchitectureError(f"first MoE block is missing: {', '.join(missing)}")
@@ -104,7 +126,7 @@ def inspect_qwen35_moe(model: Any) -> Qwen35Architecture:
     if not isinstance(top_k, int) or not 0 < top_k <= num_experts:
         raise ArchitectureError(f"invalid or missing router top_k: {top_k!r}")
 
-    for index, layer in enumerate(layers):
+    for index, layer in sparse:
         block = getattr(layer, "mlp", None)
         if block is None or not hasattr(block, "experts") or not hasattr(block, "gate"):
             raise ArchitectureError(f"layer {index} is not an instrumentable sparse-MoE block")
@@ -121,6 +143,7 @@ def inspect_qwen35_moe(model: Any) -> Qwen35Architecture:
         hidden_size=hidden_size,
         expert_intermediate_size=intermediate,
         state_prefix=prefix,
+        layer_indices=layer_indices,
     )
 
 

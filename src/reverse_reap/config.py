@@ -23,6 +23,7 @@ class ModelConfig(StrictModel):
         "Qwen/Qwen3.5-35B-A3B",
         "Qwen/Qwen3.8-Flash-Next",
         "Qwen/Qwen3.8-Flash-Next-FP8",
+        "zai-org/GLM-5.3-Flash-BF16",
     ]
     revision: str = Field(min_length=40, max_length=64, pattern=r"^[0-9a-f]+$")
     source_precision: Literal["bf16", "fp8"] = "bf16"

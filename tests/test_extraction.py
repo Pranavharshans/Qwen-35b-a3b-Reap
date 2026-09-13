@@ -121,6 +121,20 @@ def test_infers_qwen38_fp8_per_expert_tensor_prefix(tmp_path):
     assert architecture.state_prefix == prefix
 
 
+def test_infers_glm53_sparse_per_expert_tensor_prefix(tmp_path):
+    prefix = "model.language_model.layers"
+    weight_map = {
+        f"{prefix}.{layer}.mlp.experts.0.gate_proj.weight": "shard.safetensors"
+        for layer in range(3, 45)
+    }
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    architecture = architecture_from_weight_index(tmp_path, "zai-org/GLM-5.3-Flash-BF16")
+    assert architecture.num_layers == 45
+    assert architecture.num_moe_layers == 42
+    assert architecture.layer_indices == tuple(range(3, 45))
+    assert architecture.num_experts == 288
+
+
 def test_fp8_extraction_preserves_weights_and_inverse_scales(tmp_path):
     prefix = "model.language_model.layers"
     stem = f"{prefix}.0.mlp.experts.2"

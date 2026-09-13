@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from reverse_reap.donors import QWEN38_FP8_MODEL_ID, QWEN38_MODEL_ID, donor_contract
+from reverse_reap.donors import (
+    GLM53_BF16_MODEL_ID,
+    QWEN38_FP8_MODEL_ID,
+    QWEN38_MODEL_ID,
+    donor_contract,
+)
 from reverse_reap.model_preflight import (
     EXPECTED_TEXT_CONFIG,
     ModelPreflightError,
@@ -70,6 +75,35 @@ def test_qwen38_fp8_index_rejects_missing_expert_scales():
             {"model.language_model.layers.0.mlp.experts.0.gate_proj.weight": "shard"},
             QWEN38_FP8_MODEL_ID,
         )
+
+
+def test_glm53_contract_uses_sparse_layer_and_aliased_metadata_fields():
+    contract = donor_contract(GLM53_BF16_MODEL_ID)
+    payload = {
+        "model_type": contract.root_model_type,
+        "architectures": [contract.architecture],
+        "text_config": contract.expected_text_config(),
+    }
+    report = validate_model_config(payload, GLM53_BF16_MODEL_ID)
+    assert report["compatible"]
+    assert contract.moe_layer_indices == tuple(range(3, 45))
+    assert report["text_config"]["n_routed_experts"] == 288
+
+
+def test_glm53_weight_index_requires_only_bf16_expert_tensors():
+    contract = donor_contract(GLM53_BF16_MODEL_ID)
+    weight_map = {
+        f"model.language_model.layers.{layer}.mlp.experts.{expert}.{projection}.weight": "shard"
+        for layer in contract.moe_layer_indices
+        for expert in range(contract.num_experts)
+        for projection in ("gate_proj", "up_proj", "down_proj")
+    }
+    report = validate_weight_index_layout(weight_map, GLM53_BF16_MODEL_ID)
+    assert report == {
+        "valid": True,
+        "layout": "per-expert",
+        "expert_tensor_count": 42 * 288 * 3,
+    }
 
 
 def test_writes_revision_pinned_config_without_mutating_template(tmp_path):

@@ -67,19 +67,14 @@ def validate_model_config(
 def validate_weight_index_layout(weight_map: dict[str, str], model_id: str) -> dict[str, Any]:
     """Prove the source index contains every tensor needed for lossless expert extraction."""
     contract = donor_contract(model_id)
-    if contract.expert_weight_layout != "per-expert-fp8":
+    if not contract.expert_weight_layout.startswith("per-expert"):
         return {"valid": True, "layout": contract.expert_weight_layout}
     prefix = "model.language_model.layers"
-    suffixes = (
-        "gate_proj.weight",
-        "gate_proj.weight_scale_inv",
-        "up_proj.weight",
-        "up_proj.weight_scale_inv",
-        "down_proj.weight",
-        "down_proj.weight_scale_inv",
-    )
+    suffixes = ["gate_proj.weight", "up_proj.weight", "down_proj.weight"]
+    if contract.expert_weight_layout == "per-expert-fp8":
+        suffixes = [item for suffix in suffixes for item in (suffix, f"{suffix}_scale_inv")]
     missing = []
-    for layer in range(contract.num_hidden_layers):
+    for layer in contract.moe_layer_indices:
         for expert in range(contract.num_experts):
             stem = f"{prefix}.{layer}.mlp.experts.{expert}"
             for suffix in suffixes:
@@ -88,16 +83,18 @@ def validate_weight_index_layout(weight_map: dict[str, str], model_id: str) -> d
                     missing.append(key)
                     if len(missing) >= 10:
                         raise ModelPreflightError(
-                            f"FP8 expert weight index is incomplete; examples: {missing}"
+                            f"per-expert weight index is incomplete; examples: {missing}"
                         )
     if missing:
         raise ModelPreflightError(
-            f"FP8 expert weight index is incomplete; examples: {missing}"
+            f"per-expert weight index is incomplete; examples: {missing}"
         )
     return {
         "valid": True,
         "layout": contract.expert_weight_layout,
-        "expert_tensor_count": contract.num_hidden_layers * contract.num_experts * len(suffixes),
+        "expert_tensor_count": (
+            len(contract.moe_layer_indices) * contract.num_experts * len(suffixes)
+        ),
     }
 
 

@@ -101,12 +101,8 @@ def test_task_freeze_is_deterministic_and_pilot_is_full_prefix(tmp_path: Path):
     config = _config(tmp_path)
     first_pilot, first_full, first_report = freeze_bridge_benchmark_tasks(config)
     second_pilot, second_full, second_report = freeze_bridge_benchmark_tasks(config)
-    assert [item.sample_id for item in first_pilot] == [
-        item.sample_id for item in second_pilot
-    ]
-    assert [item.sample_id for item in first_full] == [
-        item.sample_id for item in second_full
-    ]
+    assert [item.sample_id for item in first_pilot] == [item.sample_id for item in second_pilot]
+    assert [item.sample_id for item in first_full] == [item.sample_id for item in second_full]
     assert first_full[: len(first_pilot)] == first_pilot
     assert first_report == second_report
 
@@ -251,15 +247,11 @@ def test_scoring_joins_raw_continuation_after_stripped_docstring_prompt(
         return Result()
 
     monkeypatch.setattr(benchmark, "evaluate_python", fake_evaluate)
-    benchmark._score_rows(
-        [row], {sample.sample_id: sample}, "image@sha256:" + "b" * 64
-    )
+    benchmark._score_rows([row], {sample.sample_id: sample}, "image@sha256:" + "b" * 64)
     with pytest.raises(SyntaxError):
         ast.parse(sample.prompt + row["raw_completion"])
     ast.parse(seen["program"])
-    assert seen["program"] == (
-        'def function_1():\n    """Return one."""\n    return 1'
-    )
+    assert seen["program"] == ('def function_1():\n    """Return one."""\n    return 1')
 
 
 def test_scoring_fails_closed_without_raw_completion():
@@ -295,9 +287,7 @@ def test_expired_generation_is_rejected_but_deferred_scoring_can_load(
     import yaml
 
     payload = _config(tmp_path).model_dump(mode="json")
-    payload["budget"]["deadline_utc"] = (
-        datetime.now(UTC) - timedelta(minutes=1)
-    ).isoformat()
+    payload["budget"]["deadline_utc"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     path = tmp_path / "expired.yaml"
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
     with pytest.raises(BridgeBenchmarkError, match="deadline has expired"):
@@ -370,9 +360,7 @@ def test_single_command_runs_four_pilot_and_four_full_generations(
     assert state["status"] == "COMPLETE"
 
 
-def test_single_command_records_terminal_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_single_command_records_terminal_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import yaml
 
     import reverse_reap.bridge_benchmark as benchmark

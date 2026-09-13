@@ -123,16 +123,19 @@ def validate_donor_contract(model: Any, architecture: Qwen35Architecture) -> dic
         "model_type": getattr(model_config, "model_type", None),
         "text_model_type": getattr(text_config, "model_type", None),
         "num_layers": architecture.num_layers,
+        "num_moe_layers": architecture.num_moe_layers,
         "hidden_size": architecture.hidden_size,
         "num_experts": architecture.num_experts,
         "experts_per_token": architecture.experts_per_token,
         "expert_intermediate_size": architecture.expert_intermediate_size,
         "shared_expert_present": all(
-            hasattr(layer.mlp, "shared_expert") for layer in architecture.layers
+            hasattr(layer.mlp, "shared_expert") or hasattr(layer.mlp, "shared_experts")
+            for layer in architecture.layers
         ),
     }
     expected = {
         "num_layers": contract.num_hidden_layers,
+        "num_moe_layers": len(contract.moe_layer_indices),
         "hidden_size": contract.hidden_size,
         "num_experts": contract.num_experts,
         "experts_per_token": contract.num_experts_per_tok,
@@ -218,9 +221,32 @@ def _render_ids(tokenizer: Any, sample: NormalizedSample, enable_thinking: bool)
     if full.shape[1] < prompt.shape[1]:
         raise RuntimeCompatibilityError("full teacher-forced sequence is shorter than prompt")
     if not torch.equal(full[:, : prompt.shape[1]], prompt):
-        raise RuntimeCompatibilityError(
-            "teacher-forced sequence does not preserve the prompt prefix"
+        rendered_user = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=False,
+            return_tensors="pt",
+            enable_thinking=enable_thinking,
         )
+        if not isinstance(rendered_user, torch.Tensor):
+            rendered_user = rendered_user["input_ids"]
+        user = rendered_user.to(dtype=torch.long)
+        if (
+            user.shape[1] > min(prompt.shape[1], full.shape[1])
+            or not torch.equal(prompt[:, : user.shape[1]], user)
+            or not torch.equal(full[:, : user.shape[1]], user)
+        ):
+            raise RuntimeCompatibilityError(
+                "teacher-forced sequence does not preserve the user-message prefix"
+            )
+        shared = int(
+            torch.nonzero(prompt[0] != full[0, : prompt.shape[1]], as_tuple=False)[0].item()
+        )
+        if shared < user.shape[1]:
+            raise RuntimeCompatibilityError(
+                "teacher-forced sequence diverges inside the user-message prefix"
+            )
+        prompt = full[:, :shared]
     return prompt, full
 
 
@@ -751,10 +777,10 @@ def capture_manifest(
         "routing_rows": count,
         "analysed_tokens": analysed_tokens,
         "expected_routing_rows": (
-            analysed_tokens * architecture.num_layers * architecture.experts_per_token
+            analysed_tokens * architecture.num_moe_layers * architecture.experts_per_token
         ),
         "row_count_valid": count
-        == analysed_tokens * architecture.num_layers * architecture.experts_per_token,
+        == analysed_tokens * architecture.num_moe_layers * architecture.experts_per_token,
         "samples": len(samples),
         "telemetry_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
         "architecture": architecture_report,
@@ -785,7 +811,7 @@ def probe_instrumentation(
         "maximum_logit_difference": maximum_difference,
         "routed_records": routed,
         "passed": exact
-        and routed == ids.numel() * architecture.num_layers * architecture.experts_per_token,
+        and routed == ids.numel() * architecture.num_moe_layers * architecture.experts_per_token,
     }
 
 

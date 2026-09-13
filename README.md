@@ -59,6 +59,35 @@ The pinned config makes `preflight-model` refuse revision drift rather than sile
 it. Support is currently hardware-free and metadata/index validated; an exact-checkpoint Gate
 A probe is still required before calibration or an expert claim.
 
+## GLM-5.3-Flash-BF16 infrastructure
+
+GLM is a separate, explicitly approved experiment generation. It uses the exact
+`zai-org/GLM-5.3-Flash-BF16` donor and never inherits Qwen telemetry, candidates, run state,
+or conclusions. The launcher has two preview-by-default modes over the same governed
+controller and plan:
+
+```bash
+# Cloud or another non-Slurm CUDA host
+bash scripts/launch_glm53.sh --direct \
+  --config configs/smoke-glm53-flash-bf16.yaml \
+  --plan configs/execution-plan-smoke.yaml \
+  --model-dir /absolute/path/to/GLM-5.3-Flash-BF16 \
+  --state-root /absolute/path/to/glm53-runs
+
+# FAU Alex; this only previews the future sbatch command
+bash scripts/launch_glm53.sh --fau-slurm \
+  --config configs/smoke-glm53-flash-bf16.yaml \
+  --plan configs/execution-plan-smoke.yaml \
+  --model-dir /absolute/cluster/path/GLM-5.3-Flash-BF16 \
+  --state-root /absolute/cluster/path/glm53-runs
+```
+
+Neither command launches a process or submits a job. After review, real execution requires
+both `--execute` and the previewed `--run-id`; FAU additionally maps that request to
+`sbatch`. See [`docs/glm53-flash-execution.md`](docs/glm53-flash-execution.md) for metadata
+preflight, staging, budgets, monitoring, and stop gates. This is infrastructure support only:
+exact-checkpoint Gate A remains unverified, and no weights are uploaded or published.
+
 ### Official Qwen3.8 FP8 checkpoint
 
 `Qwen/Qwen3.8-Flash-Next-FP8` is a separate donor at immutable revision
@@ -84,7 +113,7 @@ its own telemetry, candidates, causal validation, and replication; BF16 results 
 ## FAU Alex Slurm execution
 
 The FAU path uses the same single-writer `run-all` controller and source plan as the regular
-path. It requests one complete `rtxpro6k` node (8 × RTX PRO 6000, 96 GiB each), loads CUDA
+path. It requests six RTX PRO 6000 GPUs (96 GiB each) on one `rtxpro6k` node, loads CUDA
 12.8 and Python through environment modules, keeps caches on node-local `$TMPDIR`, and uses a
 clean exported environment. Prepare the environment and weights on Alex, then preview and
 submit:
