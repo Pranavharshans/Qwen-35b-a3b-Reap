@@ -1,0 +1,46 @@
+# DeepSeek V4 Flash direct/cloud-GPU example.
+#
+# This is a previewable template, not a claim that the exact checkpoint has
+# been run here. Replace the example run_id and every /absolute/path placeholder
+# before --execute.
+# The launcher intentionally refuses state-changing execution while any
+# placeholder remains.
+
+schema_version: 1
+run_id: deepseek-v4-flash-direct-example
+mode: direct
+
+# Official 0731 checkpoint pin captured on 2026-09-14.
+model:
+  id: deepseek-ai/DeepSeek-V4-Flash-0731
+  revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+  trust_remote_code: true
+
+# This workload is shared byte-for-byte between the two examples.
+# vLLM support and exact-checkpoint runtime behavior remain unverified here.
+serving:
+  vllm_min_version: "0.20.0"
+  tensor_parallel_size: 8
+  pipeline_parallel_size: 1
+  gpu_count: 8
+  max_model_len: 32768
+  gpu_memory_utilization: 0.90
+  host: 127.0.0.1
+  port: 8000
+  extra_args: []
+
+paths:
+  # Passed to vLLM as --download-dir; it is the model/cache root.
+  model_cache_dir: /absolute/path/to/deepseek-v4-flash/model-cache
+  # Reserved for per-run artifacts; it is not passed to vLLM.
+  run_dir: /absolute/path/to/deepseek-v4-flash/run
+  # Reserved for outputs; direct mode does not redirect stdout here.
+  output_dir: /absolute/path/to/deepseek-v4-flash/output
+  # Reserved auxiliary cache; it is not a vLLM cache flag.
+  cache_dir: /absolute/path/to/deepseek-v4-flash/cache
+  # Reserved logs; direct mode inherits the vLLM process stdout/stderr.
+  log_dir: /absolute/path/to/deepseek-v4-flash/logs
+
+direct:
+  # Optional process cwd; replace before --execute or omit the field.
+  working_directory: /absolute/path/to/deepseek-v4-flash

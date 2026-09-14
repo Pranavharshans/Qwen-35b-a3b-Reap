@@ -1,0 +1,61 @@
+# DeepSeek V4 Flash FAU Slurm example.
+#
+# This is a previewable template, not a claim that the exact checkpoint has
+# been run here. Replace the example run_id, every path, and YOUR_FAU_* value
+# before --submit.
+# The launcher intentionally refuses submission while any placeholder remains.
+
+schema_version: 1
+run_id: deepseek-v4-flash-fau-example
+mode: fau_slurm
+
+# Official 0731 checkpoint pin captured on 2026-09-14.
+model:
+  id: deepseek-ai/DeepSeek-V4-Flash-0731
+  revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+  trust_remote_code: true
+
+# This workload is shared byte-for-byte between the two examples.
+# vLLM support and exact-checkpoint runtime behavior remain unverified here.
+serving:
+  vllm_min_version: "0.20.0"
+  tensor_parallel_size: 8
+  pipeline_parallel_size: 1
+  gpu_count: 8
+  max_model_len: 32768
+  gpu_memory_utilization: 0.90
+  host: 127.0.0.1
+  port: 8000
+  extra_args: []
+
+paths:
+  # Passed to vLLM as --download-dir; it is the model/cache root.
+  model_cache_dir: /absolute/path/to/deepseek-v4-flash/model-cache
+  # Reserved for per-run artifacts; it is not passed to vLLM.
+  run_dir: /absolute/path/to/deepseek-v4-flash/run
+  # Reserved for outputs; the Slurm wrapper does not redirect vLLM output here.
+  output_dir: /absolute/path/to/deepseek-v4-flash/output
+  # Reserved auxiliary cache; it is not a vLLM cache flag.
+  cache_dir: /absolute/path/to/deepseek-v4-flash/cache
+  # Reserved logs; Slurm output/error paths are configured below.
+  log_dir: /absolute/path/to/deepseek-v4-flash/logs
+
+fau_slurm:
+  job_name: deepseek-v4-flash
+  account: YOUR_FAU_ACCOUNT
+  partition: YOUR_FAU_PARTITION
+  constraint: YOUR_FAU_CONSTRAINT
+  # Multi-node/multi-task orchestration is deliberately unsupported.
+  nodes: 1
+  tasks_per_node: 1
+  gpus_per_node: 8
+  cpus_per_task: 32
+  memory_gb: 256
+  time_limit: "1-12:00:00"
+  # Slurm opens these before the script body: create both parent directories
+  # on the FAU host before --submit. The launcher never creates them locally.
+  output_path: /absolute/path/to/deepseek-v4-flash/slurm/deepseek-v4-%j.out
+  error_path: /absolute/path/to/deepseek-v4-flash/slurm/deepseek-v4-%j.err
+  # Add only modules confirmed on the target FAU partition in a private copy.
+  module_commands: []
+  environment_activation: source /absolute/path/to/deepseek-v4-flash/venv/bin/activate

@@ -15,6 +15,16 @@ The v0 scope ends at expert extraction. Extracted tensors are not a standalone m
 cannot be inserted directly into a smaller host model without later representation-bridge
 research.
 
+## DeepSeek V4 Flash infrastructure
+
+The isolated `deepseek-launch` command supports the pinned
+`deepseek-ai/DeepSeek-V4-Flash-0731` checkpoint through either direct/cloud GPU execution or
+an FAU Slurm wrapper. Preview and `--check` are read-only; `--execute` and `--submit` are
+explicit state-changing actions that remain blocked for the checked-in placeholder examples.
+See the [DeepSeek V4 Flash infrastructure guide](docs/deepseek-v4-flash-infrastructure.md)
+for the exact pin, configuration reference, generated `sbatch` behavior, health probes, and
+runtime-validation boundary.
+
 ## Fixed v0 contract
 
 - Donor revision: `59d61f3ce65a6d9863b86d2e96597125219dc754`

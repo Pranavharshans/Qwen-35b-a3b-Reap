@@ -44,6 +44,12 @@ from reverse_reap.causal import (
 from reverse_reap.config import load_config
 from reverse_reap.controller import run_all, run_next, run_status
 from reverse_reap.datasets import audit_manifest_token_lengths, freeze_tiers
+from reverse_reap.deepseek_infra import (
+    DeepSeekInfrastructureError,
+    deepseek_launch,
+    load_deepseek_config,
+    serialize_launch_result,
+)
 from reverse_reap.extraction import (
     architecture_from_weight_index,
     extract_experts,
@@ -103,6 +109,27 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     validate = subparsers.add_parser("validate-config")
     validate.add_argument("config", type=Path)
+    deepseek = subparsers.add_parser(
+        "deepseek-launch",
+        help="preview/check or explicitly launch the isolated DeepSeek V4 Flash serving config",
+    )
+    deepseek.add_argument("config", type=Path)
+    deepseek_actions = deepseek.add_mutually_exclusive_group()
+    deepseek_actions.add_argument(
+        "--check",
+        action="store_true",
+        help="validate and print hardware-free preflight information only",
+    )
+    deepseek_actions.add_argument(
+        "--execute",
+        action="store_true",
+        help="execute direct mode only (state-changing; rejects placeholders)",
+    )
+    deepseek_actions.add_argument(
+        "--submit",
+        action="store_true",
+        help="submit fau_slurm mode only (state-changing; rejects placeholders)",
+    )
     run = subparsers.add_parser("run-next")
     run.add_argument("config", type=Path)
     run.add_argument("plan", type=Path)
@@ -368,6 +395,22 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.command == "validate-config":
         return validate_config(args.config)
+    if args.command == "deepseek-launch":
+        try:
+            config = load_deepseek_config(args.config)
+            result = deepseek_launch(
+                config,
+                check=args.check,
+                execute=args.execute,
+                submit=args.submit,
+            )
+        except DeepSeekInfrastructureError as exc:
+            print(json.dumps({"valid": False, "error": str(exc)}, indent=2, sort_keys=True))
+            return 2
+        print(serialize_launch_result(result), end="")
+        if result.get("action") in {"execute", "submit"}:
+            return int(result.get("returncode", 1))
+        return 0
     if args.command == "run-next":
         config = load_config(args.config)
         resolved_run_id = config.run_id or config.resolve_run_id(git_sha())
