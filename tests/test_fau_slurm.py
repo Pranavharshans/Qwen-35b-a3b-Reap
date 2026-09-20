@@ -106,6 +106,11 @@ def test_slurm_script_matches_fau_batch_contract():
     assert "unset SLURM_EXPORT_ENV" in body
     assert "module load cuda/12.8" in body
     assert "REVERSE_REAP_GPU_MAX_MEMORY_GIB=84" in body
-    assert "TRANSFORMERS_OFFLINE=1" in body
+    assert "#SBATCH --time=18:00:00" in body
+    assert 'export PATH="$repo_dir/.venv/bin:$PATH"' in body
+    assert "unset HF_HUB_OFFLINE" in body
+    assert "unset TRANSFORMERS_OFFLINE" in body
+    assert "unset HF_DATASETS_OFFLINE" in body
     assert "http_proxy=http://proxy.nhr.fau.de:80" in body
-    assert "srun uv run --frozen --no-sync reverse-reap run-all" in body
+    assert 'materialize=("$repo_dir/.venv/bin/python"' in body
+    assert 'srun "$repo_dir/.venv/bin/reverse-reap" run-all' in body

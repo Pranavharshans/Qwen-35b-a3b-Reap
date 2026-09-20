@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=192
 #SBATCH --gres=gpu:rtxpro6k:6
-#SBATCH --time=24:00:00
+#SBATCH --time=18:00:00
 #SBATCH --export=NONE
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
@@ -32,11 +32,14 @@ module load cuda/12.8
 module load python
 
 cd "$repo_dir"
+export PATH="$repo_dir/.venv/bin:$PATH"
 export UV_CACHE_DIR="${TMPDIR:?FAU must provide TMPDIR}/reverse-reap-uv-cache"
 export HF_HOME="${TMPDIR}/reverse-reap-hf-cache"
+unset HF_HUB_OFFLINE
+unset TRANSFORMERS_OFFLINE
+unset HF_DATASETS_OFFLINE
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export TRANSFORMERS_OFFLINE=1
 export REVERSE_REAP_GPU_MAX_MEMORY_GIB=84
 export REVERSE_REAP_CPU_MAX_MEMORY_GIB=512
 export http_proxy=http://proxy.nhr.fau.de:80
@@ -46,7 +49,7 @@ export HTTPS_PROXY="$https_proxy"
 mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$state_dir"
 
 materialized_plan="$state_dir/fau-materialized-plan.yaml"
-materialize=(uv run --frozen --no-sync python scripts/fau/materialize_plan.py
+materialize=("$repo_dir/.venv/bin/python" scripts/fau/materialize_plan.py
   "$source_plan" "$materialized_plan" --config "$config_path" --model-dir "$model_dir"
   --execution-mode fau-slurm)
 if [[ -n "$thinking_config" ]]; then
@@ -60,6 +63,6 @@ if [[ -n "$run_root" ]]; then
 fi
 "${materialize[@]}"
 
-srun uv run --frozen --no-sync reverse-reap run-all \
+srun "$repo_dir/.venv/bin/reverse-reap" run-all \
   "$config_path" "$materialized_plan" "$state_dir" \
   --heartbeat-seconds 30 --stale-after-seconds 180
