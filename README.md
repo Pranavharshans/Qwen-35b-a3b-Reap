@@ -120,6 +120,20 @@ Use `configs/qwen38-flash-next-fp8-full.yaml` for direct FAU execution,
 `configs/qwen38-flash-next-fp8-bridge-capture.yaml` for pass-2 target capture. FP8 requires
 its own telemetry, candidates, causal validation, and replication; BF16 results do not transfer.
 
+### Verified Qwen3.8 FP8 Gate A
+
+The exact FP8 checkpoint has been loaded and instrumented on six RTX PRO 6000 Blackwell GPUs
+(96 GiB each, compute capability 12.0). The controlled instrumentation replay passed with
+bit-identical logits: `exact_logits=true`, maximum logit difference `0.0`, and 5,760 routed
+records. A separate telemetry smoke captured and validated 7,229 analysed tokens across 48
+MoE layers, 512 routed experts, and top-10 routing, producing 3,469,920 routing rows with
+artifact checksums verified.
+
+This establishes exact-checkpoint instrumentation compatibility only. It does not identify a
+domain-differential candidate and does not support a `coding-critical-v0` claim. A100 and A40
+hosts are not accepted for this native fine-grained FP8 execution path; the validated FAU
+target is RTX PRO 6000 Blackwell.
+
 ## FAU Alex Slurm execution
 
 The FAU path uses the same single-writer `run-all` controller and source plan as the regular
@@ -144,30 +158,34 @@ The first command is a dry run. The second calls `sbatch` and must run on an FAU
 No job is submitted by setup or tests. The job materializes a run-specific plan with absolute
 cluster paths and the six-GPU RTX PRO 6000 preflight; it never mutates the source plan. The
 GPU extra pins the tested fine-grained FP8 kernel package and exact Transformers revision.
-The batch job loads the staged model offline, reserves 84 GiB per GPU for placement, keeps
-Hugging Face and uv caches on node-local `$TMPDIR`, and uses FAU's compute-node proxy for the
-dataset-freeze task.
+The batch job runs the repository's persistent `.venv` directly, places that environment first
+on `PATH` for child tasks, reserves 84 GiB per GPU, and keeps Hugging Face and uv caches on
+node-local `$TMPDIR`. `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, and
+`HF_DATASETS_OFFLINE` are explicitly unset because dataset freezing must resolve pinned public
+datasets through FAU's compute-node proxy. Model loading still uses the staged local model
+directory. The checked-in batch limit is 18 hours.
 
 ### Qwen3.8 two-pass FAU workflow
 
 Scoring may remain on a separate VM. FAU produces immutable generation/capture artifacts and
 hash-bound handoffs; it does not execute generated code in this workflow.
 
-After reviewing the dataset catalog, dry-run the first pass through frozen expert-candidate
-analysis. The cutoff prevents FAU from entering the downstream scoring/causal tasks:
+For the large FP8 thinking run, split observational expert discovery into two resumable Slurm
+allocations. Job 1 freezes/audits the dataset, rechecks instrumentation, and captures calibration
+telemetry:
 
 ```bash
 scripts/fau/submit_reverse_reap.sh \
-  --through-task candidate-analysis \
-  configs/qwen38-flash-next-bf16-full.yaml configs/execution-plan-v0.yaml \
-  /absolute/cluster/path/Qwen3.8-Flash-Next runs/qwen38/pass1-state
+  --through-task telemetry-calibration \
+  configs/qwen38-flash-next-fp8-full-thinking.yaml configs/execution-plan-v0.yaml \
+  /absolute/cluster/path/Qwen3.8-Flash-Next-FP8 runs/qwen38/pass1-state
 ```
 
-Add `--submit` to that command only after reviewing the rendered command and run budget. When
-pass 1 has produced a passed, frozen Qwen3.8 Gate C artifact, transfer generation artifacts
-to the scoring VM as needed and copy the candidate artifact without modification to
-`runs/qwen38/inputs/candidate-manifest.json`. Then dry-run the second, independently identified
-teacher-forced capture pass:
+Add `--submit` only after reviewing the rendered command and run budget. After Job 1 validates,
+Job 2 uses the same state directory and advances through `candidate-analysis`; it must not alter
+the frozen dataset, configuration, or telemetry. Only a passed Gate C artifact may be handed to
+later causal scoring. The independently identified teacher-forced bridge-capture pass remains
+separate and uses a new run ID:
 
 ```bash
 scripts/fau/submit_reverse_reap.sh \
@@ -184,6 +202,21 @@ train a bridge, publish weights, or reuse the pass-1 run ID.
 The checked-in Qwen3.8 full configurations use allocation-accounting placeholder rates and a
 future deadline. Review and pin the actual allocation budget, storage ceiling, deadline, and
 dataset hash before any real job; changing any of them creates a new run ID.
+
+### FAU execution record through 2026-09-21
+
+- The six-GPU RTX PRO 6000 preflight passes with the persistent `.venv` selected through
+  `PATH`.
+- One production attempt stopped before dataset work because child commands resolved the
+  system Python and could not import Torch. Direct `.venv` entry points and the `PATH` export
+  fix that startup failure.
+- A later attempt completed GPU preflight but stopped during `dataset-freeze` because inherited
+  offline flags blocked the HumanEval Hub request. The current wrapper explicitly clears all
+  three offline flags and retains the FAU proxy.
+- These failures consumed no scientific calibration budget and produced no candidate evidence.
+  Failed state directories remain immutable; corrected submissions use a fresh state directory.
+- The current authorized cutoff is `telemetry-calibration`. Candidate selection, causal
+  validation, extraction, and bridge capture are not implied by submission or queueing.
 
 ## CPU analysis engines
 
